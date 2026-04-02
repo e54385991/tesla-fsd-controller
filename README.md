@@ -304,6 +304,16 @@ platformio.ini          ← 构建配置（ESP32 + ESPAsyncWebServer）
 
 ---
 
+## Credits
+
+本项目基于以下开源项目开发，核心 CAN 报文处理逻辑直接来源于原项目：
+
+| 项目 | 链接 | 许可证 |
+|------|------|--------|
+| tesla-open-can-mod | [gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod](https://gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod) | GPLv3 |
+
+---
+
 ## 许可证
 
 GPLv3 — 基于 [tesla-open-can-mod](https://gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod)（GPLv3）开发。
