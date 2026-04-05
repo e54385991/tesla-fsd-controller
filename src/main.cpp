@@ -78,7 +78,18 @@ void setupWebServer() {
     // Status JSON — use %u for uint32_t on ESP32
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
         uint32_t uptime = (millis() - cfg.uptimeStart) / 1000;
-        char buf[320];
+
+        // JSON-escape apSSID (guard against " and \ in SSID)
+        char escapedSSID[128] = {};
+        const char* src = apSSID;
+        char* dst = escapedSSID;
+        char* end = escapedSSID + sizeof(escapedSSID) - 3;
+        while (*src && dst < end) {
+            if (*src == '"' || *src == '\\') *dst++ = '\\';
+            *dst++ = *src++;
+        }
+
+        char buf[384];
         snprintf(buf, sizeof(buf),
             "{\"rx\":%u,\"modified\":%u,\"errors\":%u,\"uptime\":%u,"
             "\"canOK\":%s,\"fsdTriggered\":%s,"
@@ -96,7 +107,7 @@ void setupWebServer() {
             (int)cfg.isaChimeSuppress,
             (int)cfg.emergencyDetection,
             (int)cfg.chinaMode,
-            apSSID
+            escapedSSID
         );
         req->send(200, "application/json", buf);
     });

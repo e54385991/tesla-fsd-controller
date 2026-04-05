@@ -15,8 +15,12 @@ inline bool isFSDSelectedInUI(const CanFrame& frame) {
 }
 
 inline void setSpeedProfileV12V13(CanFrame& frame, int profile) {
+    // V12/V13 speed field is bits 1-2 of byte 6 (2 bits, max value 3).
+    // Clamp to [0,2] — profiles 3/4 are HW4-only; writing them here
+    // would shift bits outside the cleared mask and corrupt the frame.
+    if (profile > 2) profile = 2;
     frame.data[6] &= ~0x06;
-    frame.data[6] |= (profile << 1);
+    frame.data[6] |= (uint8_t)((profile & 0x03) << 1);
 }
 
 inline void setBit(CanFrame& frame, int bit, bool value) {

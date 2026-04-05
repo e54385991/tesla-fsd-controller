@@ -72,7 +72,7 @@ select:focus{outline:none;border-color:#38bdf8}
   </div>
   <div class="row" style="flex-wrap:wrap;gap:4px">
     <span class="row-label" id="iLblHW">硬件版本</span>
-    <select id="hwMode" onchange="setVal('hwMode',this.value)">
+    <select id="hwMode" onchange="setVal('hwMode',this.value);updateSpeedOptions(parseInt(this.value))">
       <option value="0">LEGACY</option>
       <option value="1">HW3</option>
       <option value="2" selected>HW4</option>
@@ -231,6 +231,7 @@ function poll(){
     fsdEl.className=d.fsdTriggered?'status-yes':'status-no';
     document.getElementById('fsdEnable').checked=!!d.fsdEnable;
     document.getElementById('hwMode').value=d.hwMode;
+    updateSpeedOptions(d.hwMode);
     document.getElementById('speedProfile').value=d.speedProfile;
     document.getElementById('profileMode').value=d.profileMode?'1':'0';
     document.getElementById('isaChime').checked=!!d.isaChime;
@@ -241,6 +242,21 @@ function poll(){
 }
 var wifiSSIDLoaded=false;
 setInterval(poll,1000);poll();
+function updateSpeedOptions(hwMode){
+  // Profiles 3 (Aggressive) and 4 (Maximum) are HW4-only.
+  // Hide them in Legacy (0) and HW3 (1) modes to prevent invalid frame writes.
+  var hw4Only=[3,4];
+  var sel=document.getElementById('speedProfile');
+  Array.from(sel.options).forEach(function(o){
+    var v=parseInt(o.value);
+    if(hw4Only.indexOf(v)!==-1){
+      o.disabled=(hwMode!==2);
+      o.style.display=(hwMode!==2)?'none':'';
+    }
+  });
+  // If current selection is now invalid, clamp to 2
+  if(hwMode!==2&&parseInt(sel.value)>2){sel.value='2';setVal('speedProfile',2);}
+}
 function setVal(key,val){fetch('/api/set?'+key+'='+val).catch(()=>{});}
 function doWifi(){
   var t=T[lang];
