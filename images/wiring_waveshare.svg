@@ -7,9 +7,10 @@
 
   <!-- ════════════════ Power Source (Fuse Box) ════════════════ -->
   <rect x="20" y="120" width="140" height="120" rx="10" fill="#161b22" stroke="#f85149" stroke-width="2"/>
-  <text x="90" y="148" text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="bold">车内电源</text>
-  <text x="90" y="164" text-anchor="middle" fill="#8b949e" font-size="10">保险丝盒 ACC 路</text>
-  <text x="90" y="178" text-anchor="middle" fill="#8b949e" font-size="10">或手套箱 12V</text>
+  <text x="90" y="145" text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="bold">车内电源</text>
+  <text x="90" y="160" text-anchor="middle" fill="#8b949e" font-size="10">保险丝盒 ACC 路</text>
+  <text x="90" y="174" text-anchor="middle" fill="#8b949e" font-size="10">或手套箱 12V</text>
+  <text x="90" y="188" text-anchor="middle" fill="#6e7681" font-size="9">或 USB-C 5V 供电</text>
   <!-- 12V output pin -->
   <rect x="154" y="158" width="14" height="14" rx="2" fill="#f85149"/>
   <text x="150" y="171" text-anchor="end" fill="#f85149" font-size="11" font-weight="bold">12V</text>
@@ -51,8 +52,9 @@
   <text x="566" y="251" text-anchor="end" fill="#bc8cff" font-size="11" font-weight="bold">CAN-L</text>
 
   <!-- USB note -->
-  <rect x="338" y="340" width="184" height="14" rx="3" fill="#21262d"/>
-  <text x="430" y="351" text-anchor="middle" fill="#6e7681" font-size="9">Type-C USB：仅烧录时使用，车内无需插</text>
+  <rect x="308" y="336" width="244" height="22" rx="3" fill="#21262d"/>
+  <text x="430" y="348" text-anchor="middle" fill="#6e7681" font-size="9">Type-C USB：可用于烧录固件</text>
+  <text x="430" y="361" text-anchor="middle" fill="#6e7681" font-size="9">或车内 5V 供电（无需接螺丝端子电源）</text>
 
   <!-- ════════════════ Wires power source → board ════════════════ -->
   <!-- 12V red -->
