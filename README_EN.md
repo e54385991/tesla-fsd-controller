@@ -41,7 +41,9 @@ After flashing, the ESP32 creates a WiFi hotspot. Connect with your phone and co
 4. Click **Program** and wait for completion
 5. Connect to the `FSD-Controller` WiFi hotspot (password: `12345678`), then open `192.168.4.1`
 
-> ⚠️ Safari does not support WebUSB. Use Chrome or Edge. Some ESP32 boards require holding the **BOOT** button before clicking Connect.
+> ⚠️ Safari does not support WebUSB. Use Chrome or Edge.
+>
+> **Waveshare ESP32-S3 — entering flash mode:** Hold the **BOOT** button, press and release **RST**, then release BOOT. Click Connect and select the port from the popup. The board will reboot automatically after flashing.
 
 <p align="center">
   <img src="images/screenshot_zh.jpg" width="45%" alt="Web UI - Chinese">

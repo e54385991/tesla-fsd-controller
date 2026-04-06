@@ -41,7 +41,9 @@
 4. 点「**Program**」等待完成
 5. 连接 WiFi 热点 `FSD-Controller`（密码 `12345678`），浏览器访问 `192.168.4.1`
 
-> ⚠️ Safari 不支持 WebUSB，请使用 Chrome 或 Edge。部分 ESP32 需要按住 **BOOT** 键后再点 Connect。
+> ⚠️ Safari 不支持 WebUSB，请使用 Chrome 或 Edge。
+>
+> **Waveshare ESP32-S3 进入烧录模式：** 按住板子上的 **BOOT 键不松**，按一下 **RST 键**后松开，再松开 BOOT 键，然后点击 Connect 并在弹出窗口中选择端口。烧录完成后板子会自动重启。
 
 <p align="center">
   <img src="images/screenshot_zh.jpg" width="45%" alt="Web UI - 中文">
