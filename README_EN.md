@@ -143,7 +143,6 @@ Vehicle CAN-L (X179 Pin 14)    →  Board right terminal CAN L
 > - **No** SN65HVD230 module needed — CAN transceiver is integrated (TJA1051T)
 > - **No** termination resistor action needed — 120Ω is NC by default
 > - **No** USB power in car — connect directly to vehicle 12V ACC (cuts off with ignition)
-> - Use a **T-tap connector** on X179 CAN-H/CAN-L for non-destructive wiring (no cutting original harness)
 
 ---
 
