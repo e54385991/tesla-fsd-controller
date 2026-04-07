@@ -82,11 +82,11 @@ select:focus{outline:none;border-color:#38bdf8}
   <div class="row">
     <span class="row-label" id="iLblSpeed">速度模式</span>
     <select id="speedProfile" onchange="setVal('speedProfile',this.value)">
-      <option value="0" data-zh="保守" data-en="Chill">保守</option>
-      <option value="1" data-zh="默认" data-en="Default" selected>默认</option>
-      <option value="2" data-zh="适中" data-en="Moderate">适中</option>
-      <option value="3" data-zh="激进" data-en="Aggressive">激进</option>
-      <option value="4" data-zh="最大" data-en="Maximum">最大</option>
+      <option value="0" data-zh="平缓" data-en="Sloth">平缓</option>
+      <option value="1" data-zh="舒适" data-en="Chill" selected>舒适</option>
+      <option value="2" data-zh="标准" data-en="Standard">标准</option>
+      <option value="3" data-zh="迅捷" data-en="Hurry">迅捷</option>
+      <option value="4" data-zh="狂飙" data-en="Mad Max">狂飙</option>
     </select>
   </div>
   <div class="row">
@@ -243,6 +243,21 @@ function poll(){
     document.getElementById('chinaMode').checked=!!d.chinaMode;
     if(d.apSSID&&!wifiSSIDLoaded){document.getElementById('wifiSSID').value=d.apSSID;wifiSSIDLoaded=true;}
     if(d.version)document.getElementById('sVer').textContent='v'+d.version;
+    if(d.dbg&&d.dbg.captured&&!document.getElementById('dbgCard')){
+      var card=document.createElement('div');
+      card.className='card';card.id='dbgCard';
+      card.innerHTML='<div class="card-title">DEBUG — Frame 1021 Mux-0</div>'
+        +'<div class="status-row"><span>原始字节</span><span id="dbgBytes" style="font-family:monospace;color:#38bdf8;font-size:13px">--</span></div>'
+        +'<div class="status-row"><span>Bit 30 (UI_disableBackup)</span><span id="dbgBit30" style="font-weight:700">--</span></div>'
+        +'<div style="font-size:11px;color:#64748b;padding:8px 0">Bit 30 = 1 中国限制倒车；= 0 无限制</div>';
+      document.querySelector('.card').before(card);
+    }
+    if(d.dbg&&d.dbg.captured&&document.getElementById('dbgBytes')){
+      document.getElementById('dbgBytes').textContent=d.dbg.bytes;
+      var b30=document.getElementById('dbgBit30');
+      b30.textContent=d.dbg.bit30===1?'1 — 限制':'0 — 无限制';
+      b30.style.color=d.dbg.bit30===1?'#ef4444':'#22c55e';
+    }
   }).catch(()=>{});
 }
 var wifiSSIDLoaded=false;
