@@ -18,6 +18,24 @@ After flashing, the ESP32 creates a WiFi hotspot. Connect with your phone and co
 
 ---
 
+## vs. Commercial Closed-Source Modules
+
+Closed-source FSD activation modules sell for around ¥500. Here's how this project compares:
+
+| | Commercial Module | This Project |
+|--|--|--|
+| **Cost** | ¥500 | ¥30–99 (hardware only) |
+| **Source code** | Closed, unverifiable | **Fully open source**, GPL |
+| **Web control panel** | None | **Built-in**, real-time browser UI |
+| **OTA firmware update** | None | **Supported**, no disassembly needed |
+| **Runtime configuration** | Usually requires reflashing | **Web panel**, persists across reboots |
+| **Per-vehicle lock** | Yes (repurchase if you change cars) | **No**, universal firmware |
+| **Installation** | Plug and play | Self-wiring + flashing required |
+
+> This project is free and fully open. If you're willing to do it yourself, total hardware cost is under ¥100.
+
+---
+
 ## ⚡ Quick Flash (Recommended — no software install needed)
 
 > Uses a pre-built binary. Done entirely in the browser in under 5 minutes.
