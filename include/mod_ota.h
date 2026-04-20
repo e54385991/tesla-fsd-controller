@@ -325,3 +325,13 @@ static inline bool   otaStartCheck()                       { return ota_impl::ot
 static inline bool   otaStartPull(const char* url)         { return ota_impl::otaStartPullImpl(url); }
 static inline size_t otaStatusJson(char* buf, size_t cap)  { return ota_impl::otaStatusJsonImpl(buf, cap); }
 static inline const char* otaLatestUrl()                   { return ota_impl::gOta.latestUrl; }
+// True while a network OTA task is running. Main loop must skip blocking
+// Wi-Fi service calls during this window — WiFi.begin() inside
+// serviceUpstreamWiFi() can stall for seconds while mbedTLS on core 0 holds
+// the Wi-Fi stack, and a stall > 5 s trips esp_task_wdt_init(5, true) panic.
+static inline bool   otaIsActive() {
+    uint8_t s = ota_impl::gOta.state;
+    return s == ota_impl::OTA_CHECKING
+        || s == ota_impl::OTA_DOWNLOADING
+        || s == ota_impl::OTA_WRITING;
+}

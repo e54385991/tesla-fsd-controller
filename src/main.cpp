@@ -1371,6 +1371,27 @@ void setup() {
         addDiagLog(0, bootMsg);
     }
 
+    // Reset reason — helps diagnose field crashes without a serial cable.
+    // Values from esp_reset_reason_t: POWERON=1, SW=3, PANIC=4, INT_WDT=5,
+    // TASK_WDT=6, WDT=7, DEEPSLEEP=8, BROWNOUT=9, SDIO=10.
+    {
+        const char* why;
+        switch (esp_reset_reason()) {
+            case ESP_RST_POWERON:   why = "power-on";    break;
+            case ESP_RST_SW:        why = "sw restart";  break;
+            case ESP_RST_PANIC:     why = "PANIC";       break;
+            case ESP_RST_INT_WDT:   why = "INT_WDT";     break;
+            case ESP_RST_TASK_WDT:  why = "TASK_WDT";    break;
+            case ESP_RST_WDT:       why = "WDT other";   break;
+            case ESP_RST_BROWNOUT:  why = "BROWNOUT";    break;
+            case ESP_RST_DEEPSLEEP: why = "deepsleep";   break;
+            default:                why = "unknown";     break;
+        }
+        char msg[48];
+        snprintf(msg, sizeof(msg), "reset: %s", why);
+        addDiagLog(0, msg);
+    }
+
     // Init CAN (skip in safe mode)
     if (!safeModeActive) {
         if (canDriver.init()) {
@@ -1504,15 +1525,24 @@ void loop() {
 #ifdef WIFI_BRIDGE_ENABLED
     // WiFi bridge: thermal + upstream reconnect + blocklist IP cache + NAT sync.
     // DNS filtering itself runs in its own pinned task (set up in setup()).
-    serviceThermalStatus();
-    serviceUpstreamWiFi(apSSID);
-    dnsIpPolicyService(
-        gDnsFilterCfg.allowlist,
-        gDnsFilterCfg.blocklist,
-        gDnsFilterCfg.enabled ? 1 : 0,
-        WiFi.status() == WL_CONNECTED ? 1 : 0
-    );
-    syncNATState();
+    //
+    // Skip non-essential Wi-Fi service during OTA. serviceUpstreamWiFi() can
+    // call WiFi.begin() which blocks for seconds, and with the OTA task on
+    // core 0 holding the Wi-Fi stack for a TLS handshake with the full
+    // cert bundle, that stall easily exceeds the 5 s TWDT panic timeout and
+    // triggers rst:0xc (RTC_SW_CPU_RST). Observed on v1.4.19 when a user
+    // clicked "检查更新".
+    if (!otaIsActive()) {
+        serviceThermalStatus();
+        serviceUpstreamWiFi(apSSID);
+        dnsIpPolicyService(
+            gDnsFilterCfg.allowlist,
+            gDnsFilterCfg.blocklist,
+            gDnsFilterCfg.enabled ? 1 : 0,
+            WiFi.status() == WL_CONNECTED ? 1 : 0
+        );
+        syncNATState();
+    }
 #else
     // Captive portal — must be called frequently to answer DNS queries promptly
     dnsServer.processNextRequest();
