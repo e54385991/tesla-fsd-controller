@@ -18,53 +18,30 @@
 
 ---
 
-## 与市售闭源模块的对比
-
-市面上存在售价 ¥500 左右的闭源 FSD 激活模块，以下是完整对比：
-
-### 功能对比
-
-| 功能 | 闭源商业模块 | 本项目 |
-|------|-------------|--------|
-| FSD 激活（HW3 / HW4 / Legacy）| ✅ | ✅ |
-| 车速偏移 | ✅ | ✅ |
-| 驾驶模式调节 | ✅ | ✅ |
-| 滚轮调整车速 | ✅ | ✅ |
-| 强制激活模式 | ✅ | ✅ |
-| Web 控制面板 | ❌ | ✅ |
-| OTA 无线升级 | ❌ | ✅ |
-| 开源可审计 | ❌ | ✅ |
-| 2026.2.9 封锁影响 | 同样受影响 | 同样受影响 |
-
-### 其他差异
-
-| 对比项 | 闭源商业模块 | 本项目 |
-|--------|-------------|--------|
-| **价格** | ¥500 | ¥30–99（硬件成本） |
-| **代码** | 闭源黑盒，无法验证内部逻辑 | 完全开源，GPL，可自行审计 |
-| **运行时配置** | 通常需要换固件 | Web 面板实时切换，断电不丢失 |
-| **一车一码** | 是（换车需重新购买） | 否，通用固件 |
-| **芯片** | 非公芯片，不透明 | 标准 ESP32，公开规格 |
-| **安装方式** | 即插即用 | 需自行接线刷机 |
-
-> 本项目不提供商业服务，所有代码免费开放。如果你愿意自己动手，硬件成本不超过 ¥100。
-
----
-
 ## ⚡ 快速刷机（推荐，无需安装任何软件）
 
 > 使用预编译固件，全程用浏览器完成，5 分钟搞定。
 
 ### 第一步：选择对应你的板子的固件
 
-> 每个板子有两个固件文件，用途不同，请注意区分：
-> - **`firmware_xxx.bin`**（合并固件）→ 首次刷机用，通过 ESP Web Flasher 写入，地址 `0x0`
-> - **`firmware_xxx_ota.bin`**（OTA 固件）→ 后续无线升级用，通过控制面板「固件更新」上传
+> 每个板子有两个固件文件，用途不同：
+> - **`xxx_v1.4.17.bin`**（合并固件）→ 首次刷机用，通过 ESP Web Flasher 写入，地址 `0x0`
+> - **`xxx_v1.4.17_ota.bin`**（OTA 固件）→ 后续无线升级用，通过控制面板「固件更新」上传；或让设备从 GitHub 在线自动拉取
+>
+> 完整最新资产见 [**releases 页面**](https://github.com/wjsall/tesla-fsd-controller/releases/latest)。以下为 **v1.4.17** 直链：
 
-| 板子 | 首次刷机固件 | OTA 升级固件 | 供电 |
-|------|------|------|------|
-| 标准 ESP32 开发板 + SN65HVD230 | [firmware_esp32.bin](https://github.com/wjsall/tesla-fsd-controller/releases/latest/download/firmware_esp32.bin) | [firmware_esp32_ota.bin](https://github.com/wjsall/tesla-fsd-controller/releases/latest/download/firmware_esp32_ota.bin) | 5V USB |
-| **Waveshare ESP32-S3-RS485-CAN** | [firmware_esp32s3_waveshare.bin](https://github.com/wjsall/tesla-fsd-controller/releases/latest/download/firmware_esp32s3_waveshare.bin) | [firmware_esp32s3_waveshare_ota.bin](https://github.com/wjsall/tesla-fsd-controller/releases/latest/download/firmware_esp32s3_waveshare_ota.bin) | **7–36V 直接供电** 或 **USB-C** |
+| 板子 / 变体 | 首次刷机 | OTA 升级 | 适用场景 |
+|---|---|---|---|
+| 标准 ESP32 + SN65HVD230（单 CAN）| [esp32_v1.4.17.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32_v1.4.17.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32_v1.4.17_ota.bin) | 入门，5V USB 供电 |
+| **Waveshare ESP32-S3-RS485-CAN（单 CAN）** | [esp32s3_waveshare_v1.4.17.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_v1.4.17.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_v1.4.17_ota.bin) | 车内永久安装，7–36V 宽压 |
+| Waveshare ESP32-S3 + 双 MCP2517FD（双 CAN）| [esp32s3_waveshare_dual_v1.4.17.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_dual_v1.4.17.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_dual_v1.4.17_ota.bin) | 同时接 VH + PRTY 两路 CAN |
+| ESP32 Wi-Fi 桥接 | [esp32_wifi_v1.4.17.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32_wifi_v1.4.17.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32_wifi_v1.4.17_ota.bin) | 给车机提供 Wi-Fi 上行 + DNS 过滤 |
+| Waveshare ESP32-S3 Wi-Fi 桥接 | [esp32s3_waveshare_wifi_v1.4.17.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_wifi_v1.4.17.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.17/esp32s3_waveshare_wifi_v1.4.17_ota.bin) | 车内安装 + Wi-Fi 桥接 |
+
+> **变体说明**：
+> - **单 CAN**：标配，接入车辆一路 CAN（X179 或 X652），足够完成 FSD 注入。
+> - **双 CAN**：Waveshare 底板外挂两颗 MCP2517FD，可同时监听 VH（车辆）与 PRTY（底盘）总线，获得更完整的遥测。
+> - **Wi-Fi 桥接**：ESP32 作为 STA 连上行 Wi-Fi，并以 AP 方式向车机输出带 DNS 过滤/域名拦截的网络。非必需功能，按需选择。
 
 ### 第二步：刷入固件
 
@@ -280,6 +257,8 @@ static char apPass[64] = "12345678";
 
 ### 5.2 控制面板说明
 
+**基础设置**
+
 | 设置项 | 说明 |
 |--------|------|
 | **FSD 开关** | 总开关，关闭后设备不修改任何 CAN 报文 |
@@ -289,7 +268,34 @@ static char apPass[64] = "12345678";
 | **限速提示音抑制** | 关闭 ISA 限速提示音（仅 HW4 有效）|
 | **紧急车辆检测** | 启用紧急车辆靠近检测（仅 HW4 FSD V14 有效）|
 | **强制激活** | 适用于「交通灯和停车标志控制」功能在车机 UI 中被隐藏的地区（中国、日本等）。这些地区的触发条件永远不满足，设备完全无反应。开启后强制绕过此判断，直接激活 FSD。 |
-| **WiFi 设置** | 修改热点名称（SSID）和密码，点「保存并重启」后设备重启并以新名称/密码创建热点，重连后继续使用 |
+| **AP 自动恢复** | 踩刹车退出 AP 后自动重新激活自动驾驶 |
+| **赛道模式** | HW3 专属，解锁高性能驾驶模式（实验性）|
+| **WiFi 设置** | 修改热点名称（SSID）和密码，点「保存并重启」后设备重启并以新名称/密码创建热点 |
+
+**HW3 速度偏移**
+
+| 设置项 | 说明 |
+|--------|------|
+| **手动偏移** | 限速 × 百分比 的加速比例，例：限速 60 km/h + 偏移 25% → 实际目标 75 km/h |
+| **智能速度偏移** | 按车速自动调整：限速越低偏移越大、限速越高偏移越小，共 5 档（阈值/百分比可自定义）|
+| **≥80 km/h 让原车** | v1.4.17 新增，默认开启；限速 ≥80 km/h 时跳过 mux-2 覆盖，交还 Tesla 原生 EAP 拨杆偏移（+5/+10…）|
+
+**在线 OTA**（v1.4.16+）
+
+| 功能 | 说明 |
+|------|------|
+| **检查更新** | 从 GitHub Releases 拉取最新 tag，对比当前固件版本（需设备能访问 `api.github.com`）|
+| **立即更新** | 直接下载匹配本板子的 `_ota.bin`，写入并重启 |
+| **本地上传** | 也可手动选文件上传 `_ota.bin`（适用于离线环境）|
+
+**扩展页面**
+
+| 页面 | 路径 | 说明 |
+|------|------|------|
+| **车机 UI** | `/car` | 大字号车内显示，同时包含性能测试（0–100 km/h / 100–0 km/h 测试）|
+| **仪表盘** | `/dash` | 速度、电池、扭矩等实时仪表 |
+| **日志** | `/log` | SPIFFS 存储的诊断日志（持久，约 96 KB 循环）|
+| **DNS 过滤** | `/dns`（仅 Wi-Fi 桥接版）| 车机域名拦截配置 |
 
 ### 5.3 速度模式对照表
 
@@ -317,14 +323,27 @@ static char apPass[64] = "12345678";
 
 ## 第六步：无线更新固件（OTA）
 
-修改代码后不需要再插 USB，可以直接通过 WiFi 更新：
+修改代码后不需要再插 USB，有**两种方式**更新：
+
+### 方式一：在线自动拉取（推荐，v1.4.16+）
+
+适合使用官方发布版本的普通用户。需要设备能访问互联网（常见做法是通过手机热点或家里 Wi-Fi 作为 STA 连出）。
+
+1. 在控制面板「**在线更新 (从 GitHub)**」卡片中点「**检查更新**」。
+2. 设备查询 `api.github.com/repos/wjsall/tesla-fsd-controller/releases/latest`，显示最新版本号。
+3. 如有新版，点「**立即更新**」。设备自动下载对应 env 的 `_ota.bin`、校验、写入并重启。
+4. 版本比对逻辑：仅当远端 tag 严格大于当前固件版本时允许升级；资产按 `<env>_v<ver>_ota.bin` 命名匹配本板子。
+
+### 方式二：本地上传（开发者 / 离线场景）
 
 1. 在 VS Code 中修改代码并编译（点「Build」）。
-2. 编译完成后，项目根目录会自动生成 **`firmware_esp32_ota.bin`**（Waveshare 则为 `firmware_esp32s3_waveshare_ota.bin`）。
-3. 在控制面板底部找到「固件更新」卡片，点「选择文件」，选择对应的 **`_ota.bin`** 文件。
+2. 编译完成后，项目根目录会自动生成匹配该 env 的 **`<env>_v<ver>_ota.bin`**（例：`esp32s3_waveshare_v1.4.17_ota.bin`）。
+3. 在控制面板底部「**本地上传**」区域点「选择文件」，选刚才那个 **`_ota.bin`** 文件。
 4. 点「上传固件」，等待进度条完成，设备会自动重启。
 
-> ⚠️ **OTA 必须使用 `_ota.bin` 文件**，不能用合并固件（`firmware_esp32.bin`）。合并固件包含 bootloader，OTA 上传器会报 "Wrong Magic Byte" 错误。
+> ⚠️ **OTA 必须使用 `_ota.bin` 文件**，不能用合并固件（`<env>_v<ver>.bin`）。合并固件包含 bootloader，OTA 会报 "Wrong Magic Byte" 错误。
+>
+> ⚠️ **切换 env 不能走 OTA**：从 esp32 切到 esp32s3_waveshare（或单 CAN 切双 CAN、Wi-Fi 变体）分区布局不同，必须用 USB Web Flasher 重新烧合并固件。
 
 ---
 
@@ -360,18 +379,51 @@ static char apPass[64] = "12345678";
 
 ## 项目结构（供开发者参考）
 
+整个项目是**单翻译单元架构**：所有模块都以 header 的形式被 `main.cpp` 通过 `handlers.h` 引入，不额外新增 `.cpp` 源文件。
+
 ```
 src/
   main.cpp              ← 入口：WiFi AP + Web 服务器 + CAN 任务（双核）
+
 include/
-  handlers.h            ← CAN 报文处理（Legacy / HW3 / HW4）
-  can_helpers.h         ← 位操作工具函数
+  version.h             ← 固件版本号 + 变体标签
+  handlers.h            ← CAN 报文统一分发（Legacy / HW3 / HW4 + 遥测）
+  fsd_config.h          ← FSDConfig 运行时配置结构（跨核共享状态）
+  can_helpers.h         ← 位操作 / 校验和工具
   can_frame_types.h     ← CAN 帧数据结构
-  web_ui.h              ← 内嵌 Web 界面 HTML
+
+  # CAN 注入 / 遥测模块
+  mod_fsd.h             ← FSD 注入（Legacy 0x3EE / HW3·HW4 0x3FD）
+  mod_bms.h             ← 电池包电压 / 电流 / SOC / 温度
+  mod_telemetry.h       ← 车速 / 挡位 / 扭矩 / 刹车
+  mod_climate.h         ← 车内外温度（BODY_R1）
+  mod_lighting.h        ← 大灯自适应 / 远光
+  mod_das_status.h      ← DAS 状态 / 限速 / AP / 变道 / FCW
+  mod_perf.h            ← 0–100 km/h 加速 / 100–0 km/h 制动测试
+  mod_ota.h             ← 在线 OTA（GitHub Releases API）
+  mod_log.h             ← SPIFFS 循环诊断日志
+
+  # Wi-Fi 桥接变体专属（esp32_wifi / esp32s3_waveshare_wifi）
+  mod_wifi_bridge.h     ← STA↔AP 桥接 + NAT
+  mod_dns.h             ← 车机 DNS 过滤与拦截
+  mod_thermal.h         ← S3 内部温度监控
+  lwip_hooks.h          ← lwIP IP-forward 钩子（DNS 路由）
+
+  # Web UI（均为 PROGMEM 字符串，编译期压缩）
+  web_ui.h              ← 手机 / 桌面浏览器主界面
+  web_ui_car.h          ← 车机大字号界面（/car）
+  web_ui_dash.h         ← 实时仪表盘（/dash）
+  web_perf.h            ← 独立性能测试页（/perf）
+  web_ui_gz.h           ← 构建脚本自动生成的 gzip 资产
+
   drivers/
     can_driver.h        ← 驱动抽象基类
-    twai_driver.h       ← ESP32 TWAI 驱动
-platformio.ini          ← 构建配置（ESP32 + ESPAsyncWebServer）
+    twai_driver.h       ← ESP32 TWAI（内置 CAN）
+    mcp2517fd_driver.h  ← MCP2517FD（双 CAN 变体专用）
+
+platformio.ini          ← 5 个 env：esp32 / esp32s3_waveshare /
+                         esp32s3_waveshare_dual / esp32_wifi /
+                         esp32s3_waveshare_wifi
 ```
 
 ---
