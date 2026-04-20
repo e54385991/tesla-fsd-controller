@@ -25,17 +25,17 @@
 ### 第一步：选择对应你的板子的固件
 
 > 每个板子有两个固件文件，用途不同：
-> - **`xxx_v1.4.20.bin`**（合并固件）→ 首次刷机用，通过 ESP Web Flasher 写入，地址 `0x0`
-> - **`xxx_v1.4.20_ota.bin`**（OTA 固件）→ 后续无线升级用，通过控制面板「固件更新」上传；或让设备从 GitHub 在线自动拉取
+> - **`xxx_v1.4.21.bin`**（合并固件）→ 首次刷机用，通过 ESP Web Flasher 写入，地址 `0x0`
+> - **`xxx_v1.4.21_ota.bin`**（OTA 固件）→ 后续无线升级用，通过控制面板「固件更新」上传；或让设备从 GitHub 在线自动拉取
 >
-> 完整最新资产见 [**releases 页面**](https://github.com/wjsall/tesla-fsd-controller/releases/latest)。以下为 **v1.4.20** 直链：
+> 完整最新资产见 [**releases 页面**](https://github.com/wjsall/tesla-fsd-controller/releases/latest)。以下为 **v1.4.21** 直链：
 
 | 板子 / 变体 | 首次刷机 | OTA 升级 | 适用场景 |
 |---|---|---|---|
-| 标准 ESP32 + SN65HVD230 | [esp32_v1.4.20.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32_v1.4.20.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32_v1.4.20_ota.bin) | 入门，5V USB 供电 |
-| **Waveshare ESP32-S3-RS485-CAN** | [esp32s3_waveshare_v1.4.20.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32s3_waveshare_v1.4.20.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32s3_waveshare_v1.4.20_ota.bin) | 车内永久安装，7–36V 宽压 |
-| ESP32 Wi-Fi 桥接 | [esp32_wifi_v1.4.20.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32_wifi_v1.4.20.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32_wifi_v1.4.20_ota.bin) | 给车机提供 Wi-Fi 上行 + DNS 过滤 |
-| Waveshare ESP32-S3 Wi-Fi 桥接 | [esp32s3_waveshare_wifi_v1.4.20.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32s3_waveshare_wifi_v1.4.20.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.20/esp32s3_waveshare_wifi_v1.4.20_ota.bin) | 车内安装 + Wi-Fi 桥接 |
+| 标准 ESP32 + SN65HVD230 | [esp32_v1.4.21.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32_v1.4.21.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32_v1.4.21_ota.bin) | 入门，5V USB 供电 |
+| **Waveshare ESP32-S3-RS485-CAN** | [esp32s3_waveshare_v1.4.21.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32s3_waveshare_v1.4.21.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32s3_waveshare_v1.4.21_ota.bin) | 车内永久安装，7–36V 宽压 |
+| ESP32 Wi-Fi 桥接 | [esp32_wifi_v1.4.21.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32_wifi_v1.4.21.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32_wifi_v1.4.21_ota.bin) | 给车机提供 Wi-Fi 上行 + DNS 过滤 |
+| Waveshare ESP32-S3 Wi-Fi 桥接 | [esp32s3_waveshare_wifi_v1.4.21.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32s3_waveshare_wifi_v1.4.21.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.21/esp32s3_waveshare_wifi_v1.4.21_ota.bin) | 车内安装 + Wi-Fi 桥接 |
 
 > **变体说明**：
 > - **CAN 控制器**：所有固件都接入车辆一路 CAN（X179 或 X652），完成 FSD 注入与遥测。
@@ -335,7 +335,7 @@ static char apPass[64] = "12345678";
 ### 方式二：本地上传（开发者 / 离线场景）
 
 1. 在 VS Code 中修改代码并编译（点「Build」）。
-2. 编译完成后，项目根目录会自动生成匹配该 env 的 **`<env>_v<ver>_ota.bin`**（例：`esp32s3_waveshare_v1.4.20_ota.bin`）。
+2. 编译完成后，项目根目录会自动生成匹配该 env 的 **`<env>_v<ver>_ota.bin`**（例：`esp32s3_waveshare_v1.4.21_ota.bin`）。
 3. 在控制面板底部「**本地上传**」区域点「选择文件」，选刚才那个 **`_ota.bin`** 文件。
 4. 点「上传固件」，等待进度条完成，设备会自动重启。
 

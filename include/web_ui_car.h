@@ -562,6 +562,21 @@ button{font-family:inherit;cursor:pointer}
         <div class="tip">🛈 升级过程中请勿断电或关闭页面。升级成功后模块将自动重启。</div>
         <input type="file" id="otaFile" accept=".bin" style="display:none">
       </div>
+      <div class="panel">
+        <div class="ptitle">在线更新（GitHub）</div>
+        <div class="info-grid">
+          <div class="info-item"><div class="info-lbl">当前</div><div class="info-val" id="otaCur">--</div></div>
+          <div class="info-item"><div class="info-lbl">最新</div><div class="info-val" id="otaLat">--</div></div>
+          <div class="info-item"><div class="info-lbl">变体</div><div class="info-val" id="otaEnv">--</div></div>
+        </div>
+        <div class="actions" style="margin-top:14px">
+          <button class="abtn blue" id="otaChkBtn" onclick="otaCheck()">🔍 检查更新</button>
+          <button class="abtn" id="otaPullBtn" onclick="otaPull()" disabled style="opacity:.5">⬇️ 下载并安装</button>
+        </div>
+        <div class="progress" id="otaDlBox" style="display:none;margin-top:14px"><div class="progress-bar" id="otaDlBar" style="width:0%"></div></div>
+        <div id="otaOnlineMsg" style="margin-top:10px;font-size:15px;color:#94a3b8;min-height:22px"></div>
+        <div class="tip">🛈 需连接路由器（网络页 STA）才能联网检查和下载。</div>
+      </div>
     </div>
 
     <!-- ───── 测速 ───── -->
@@ -732,6 +747,12 @@ document.querySelectorAll('.nbtn').forEach(function(b){
     document.getElementById('pg-'+p).classList.add('show');
     applyNavForPage(p);
     if(p === 'log') logRefresh();
+    if(p === 'ota'){
+      fetch('/api/ota/status'+(tok?'?token='+encodeURIComponent(tok):''))
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(j){ if(j) otaRenderOnline(j); })
+        .catch(function(){});
+    }
   };
 });
 // 初始启动：默认在仪表盘 → 收起导航
@@ -1481,6 +1502,66 @@ function otaUpload(){
   xhr.onerror = function(){ toast('网络错误','err'); restore(); };
   xhr.onabort = function(){ restore(); };
   xhr.send(fd);
+}
+
+// ───── 在线 OTA（GitHub） ─────
+var __otaOnlinePoll = null;
+function otaRenderOnline(s){
+  var cur = document.getElementById('otaCur');
+  var lat = document.getElementById('otaLat');
+  var env = document.getElementById('otaEnv');
+  var msg = document.getElementById('otaOnlineMsg');
+  var box = document.getElementById('otaDlBox');
+  var bar = document.getElementById('otaDlBar');
+  var chk = document.getElementById('otaChkBtn');
+  var pull = document.getElementById('otaPullBtn');
+  if(s.current) cur.textContent = 'v'+s.current;
+  if(s.envTag)  env.textContent = s.envTag;
+  function setBtn(b, on){ b.disabled=!on; b.style.opacity = on?1:.5; }
+  if(s.state===1){ msg.textContent='正在查询 GitHub…'; msg.style.color='#94a3b8'; setBtn(chk,false); setBtn(pull,false); }
+  else if(s.state===2){ msg.textContent='正在下载…'; msg.style.color='#38bdf8'; box.style.display='block'; setBtn(chk,false); setBtn(pull,false); }
+  else if(s.state===3){ box.style.display='block'; var pct=s.total>0?Math.round(s.written/s.total*100):0; bar.style.width=pct+'%'; msg.textContent='正在写入 '+pct+'%'; msg.style.color='#38bdf8'; setBtn(chk,false); setBtn(pull,false); }
+  else if(s.state===4){ if(s.latest) lat.textContent='v'+s.latest; msg.textContent=s.message||'已找到新版本'; msg.style.color='#22c55e'; setBtn(chk,true); setBtn(pull,!!s.url); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} }
+  else if(s.state===5){ msg.textContent=s.message||'更新成功，正在重启…'; msg.style.color='#22c55e'; bar.style.width='100%'; setBtn(chk,false); setBtn(pull,false); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} setTimeout(function(){location.reload()}, 8000); }
+  else if(s.state===6){ msg.textContent=s.message||'失败'; msg.style.color='#ef4444'; setBtn(chk,true); setBtn(pull,!!s.url); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} }
+  else { setBtn(chk,true); setBtn(pull,!!s.url); }
+}
+function otaStartOnlinePoll(){
+  if(__otaOnlinePoll) clearInterval(__otaOnlinePoll);
+  var tick = function(){
+    fetch('/api/ota/status'+(tok?'?token='+encodeURIComponent(tok):''))
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(j){ if(j) otaRenderOnline(j); })
+      .catch(function(){});
+  };
+  tick();
+  __otaOnlinePoll = setInterval(tick, 1500);
+}
+function otaCheck(){
+  var msg = document.getElementById('otaOnlineMsg');
+  msg.textContent = ''; msg.style.color='#94a3b8';
+  document.getElementById('otaChkBtn').disabled = true;
+  fetch('/api/ota/check'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
+    .then(function(r){
+      if(r.status===403){ showPin(); document.getElementById('otaChkBtn').disabled=false; return; }
+      if(!r.ok){ msg.textContent='HTTP '+r.status; msg.style.color='#ef4444'; document.getElementById('otaChkBtn').disabled=false; return; }
+      otaStartOnlinePoll();
+    })
+    .catch(function(){ msg.textContent='网络错误'; msg.style.color='#ef4444'; document.getElementById('otaChkBtn').disabled=false; });
+}
+function otaPull(){
+  if(!confirm('确认下载并安装新版？期间请勿断电')) return;
+  var msg = document.getElementById('otaOnlineMsg');
+  msg.textContent = ''; msg.style.color='#94a3b8';
+  document.getElementById('otaPullBtn').disabled = true;
+  document.getElementById('otaChkBtn').disabled = true;
+  fetch('/api/ota/pull'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
+    .then(function(r){
+      if(r.status===403){ showPin(); return; }
+      if(!r.ok){ msg.textContent='HTTP '+r.status; msg.style.color='#ef4444'; return; }
+      otaStartOnlinePoll();
+    })
+    .catch(function(){ msg.textContent='网络错误'; msg.style.color='#ef4444'; });
 }
 
 // ───── 键盘避让：输入框获得焦点时滚动到视口中央，避免被软键盘挡住 ─────
