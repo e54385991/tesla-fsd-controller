@@ -263,15 +263,26 @@ static void otaTaskEntry(void* arg) {
     vTaskDelete(nullptr);
 }
 
+// SSL + esp_crt_bundle needs ~50 KB free heap at handshake time. Below this
+// threshold, mbedTLS allocations fail deep in the stack and the device panics.
+// Field-reported on v1.4.18 Waveshare S3 Wi-Fi bridge: click "check update"
+// → LED reboot → uptime resets to 0.
+static constexpr size_t kOtaMinFreeHeap = 60 * 1024;
+
 static bool otaStartCheckImpl() {
     if (gOta.state == OTA_CHECKING || gOta.state == OTA_DOWNLOADING
      || gOta.state == OTA_WRITING) return false;
+    size_t freeHeap = esp_get_free_heap_size();
+    if (freeHeap < kOtaMinFreeHeap) {
+        otaSetMsg(OTA_ERROR, "内存不足 (%u KB),请重启后再试", (unsigned)(freeHeap / 1024));
+        return false;
+    }
     gOta.latestVersion[0] = '\0';
     gOta.latestUrl[0]     = '\0';
     gOta.state            = OTA_CHECKING;
     auto* a = new OtaTaskArgs{0, {0}};
     BaseType_t r = xTaskCreatePinnedToCore(
-        otaTaskEntry, "ota_chk", 10240, a, 1, nullptr, 0);
+        otaTaskEntry, "ota_chk", 16384, a, 1, nullptr, 0);
     if (r != pdPASS) { delete a; otaSetMsg(OTA_ERROR, "任务创建失败"); return false; }
     return true;
 }
@@ -280,11 +291,16 @@ static bool otaStartPullImpl(const char* url) {
     if (gOta.state == OTA_CHECKING || gOta.state == OTA_DOWNLOADING
      || gOta.state == OTA_WRITING) return false;
     if (!url || !*url) return false;
+    size_t freeHeap = esp_get_free_heap_size();
+    if (freeHeap < kOtaMinFreeHeap) {
+        otaSetMsg(OTA_ERROR, "内存不足 (%u KB),请重启后再试", (unsigned)(freeHeap / 1024));
+        return false;
+    }
     auto* a = new OtaTaskArgs{1, {0}};
     strlcpy(a->url, url, sizeof(a->url));
     gOta.state = OTA_DOWNLOADING;
     BaseType_t r = xTaskCreatePinnedToCore(
-        otaTaskEntry, "ota_dl", 12288, a, 1, nullptr, 0);
+        otaTaskEntry, "ota_dl", 16384, a, 1, nullptr, 0);
     if (r != pdPASS) { delete a; otaSetMsg(OTA_ERROR, "任务创建失败"); return false; }
     return true;
 }
