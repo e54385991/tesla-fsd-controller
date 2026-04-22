@@ -318,7 +318,16 @@ static inline void syncNATState() {
 // Uses the "fsd" namespace (shared with main.cpp) and its own key prefixes
 // (ub_*) to avoid collision.
 
-// Tesla 推荐方案 — 当前 (v2): v1 基础 + 14 个百度地图域名
+// Tesla 推荐方案 — 当前 (v3): v2 基础 + api-prd.vn.cloud.tesla.cn
+// api-prd 是 Tesla 手机 App 控车 API 端点（启动空调/远程解锁/查状态等），
+// 所有用户都需要，与 Intel/AMD 车机或是否使用内置地图无关。v2 遗漏了它，
+// 用户首次启动后用 App 控车会命令失败，v3 补上。
+// ⚠️ 本常量必须与前端 BR_PRESETS.tesla_min.allow (web_ui.h) 和
+//    DNS_PRESETS.tesla_min.allow (web_ui_car.h) 的内容保持完全一致。
+static const char* kTeslaMinAllowV3 =
+    "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com";
+
+// v1.4.11 – v1.4.24 的默认 allowlist — 用于一次性迁移识别
 static const char* kTeslaMinAllowV2 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com";
 
@@ -358,7 +367,7 @@ static inline void wifiBridgeLoadConfig() {
     // the ub_init flag persists so we never overwrite their choices.
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV2);
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV3);
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlock);
         Preferences p2;
         p2.begin("fsd", false);
@@ -370,10 +379,12 @@ static inline void wifiBridgeLoadConfig() {
         return;
     }
 
-    // Migration: 老用户如果 allowlist 完全等于 v1 默认值（未自定义过），
-    // 自动升级到 v2 (补 14 个百度地图域名)。用户改过则不动，尊重用户选择。
-    if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV2);
+    // Migration: 老用户如果 allowlist 完全等于 v1 / v2 默认值（未自定义过），
+    // 自动升级到 v3 (v1→v2 补 14 个百度地图域名，v2→v3 补 api-prd App 控车端点)。
+    // 用户改过则不动，尊重用户选择。
+    if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV2) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV3);
         Preferences p3;
         p3.begin("fsd", false);
         p3.putString("ub_allow", gDnsFilterCfg.allowlist);

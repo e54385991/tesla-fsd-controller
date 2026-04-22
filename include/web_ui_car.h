@@ -593,6 +593,17 @@ button{font-family:inherit;cursor:pointer}
         <div id="otaOnlineMsg" style="margin-top:10px;font-size:15px;color:#94a3b8;min-height:22px"></div>
         <div class="tip">🛈 需连接路由器（网络页 STA）才能联网检查和下载。国内访问 GitHub 慢时自动经 gh-proxy.com 加速，镜像失败自动回退直连。</div>
       </div>
+      <div class="panel" id="carRollbackPanel" style="display:none">
+        <div class="ptitle">回滚到上一版</div>
+        <div class="info-grid">
+          <div class="info-item"><div class="info-lbl">上一版</div><div class="info-val" id="carOtaPrev">--</div></div>
+        </div>
+        <div class="actions" style="margin-top:14px">
+          <button class="abtn" id="carRollbackBtn" onclick="carDoRollback()" style="background:#7c3aed">↩️ 回滚到上一版并重启</button>
+        </div>
+        <div id="carRollbackMsg" style="margin-top:10px;font-size:15px;color:#94a3b8;min-height:22px"></div>
+        <div class="tip">🛈 回滚会切换到另一个 OTA 分区。仅在设备曾通过 OTA 升级过一次后可用。</div>
+      </div>
     </div>
 
     <!-- ───── 测速 ───── -->
@@ -768,6 +779,7 @@ document.querySelectorAll('.nbtn').forEach(function(b){
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(j){ if(j) otaRenderOnline(j); })
         .catch(function(){});
+      carLoadPartInfo();
     }
   };
 });
@@ -1405,7 +1417,7 @@ function apiSetHw3CT(k, v){
 // ───── DNS 预设 ─────
 var DNS_PRESETS = {
   tesla_min: {
-    allow: 'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
+    allow: 'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
     block: 'tesla.cn tesla.com teslamotors.com tesla.services'
   },
   tesla_lean: {
@@ -1643,6 +1655,35 @@ function otaPull(){
       otaStartOnlinePoll();
     })
     .catch(function(){ msg.textContent='网络错误'; msg.style.color='#ef4444'; });
+}
+function carLoadPartInfo(){
+  fetch('/api/ota/partinfo'+(tok?'?token='+encodeURIComponent(tok):''))
+    .then(function(r){ return r.ok?r.json():null; })
+    .then(function(j){
+      if(!j) return;
+      var panel = document.getElementById('carRollbackPanel');
+      if(!j.canRollback){ if(panel) panel.style.display='none'; return; }
+      if(panel) panel.style.display='';
+      var prev = document.getElementById('carOtaPrev');
+      var pv = j.previous || {};
+      var ver = pv.version ? ('v'+pv.version) : '--';
+      var date = pv.date ? (' ('+pv.date+')') : '';
+      if(prev) prev.textContent = ver + date;
+    })
+    .catch(function(){});
+}
+function carDoRollback(){
+  if(!confirm('将切换到上一个固件并重启，确定吗？')) return;
+  var msg = document.getElementById('carRollbackMsg');
+  msg.textContent = ''; msg.style.color='#94a3b8';
+  document.getElementById('carRollbackBtn').disabled = true;
+  fetch('/api/ota/rollback'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
+    .then(function(r){
+      if(r.status===403){ showPin(); document.getElementById('carRollbackBtn').disabled=false; return; }
+      if(r.ok){ msg.textContent='已切换，正在重启...'; msg.style.color='#34d399'; }
+      else { msg.textContent='回滚失败'; msg.style.color='#ef4444'; document.getElementById('carRollbackBtn').disabled=false; }
+    })
+    .catch(function(){ msg.textContent='已切换，正在重启...'; msg.style.color='#34d399'; });
 }
 
 // ───── 键盘避让：输入框获得焦点时滚动到视口中央，避免被软键盘挡住 ─────

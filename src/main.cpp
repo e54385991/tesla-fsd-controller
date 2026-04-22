@@ -965,6 +965,31 @@ void setupWebServer() {
         req->send(200, "application/json", buf);
     });
 
+    // Partition info — UI uses this to show what the rollback target would be.
+    server.on("/api/ota/partinfo", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        char buf[320];
+        otaPartInfoJson(buf, sizeof(buf));
+        req->send(200, "application/json", buf);
+    });
+
+    // Rollback to the inactive OTA slot. Schedules restart via the same
+    // otaPendingRestart flag the upload/pull paths use so the response
+    // finishes flushing before we reboot.
+    server.on("/api/ota/rollback", HTTP_POST, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        char err[32] = "";
+        if (!otaDoRollback(err, sizeof(err))) {
+            char body[64];
+            snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", err);
+            req->send(409, "application/json", body);
+            return;
+        }
+        saveRestartReason("/api/ota/rollback");
+        otaPendingRestart = true;
+        req->send(200, "application/json", "{\"ok\":true}");
+    });
+
 #ifdef WIFI_BRIDGE_ENABLED
     // ── WiFi bridge + DNS filter API ──────────────────────────────────────────
     server.on("/api/wifi-bridge/status", HTTP_GET, [](AsyncWebServerRequest* req) {

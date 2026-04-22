@@ -365,12 +365,75 @@ static size_t otaStatusJsonImpl(char* buf, size_t cap) {
         FIRMWARE_VERSION, FIRMWARE_ENV_TAG);
 }
 
+// Report both OTA partitions so the UI can tell the user what a rollback
+// would land on. `prev` is empty/null when the other slot was never written
+// (fresh flash — nothing to roll back to).
+static size_t otaPartInfoJsonImpl(char* buf, size_t cap) {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* next    = esp_ota_get_next_update_partition(nullptr);
+
+    char curVer[32] = "", curDate[16] = "", curLabel[8] = "";
+    char prvVer[32] = "", prvDate[16] = "", prvLabel[8] = "";
+    bool canRollback = false;
+
+    if (running) {
+        strlcpy(curLabel, running->label, sizeof(curLabel));
+        esp_app_desc_t d;
+        if (esp_ota_get_partition_description(running, &d) == ESP_OK) {
+            strlcpy(curVer,  d.version, sizeof(curVer));
+            strlcpy(curDate, d.date,    sizeof(curDate));
+        }
+    }
+    if (next && next != running) {
+        esp_app_desc_t d;
+        if (esp_ota_get_partition_description(next, &d) == ESP_OK) {
+            strlcpy(prvLabel, next->label, sizeof(prvLabel));
+            strlcpy(prvVer,   d.version,   sizeof(prvVer));
+            strlcpy(prvDate,  d.date,      sizeof(prvDate));
+            canRollback = true;
+        }
+    }
+
+    return snprintf(buf, cap,
+        "{\"canRollback\":%s,"
+        "\"current\":{\"label\":\"%s\",\"version\":\"%s\",\"date\":\"%s\"},"
+        "\"previous\":{\"label\":\"%s\",\"version\":\"%s\",\"date\":\"%s\"}}",
+        canRollback ? "true" : "false",
+        curLabel, curVer, curDate,
+        prvLabel, prvVer, prvDate);
+}
+
+// Flip the boot partition to the other OTA slot. Caller is responsible for
+// scheduling the restart (we don't reboot in-handler so the HTTP response can
+// flush first). On error, writes a short reason into `err` and returns false.
+static bool otaDoRollbackImpl(char* err, size_t errCap) {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* next    = esp_ota_get_next_update_partition(nullptr);
+    if (!next || next == running) {
+        strlcpy(err, "no_previous", errCap);
+        return false;
+    }
+    esp_app_desc_t d;
+    if (esp_ota_get_partition_description(next, &d) != ESP_OK) {
+        strlcpy(err, "previous_empty", errCap);
+        return false;
+    }
+    esp_err_t r = esp_ota_set_boot_partition(next);
+    if (r != ESP_OK) {
+        snprintf(err, errCap, "esp_err_0x%x", (unsigned)r);
+        return false;
+    }
+    return true;
+}
+
 }  // namespace ota_impl
 
 // ── Public API (global-scope wrappers so main.cpp lambdas can call) ──
 static inline bool   otaStartCheck()                       { return ota_impl::otaStartCheckImpl(); }
 static inline bool   otaStartPull(const char* url)         { return ota_impl::otaStartPullImpl(url); }
 static inline size_t otaStatusJson(char* buf, size_t cap)  { return ota_impl::otaStatusJsonImpl(buf, cap); }
+static inline size_t otaPartInfoJson(char* buf, size_t cap){ return ota_impl::otaPartInfoJsonImpl(buf, cap); }
+static inline bool   otaDoRollback(char* err, size_t errCap){ return ota_impl::otaDoRollbackImpl(err, errCap); }
 static inline const char* otaLatestUrl()                   { return ota_impl::gOta.latestUrl; }
 // True while a network OTA task is running. Main loop must skip blocking
 // Wi-Fi service calls during this window — WiFi.begin() inside

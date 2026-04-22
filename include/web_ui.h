@@ -446,6 +446,18 @@ select:focus{outline:none;border-color:#38bdf8}
   <div class="progress" id="otaDlWrap"><div class="progress-bar" id="otaDlBar"></div></div>
   <div class="msg" id="otaPullMsg"></div>
   <div style="font-size:11px;color:#475569;margin-top:6px" id="iOnlineOtaHint">需连接路由器 (STA) 才能联网检查/下载</div>
+  <div id="otaRollbackRow" style="display:none;border-top:1px solid #1e293b;margin-top:12px;padding-top:10px">
+    <div style="font-size:12px;color:#64748b;margin-bottom:6px" id="otaPrev">上一版: —</div>
+    <button class="save-btn" id="otaRollbackBtn" onclick="showRollbackConfirm()" style="background:#7c3aed">回滚到上一版</button>
+    <div id="rollbackConfirmBox" style="display:none;background:#1e293b;border:1px solid #7c3aed;border-radius:8px;padding:12px;margin-top:8px;font-size:13px;color:#c4b5fd">
+      <div id="iRollbackConfirmMsg" style="margin-bottom:10px">将切换到上一个固件并重启，确定吗？</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="doRollback()" style="flex:1;background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:7px 0;font-size:13px;cursor:pointer" id="iRollbackConfirmBtn">确认回滚</button>
+        <button onclick="hideRollbackConfirm()" style="flex:1;background:#334155;color:#94a3b8;border:none;border-radius:6px;padding:7px 0;font-size:13px;cursor:pointer">取消</button>
+      </div>
+    </div>
+    <div class="msg" id="rollbackMsg"></div>
+  </div>
   <button class="save-btn" id="rebootBtn" onclick="showRebootConfirm()" style="background:#b91c1c;margin-top:14px">重启设备</button>
   <div id="rebootConfirmBox" style="display:none;background:#1e293b;border:1px solid #b91c1c;border-radius:8px;padding:12px;margin-top:8px;font-size:13px;color:#fca5a5">
     <div id="iRebootConfirmMsg" style="margin-bottom:10px">确定要重启吗？</div>
@@ -487,7 +499,7 @@ var T={
     lblVer:'固件版本',
     canOK:'正常',canErr:'异常',fsdYes:'是',fsdNo:'否',
     otaOK:'上传成功，正在重启...',otaFail:'上传失败: ',otaConn:'连接失败',
-    otaCurrent:'当前',otaLatest:'最新',otaChecking:'正在查询 GitHub…',otaDownloading:'正在下载…',otaWriting:'正在写入',otaSuccess:'更新成功,正在重启',otaConfirm:'确认下载并安装新版? 期间请勿断电',otaOnlineTitle:'在线更新 (GitHub)',otaOnlineHint:'需连接路由器 (STA) 才能联网检查/下载',otaCheckBtn:'检查更新',otaPullBtn:'下载并安装',rebootBtn:'重启设备',rebootConfirm:'确定要重启吗？',rebootConfirmBtn:'确认重启',rebootOK:'正在重启...',rebootFail:'重启失败',resetAllBtn:'恢复出厂设置',resetAllConfirm:'将清除所有配置（包括 WiFi、PIN、所有参数），确定吗？',resetAllConfirmBtn:'确认重置',resetAllOK:'已重置，正在重启...',resetAllFail:'重置失败',
+    otaCurrent:'当前',otaLatest:'最新',otaChecking:'正在查询 GitHub…',otaDownloading:'正在下载…',otaWriting:'正在写入',otaSuccess:'更新成功,正在重启',otaConfirm:'确认下载并安装新版? 期间请勿断电',otaOnlineTitle:'在线更新 (GitHub)',otaOnlineHint:'需连接路由器 (STA) 才能联网检查/下载',otaCheckBtn:'检查更新',otaPullBtn:'下载并安装',otaPrev:'上一版',otaRollbackBtn:'回滚到上一版',otaRollbackConfirm:'将切换到上一个固件并重启，确定吗？',otaRollbackConfirmBtn:'确认回滚',otaRollbackOK:'已切换，正在重启...',otaRollbackFail:'回滚失败',rebootBtn:'重启设备',rebootConfirm:'确定要重启吗？',rebootConfirmBtn:'确认重启',rebootOK:'正在重启...',rebootFail:'重启失败',resetAllBtn:'恢复出厂设置',resetAllConfirm:'将清除所有配置（包括 WiFi、PIN、所有参数），确定吗？',resetAllConfirmBtn:'确认重置',resetAllOK:'已重置，正在重启...',resetAllFail:'重置失败',
     uptH:'时',uptM:'分',uptS:'秒',langBtn:'EN',
     hwHint:'HW4 硬件 + 固件 2026.8.x 或更旧（FSD V13）→ 请选 HW3',
     cardWifi:'WiFi 设置',lblSSID:'热点名称（SSID）',lblPass:'新密码（留空保持不变）',
@@ -523,7 +535,7 @@ var T={
     lblVer:'Firmware Version',
     canOK:'OK',canErr:'ERROR',fsdYes:'Yes',fsdNo:'No',
     otaOK:'Upload success, rebooting...',otaFail:'Upload failed: ',otaConn:'Connection error',
-    otaCurrent:'Current',otaLatest:'Latest',otaChecking:'Querying GitHub…',otaDownloading:'Downloading…',otaWriting:'Writing',otaSuccess:'Update OK, rebooting',otaConfirm:'Download and install now? Do not power off.',otaOnlineTitle:'Online Update (GitHub)',otaOnlineHint:'STA (router) connection required to fetch releases',otaCheckBtn:'Check for Update',otaPullBtn:'Download & Install',rebootBtn:'Restart Device',rebootConfirm:'Restart the device?',rebootConfirmBtn:'Confirm Restart',rebootOK:'Rebooting...',rebootFail:'Reboot failed',resetAllBtn:'Factory Reset',resetAllConfirm:'This will erase all settings (WiFi, PIN, all config). Continue?',resetAllConfirmBtn:'Confirm Reset',resetAllOK:'Reset done, rebooting...',resetAllFail:'Reset failed',
+    otaCurrent:'Current',otaLatest:'Latest',otaChecking:'Querying GitHub…',otaDownloading:'Downloading…',otaWriting:'Writing',otaSuccess:'Update OK, rebooting',otaConfirm:'Download and install now? Do not power off.',otaOnlineTitle:'Online Update (GitHub)',otaOnlineHint:'STA (router) connection required to fetch releases',otaCheckBtn:'Check for Update',otaPullBtn:'Download & Install',otaPrev:'Previous',otaRollbackBtn:'Roll Back to Previous',otaRollbackConfirm:'Switch to the previous firmware and reboot?',otaRollbackConfirmBtn:'Confirm Rollback',otaRollbackOK:'Switched, rebooting...',otaRollbackFail:'Rollback failed',rebootBtn:'Restart Device',rebootConfirm:'Restart the device?',rebootConfirmBtn:'Confirm Restart',rebootOK:'Rebooting...',rebootFail:'Reboot failed',resetAllBtn:'Factory Reset',resetAllConfirm:'This will erase all settings (WiFi, PIN, all config). Continue?',resetAllConfirmBtn:'Confirm Reset',resetAllOK:'Reset done, rebooting...',resetAllFail:'Reset failed',
     uptH:'h',uptM:'m',uptS:'s',langBtn:'中文',
     hwHint:'HW4 hardware + firmware 2026.8.x or older (FSD V13) → select HW3',
     cardWifi:'WiFi Settings',lblSSID:'AP Name (SSID)',lblPass:'New Password (blank = keep current)',
@@ -607,6 +619,10 @@ function applyLang(){
   if(el=document.getElementById('iOnlineOtaHint')) el.textContent=t.otaOnlineHint;
   if(el=document.getElementById('otaCheckBtn')) el.textContent=t.otaCheckBtn;
   if(el=document.getElementById('otaPullBtn')) el.textContent=t.otaPullBtn;
+  if(el=document.getElementById('otaRollbackBtn')) el.textContent=t.otaRollbackBtn;
+  if(el=document.getElementById('iRollbackConfirmMsg')) el.textContent=t.otaRollbackConfirm;
+  if(el=document.getElementById('iRollbackConfirmBtn')) el.textContent=t.otaRollbackConfirmBtn;
+  if(__lastPartInfo) renderPartInfo(__lastPartInfo);
   document.getElementById('rebootBtn').textContent=t.rebootBtn;
   document.getElementById('iRebootConfirmMsg').textContent=t.rebootConfirm;
   document.getElementById('iRebootConfirmBtn').textContent=t.rebootConfirmBtn;
@@ -835,6 +851,7 @@ function startApp(){
   brInit();    // probe for WiFi bridge endpoint (esp32s3-waveshare-wifi only)
   // populate current version + env tag; pullBtn stays disabled until user checks.
   fetch('/api/ota/status'+(token?'?token='+token:'')).then(r=>r.ok?r.json():null).then(j=>{if(j)otaRenderStatus(j);}).catch(function(){});
+  loadPartInfo();
 }
 
 // ── WiFi bridge card (shown only if backend supports it) ───────────
@@ -938,9 +955,9 @@ function brSet(){
 }
 var BR_PRESETS={
   tesla_min:{name:'⭐ Tesla 推荐方案（实测）',
-    allow:'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
+    allow:'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
     block:'tesla.cn tesla.com teslamotors.com tesla.services',
-    note:'屏蔽全部 Tesla 云域名，仅放行核心子域：\n• Wi-Fi 检测 connman + www.tesla.cn\n• Tesla 地图导航 nav-prd-maps + maps-cn-prd\n• 手机 APP 控车 hermes + signaling\n• Intel 车机语音 media-server-me\n• AMD 车机语音 volcengine/volces/volcengineapi/volccdn（字节火山引擎）\n• 百度地图/导航 *.map.baidu.com + *.bdimg.com + *.bcebos.com（车机内置地图需要）\n\n✅ 已实测 2 天无异常（APP 控车/导航/语音/Wi-Fi 正常工作）。推荐优先使用此方案。'},
+    note:'屏蔽全部 Tesla 云域名，仅放行核心子域：\n• Wi-Fi 检测 connman + www.tesla.cn\n• Tesla 地图导航 nav-prd-maps + maps-cn-prd\n• 手机 APP 控车 hermes-prd + signaling + api-prd\n• Intel 车机语音 media-server-me\n• AMD 车机语音 volcengine/volces/volcengineapi/volccdn（字节火山引擎）\n• 百度地图/导航 *.map.baidu.com + *.bdimg.com + *.bcebos.com（车机内置地图需要）\n\n✅ 已实测 2 天无异常（APP 控车/导航/语音/Wi-Fi 正常工作）。推荐优先使用此方案。'},
   tesla_lean:{name:'🔹 精简官方（独立方案）',
     allow:'connman.vn.cloud.tesla.cn www.tesla.cn nav-prd-maps.tesla.cn maps-cn-prd.go.tesla.services hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn hermes-stream-prd.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn',
     block:'tesla.cn tesla.com tesla.services',
@@ -1406,6 +1423,49 @@ function doOtaPull(){
     if(!r.ok){msg.textContent='HTTP '+r.status;msg.className='msg err';return;}
     otaStartPoll();
   }).catch(function(){msg.textContent='网络错误';msg.className='msg err';});
+}
+var __lastPartInfo=null;
+function renderPartInfo(p){
+  var t=T[lang];
+  var row=document.getElementById('otaRollbackRow');
+  var prev=document.getElementById('otaPrev');
+  if(!row||!prev)return;
+  if(!p||!p.canRollback){row.style.display='none';return;}
+  row.style.display='';
+  var pv=p.previous||{};
+  var ver=pv.version?('v'+pv.version):'—';
+  var date=pv.date?(' ('+pv.date+')'):'';
+  prev.textContent=(t.otaPrev||'上一版')+': '+ver+date;
+}
+function loadPartInfo(){
+  fetch('/api/ota/partinfo'+(token?'?token='+token:''))
+    .then(r=>r.ok?r.json():null)
+    .then(function(j){if(j){__lastPartInfo=j;renderPartInfo(j);}})
+    .catch(function(){});
+}
+function showRollbackConfirm(){
+  document.getElementById('rollbackConfirmBox').style.display='';
+  document.getElementById('otaRollbackBtn').style.display='none';
+}
+function hideRollbackConfirm(){
+  document.getElementById('rollbackConfirmBox').style.display='none';
+  document.getElementById('otaRollbackBtn').style.display='';
+}
+function doRollback(){
+  var t=T[lang];
+  var msg=document.getElementById('rollbackMsg');
+  document.getElementById('iRollbackConfirmBtn').disabled=true;
+  msg.textContent='';msg.className='msg';
+  fetch('/api/ota/rollback'+(token?'?token='+token:''),{method:'POST'})
+    .then(function(r){
+      document.getElementById('rollbackConfirmBox').style.display='none';
+      if(r.ok){msg.textContent=t.otaRollbackOK;msg.className='msg ok';}
+      else{msg.textContent=t.otaRollbackFail;msg.className='msg err';hideRollbackConfirm();document.getElementById('iRollbackConfirmBtn').disabled=false;}
+    })
+    .catch(function(){
+      document.getElementById('rollbackConfirmBox').style.display='none';
+      msg.textContent=t.otaRollbackOK;msg.className='msg ok';
+    });
 }
 function showRebootConfirm(){
   document.getElementById('rebootConfirmBox').style.display='';
