@@ -27,6 +27,9 @@
   .big { font-size:42px; font-weight:700; font-family:ui-monospace,Menlo,Consolas,monospace; line-height:1.1 }
   .big.today { color:var(--accent) }
   .big.yesterday { color:var(--info) }
+  .big.month { color:#a78bfa }
+  .big.year { color:#f59e0b }
+  .big.total { color:#f87171 }
   .big .unit { font-size:14px; color:var(--dim); margin-left:6px; font-weight:400 }
   .row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:5px 0; font-size:13px }
   .row + .row { border-top:1px dashed #1e293b }
@@ -58,7 +61,9 @@
   <div class="grid">
     <div class="card"><h2>今日</h2><div class="big today"><span id="today">—</span><span class="unit">台</span></div></div>
     <div class="card"><h2>昨日</h2><div class="big yesterday"><span id="yesterday">—</span><span class="unit">台</span></div></div>
-    <div class="card"><h2>日期 (UTC)</h2><div class="big" style="font-size:24px;margin-top:14px"><span id="date">—</span></div></div>
+    <div class="card"><h2>月活（本月）</h2><div class="big month"><span id="month">—</span><span class="unit">台</span></div></div>
+    <div class="card"><h2>年活（本年）</h2><div class="big year"><span id="year">—</span><span class="unit">台</span></div></div>
+    <div class="card"><h2>总计（累计）</h2><div class="big total"><span id="total">—</span><span class="unit">台</span></div></div>
   </div>
 
   <div class="grid" style="margin-top:16px">
@@ -77,7 +82,7 @@
   </div>
 
   <footer>
-    最后刷新：<span id="lastUpdate">—</span>
+    日期 (UTC)：<span id="date">—</span> · 最后刷新：<span id="lastUpdate">—</span>
     <button onclick="load()">手动刷新</button>
   </footer>
 
@@ -116,6 +121,9 @@ async function load() {
     const d = await r.json();
     document.getElementById('today').textContent = d.today ?? '—';
     document.getElementById('yesterday').textContent = d.yesterday ?? '—';
+    document.getElementById('month').textContent = d.month ?? '—';
+    document.getElementById('year').textContent = d.year ?? '—';
+    document.getElementById('total').textContent = d.total ?? '—';
     document.getElementById('date').textContent = d.date ?? '—';
     renderBars('envList', d.byEnv);
     renderBars('verList', d.byVersion);

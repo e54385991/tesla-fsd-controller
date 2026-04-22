@@ -1,10 +1,14 @@
 // tesla-fsd-controller anonymous usage counter.
 //
 //   POST /ping  {id, version, env}  — records device for today (id = sha256(MAC) hex, 16-64 chars)
-//   GET  /stats                      — returns {today, yesterday, date, byEnv, byVersion}
+//   GET  /stats                      — returns {today, yesterday, month, year, total, date, byEnv, byVersion, byCountry}
 //
-// Storage: KV key `seen:YYYY-MM-DD:<id>` → {v, e, c} with 3-day TTL.
-// Counts by listing the day's prefix — cheap enough for <10k daily devices,
+// Storage (all keyed by device id so counting = listAll().length, inherently unique):
+//   seen:YYYY-MM-DD:<id> → {v, e, c}   TTL 3d   — daily set, source of by-env/version/country aggregates
+//   mo:YYYY-MM:<id>      → "1"         TTL 62d  — MAU set for calendar month
+//   yr:YYYY:<id>         → "1"         TTL 400d — YAU set for calendar year
+//   ever:<id>            → "1"         no TTL   — all-time unique devices
+// Counts by listing prefixes — cheap enough for <10k daily devices,
 // which is the ceiling we'd want before moving to a Durable Object counter.
 
 const CORS = {
@@ -43,15 +47,34 @@ async function handlePing(request, env) {
   if (typeof fwEnv !== "string" || !/^[a-z0-9_-]{1,32}$/.test(fwEnv)) return txt("bad env", 400);
 
   const today = todayStr();
-  const key = `seen:${today}:${id}`;
-  if (await env.COUNTER.get(key)) return txt("ok (dedup)");
+  const seenKey = `seen:${today}:${id}`;
+  if (await env.COUNTER.get(seenKey)) return txt("ok (dedup)");
+
+  const month = today.slice(0, 7);
+  const year = today.slice(0, 4);
+  const moKey = `mo:${month}:${id}`;
+  const yrKey = `yr:${year}:${id}`;
+  const everKey = `ever:${id}`;
+
+  // Probe the rollup keys so we only write the ones missing — avoids turning
+  // one daily write into four and keeps us well under the 1k-writes/day free
+  // tier. Reads are 100k/day, so GETs are cheap by comparison.
+  const [hasMo, hasYr, hasEver] = await Promise.all([
+    env.COUNTER.get(moKey),
+    env.COUNTER.get(yrKey),
+    env.COUNTER.get(everKey),
+  ]);
 
   const country = request.headers.get("cf-ipcountry") || "??";
-  await env.COUNTER.put(
-    key,
-    JSON.stringify({ v: version, e: fwEnv, c: country }),
-    { expirationTtl: 3 * 24 * 3600 }
-  );
+  const writes = [
+    env.COUNTER.put(seenKey,
+      JSON.stringify({ v: version, e: fwEnv, c: country }),
+      { expirationTtl: 3 * 24 * 3600 }),
+  ];
+  if (!hasMo)   writes.push(env.COUNTER.put(moKey,   "1", { expirationTtl: 62 * 24 * 3600 }));
+  if (!hasYr)   writes.push(env.COUNTER.put(yrKey,   "1", { expirationTtl: 400 * 24 * 3600 }));
+  if (!hasEver) writes.push(env.COUNTER.put(everKey, "1"));
+  await Promise.all(writes);
   return txt("ok");
 }
 
@@ -76,10 +99,15 @@ async function handleStats(env) {
   const now = new Date();
   const today = dayStr(now);
   const yesterday = dayStr(new Date(now.getTime() - 86400_000));
+  const month = today.slice(0, 7);
+  const year = today.slice(0, 4);
 
-  const [todayEntries, ydayEntries] = await Promise.all([
+  const [todayEntries, ydayEntries, monthEntries, yearEntries, everEntries] = await Promise.all([
     listAll(env.COUNTER, `seen:${today}:`),
     listAll(env.COUNTER, `seen:${yesterday}:`),
+    listAll(env.COUNTER, `mo:${month}:`),
+    listAll(env.COUNTER, `yr:${year}:`),
+    listAll(env.COUNTER, `ever:`),
   ]);
 
   // Pull values for today to aggregate by env/version. Yesterday stays
@@ -103,6 +131,9 @@ async function handleStats(env) {
   return new Response(JSON.stringify({
     today: todayEntries.length,
     yesterday: ydayEntries.length,
+    month: monthEntries.length,
+    year: yearEntries.length,
+    total: everEntries.length,
     date: today,
     byEnv,
     byVersion,
