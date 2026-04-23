@@ -31,6 +31,20 @@ extern FSDConfig cfg;  // defined in handlers.h
 //   (offsetPct 0-50).
 static constexpr int kHw3SpeedOffsetMaxPct = 50;  // wire raw cap = 200
 
+// ── HW3 offset slew limiter ──────────────────────────────────────────────
+// When the posted speed limit drops (e.g. 80 → 40 kph), the computed raw
+// offset byte also drops. Sending the new lower byte immediately makes the
+// car brake hard. Instead, ramp the outgoing byte down at ≤ rate pct/sec of
+// posted limit (user-tunable via cfg.hw3SlewRatePctPerSec). Upward steps pass.
+//
+// Unit: pct/sec (percent of posted limit, per second). Limit-invariant, so
+// the same number gives a consistent "feel" across 40 / 60 / 80 kph roads.
+// Default 5 pct/sec ≈ 3 kph/s deceleration at a 60 kph limit.
+// Internal conversion: raw/sec = pct/sec × 4 (wire encoding is pct × 4).
+static constexpr uint8_t kHw3SlewRateMin = 1;    // 1 pct/s ≈ 0.6 kph/s at 60 limit
+static constexpr uint8_t kHw3SlewRateMax = 25;   // 25 pct/s ≈ 15 kph/s at 60 limit
+static constexpr uint8_t kHw3SlewRateDefault = 5;
+
 static inline int computeHW3MinimumTargetSpeedKph(int fusedLimitKph) {
     if (fusedLimitKph == 60)                       return kHw3AutoTargetAt60Kph;
     if (fusedLimitKph <  kHw3AutoTargetBelow60Kph) return kHw3AutoTargetBelow60Kph;
@@ -62,7 +76,7 @@ static inline uint8_t encodeHW3OffsetRawFromKph(int offsetKph, int fusedLimitKph
 }
 
 // ── CAN ID filter tables (used by handleMessage) ──────────────────────────
-static constexpr uint32_t LEGACY_IDS[] = {69, 1006, 1080};
+static constexpr uint32_t LEGACY_IDS[] = {69, 760, 1006, 1080};
 static constexpr uint32_t HW3_IDS[]    = {787, 1016, 1021};
 static constexpr uint32_t HW4_IDS[]    = {921, 1016, 1021};
 
@@ -75,7 +89,7 @@ inline const uint32_t* getFilterIds() {
 }
 inline uint8_t getFilterIdCount() {
     switch (cfg.hwMode) {
-        case 0:  return 3;
+        case 0:  return 4;
         case 1:  return 3;
         default: return 3;
     }
@@ -89,13 +103,25 @@ inline bool isFilteredId(uint32_t id) {
     return false;
 }
 
-// ── Handler: Legacy (0x3EE / 0x045) ──────────────────────────────────────
+// ── Handler: Legacy (0x3EE / 0x045 / 0x2F8 / 0x438) ─────────────────────
 static void handleLegacy(CanFrame& frame, CanDriver& driver) {
     // 0x438 (1080) — UI_driverAssistAnonDebugParams: UI_visionSpeedSlider = 100 (bit56, 7-bit)
     if (frame.id == 1080) {
         if (frame.dlc < 8) return;
         if (!cfg.overrideSpeedLimit) return;
         frame.data[7] = (frame.data[7] & 0x80) | 100;  // bits[6:0] = 100%, preserve bit7
+        if (driver.send(frame)) cfg.modifiedCount++;
+        else                    cfg.errorCount++;
+        return;
+    }
+    // 0x2F8 (760) — UI_gpsVehicleSpeed: write UI_userSpeedOffset (bit40|6, raw = kph+30).
+    // Byte 5 layout: bits 0-5 = offset (0-63), bit 6 reserved, bit 7 = UI_userSpeedOffsetUnits
+    // (0=MPH, 1=KPH). We preserve bits 6-7 so the offset unit follows the car's setting.
+    if (frame.id == 760) {
+        if (cfg.legacyOffset == 0) return;
+        if (frame.dlc < 6) return;
+        uint8_t raw = (uint8_t)(cfg.legacyOffset + 30);
+        frame.data[5] = (frame.data[5] & 0xC0) | (raw & 0x3F);
         if (driver.send(frame)) cfg.modifiedCount++;
         else                    cfg.errorCount++;
         return;
@@ -122,7 +148,7 @@ static void handleLegacy(CanFrame& frame, CanDriver& driver) {
         }
         if (index == 1 && cfg.fsdTriggered && cfg.fsdEnable) {
             setBit(frame, 19, false);
-            setBit(frame, 48, false);  // UI_enableVisionSpeedControl = off
+            if (cfg.removeVisionSpeedLimit) setBit(frame, 48, false);  // UI_enableVisionSpeedControl = off
             driver.send(frame);  // nag suppression only, not counted as FSD modification
         }
     }
@@ -181,23 +207,85 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
 
             // UI enforces that Auto and Custom are mutually exclusive; the Custom-first
             // ordering below is defensive if the client-side mutex ever fails.
-            // ≥80 kph fused limit always passes stock through (factory EAP ladder is good there).
-            if (cfg.hw3CustomSpeed || cfg.hw3AutoSpeed) {
+            // ≥80 kph: independent hw3HighSpeedEnable branch writes pct×4 directly; when
+            // that toggle is off we keep the legacy stock-passthrough behavior.
+            {
                 uint8_t fl = (cfg.fusedSpeedLimit > 0 && cfg.fusedSpeedLimit < 31) ? cfg.fusedSpeedLimit : 0;
                 if (fl > 0) {
                     int fusedLimitKph = (int)fl * 5;
                     if (fusedLimitKph < kHw3StockOffsetCutoverKph) {
-                        int targetSpeedKph = cfg.hw3CustomSpeed
-                            ? computeHW3CustomTargetSpeedKph(fusedLimitKph)
-                            : computeHW3MinimumTargetSpeedKph(fusedLimitKph);
-                        if (targetSpeedKph > 0) {
-                            int desiredOffsetKph = std::max(targetSpeedKph - fusedLimitKph, 0);
-                            // Convert kph → pct of fused limit; Tesla caps at 50% so values
-                            // beyond 1.5× limit silently clamp to the physical ceiling.
-                            activeRaw = encodeHW3OffsetRawFromKph(desiredOffsetKph, fusedLimitKph);
+                        if (cfg.hw3CustomSpeed || cfg.hw3AutoSpeed) {
+                            int targetSpeedKph = cfg.hw3CustomSpeed
+                                ? computeHW3CustomTargetSpeedKph(fusedLimitKph)
+                                : computeHW3MinimumTargetSpeedKph(fusedLimitKph);
+                            if (targetSpeedKph > 0) {
+                                int desiredOffsetKph = std::max(targetSpeedKph - fusedLimitKph, 0);
+                                // Convert kph → pct of fused limit; Tesla caps at 50% so values
+                                // beyond 1.5× limit silently clamp to the physical ceiling.
+                                activeRaw = encodeHW3OffsetRawFromKph(desiredOffsetKph, fusedLimitKph);
+                            }
+                        }
+                    } else {
+                        if (cfg.hw3HighSpeedEnable) {
+                            int idx = (fusedLimitKph - kHw3HighSpeedBucketBaseKph)
+                                      / kHw3HighSpeedBucketStepKph;
+                            if (idx < 0) idx = 0;
+                            if (idx >= kHw3HighSpeedBucketCount) idx = kHw3HighSpeedBucketCount - 1;
+                            uint8_t pct = cfg.hw3HighSpeedTargetPct[idx];
+                            if (pct > 0) {
+                                activeRaw = encodeHW3OffsetRawFromPct((int)pct);
+                            }
                         }
                     }
                 }
+            }
+
+            // Diag: record what the encoder asked for before any slew shaping.
+            cfg.hw3OffsetTargetRaw = activeRaw;
+
+            // Slew-limit decreases only. When the posted limit suddenly drops
+            // (map data catches up, entering town, etc.), computing activeRaw
+            // from the new lower limit would collapse the offset in one frame
+            // → car brakes hard. Cap how much the sent raw byte can fall per
+            // second. Increases pass through untouched so entering a higher-
+            // limit road is still instant.
+            //
+            // Skip slew entirely when the posted limit is ≥80 kph: in that
+            // band the only raw-byte changes come from the user flipping the
+            // high-speed toggle / pct, not from limit drops that matter for
+            // passenger comfort. User asked for ≥80 to be instant.
+            uint8_t curFl = (cfg.fusedSpeedLimit > 0 && cfg.fusedSpeedLimit < 31) ? cfg.fusedSpeedLimit : 0;
+            bool slewApplies = cfg.hw3OffsetSlew &&
+                               curFl > 0 &&
+                               ((int)curFl * 5 < kHw3StockOffsetCutoverKph);
+            if (slewApplies) {
+                uint32_t now = millis();
+                uint8_t  last = cfg.hw3OffsetLastRaw;
+                // Clamp runtime-configurable rate to [min, max]; a stale/bad NVS
+                // byte (0, 255) falls back to the compile-time default. Unit is
+                // pct/sec of posted limit, converted to raw/sec by ×4.
+                uint8_t  ratePctPerSec = cfg.hw3SlewRatePctPerSec;
+                if (ratePctPerSec < kHw3SlewRateMin || ratePctPerSec > kHw3SlewRateMax) {
+                    ratePctPerSec = kHw3SlewRateDefault;
+                }
+                uint32_t rateRawPerSec = (uint32_t)ratePctPerSec * 4;
+                if (activeRaw < last && cfg.hw3OffsetLastSentMs != 0) {
+                    uint32_t dt = now - cfg.hw3OffsetLastSentMs;
+                    uint32_t maxDrop = (rateRawPerSec * dt + 500) / 1000;  // round-to-nearest
+                    uint8_t  floorRaw = (last > maxDrop) ? (uint8_t)(last - maxDrop) : 0;
+                    if (activeRaw < floorRaw) {
+                        activeRaw = floorRaw;
+                        cfg.hw3OffsetSlewCount++;
+                    }
+                }
+                cfg.hw3OffsetLastRaw    = activeRaw;
+                cfg.hw3OffsetLastSentMs = now;
+            } else {
+                // Keep state fresh so toggling on later doesn't think we're
+                // coming off a huge step; record last byte so there's no
+                // transient spike the first frame after the toggle flips on.
+                cfg.hw3OffsetLastRaw    = activeRaw;
+                cfg.hw3OffsetLastSentMs = millis();
             }
 
             frame.data[0] &= ~(0b11000000);

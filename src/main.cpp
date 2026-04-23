@@ -121,6 +121,12 @@ static bool checkToken(AsyncWebServerRequest* req) {
 #define NV_HW3_AUTO  "d4"
 #define NV_HW3_CUST  "d5"
 #define NV_HW3_CT    "d6"   // blob: hw3CustomTarget[kHw3CustomTargetCount]
+#define NV_HW3_SLEW  "d7"   // bool: hw3OffsetSlew (v1.4.27 test feature — output ramp-down)
+#define NV_HW3_SLRT  "d8"   // u8: hw3SlewRatePctPerSec (1..25, default 5)
+#define NV_HW3_HSEN  "d9"   // bool: hw3HighSpeedEnable (v1.4.27)
+#define NV_HW3_HSPT  "da"   // blob: hw3HighSpeedTargetPct[kHw3HighSpeedBucketCount] (v1.4.27)
+#define NV_LEG_OFF   "db"   // u8: legacyOffset 0-33 kph, 0=off (v1.4.27)
+#define NV_LEG_RVSL  "dc"   // bool: removeVisionSpeedLimit, default true (v1.4.27)
 
 // ═══════════════════════════════════════════
 //  Config persistence (NVS)
@@ -200,6 +206,28 @@ void loadConfig() {
     cfg.trackModeEnable    = prefs.getBool(NV_TRACK_MD, false);
     cfg.hw3AutoSpeed       = prefs.getBool(NV_HW3_AUTO, true);
     cfg.hw3CustomSpeed     = prefs.getBool(NV_HW3_CUST, false);
+    cfg.hw3OffsetSlew      = prefs.getBool(NV_HW3_SLEW, false);  // v1.4.27 opt-in test feature
+    {
+        uint8_t r = prefs.getUChar(NV_HW3_SLRT, kHw3SlewRateDefault);
+        if (r < kHw3SlewRateMin || r > kHw3SlewRateMax) r = kHw3SlewRateDefault;
+        cfg.hw3SlewRatePctPerSec = r;
+    }
+    cfg.hw3HighSpeedEnable   = prefs.getBool(NV_HW3_HSEN, false);
+    {
+        uint8_t v = prefs.getUChar(NV_LEG_OFF, 0);
+        if (v > 33) v = 33;
+        cfg.legacyOffset = v;
+    }
+    cfg.removeVisionSpeedLimit = prefs.getBool(NV_LEG_RVSL, true);
+    {
+        uint8_t buf[kHw3HighSpeedBucketCount];
+        if (prefs.getBytes(NV_HW3_HSPT, buf, sizeof(buf)) == sizeof(buf)) {
+            for (int i = 0; i < kHw3HighSpeedBucketCount; i++) {
+                if (buf[i] > 50) buf[i] = 50;  // Tesla fw cap
+            }
+            memcpy(const_cast<uint8_t*>(cfg.hw3HighSpeedTargetPct), buf, sizeof(buf));
+        }
+    }
     {
         // Read via temp to preserve in-class defaults on short/missing blob
         // (partial-length reads would leave the tail at 0 if we read directly).
@@ -242,9 +270,17 @@ void saveConfig() {
     prefs.putBool(NV_TRACK_MD,  cfg.trackModeEnable);
     prefs.putBool(NV_HW3_AUTO,  cfg.hw3AutoSpeed);
     prefs.putBool(NV_HW3_CUST,  cfg.hw3CustomSpeed);
+    prefs.putBool(NV_HW3_SLEW,  cfg.hw3OffsetSlew);
+    prefs.putUChar(NV_HW3_SLRT, cfg.hw3SlewRatePctPerSec);
+    prefs.putBool(NV_HW3_HSEN,  cfg.hw3HighSpeedEnable);
+    prefs.putBytes(NV_HW3_HSPT,
+                   const_cast<const uint8_t*>(cfg.hw3HighSpeedTargetPct),
+                   sizeof(cfg.hw3HighSpeedTargetPct));
     prefs.putBytes(NV_HW3_CT,
                    const_cast<const uint8_t*>(cfg.hw3CustomTarget),
                    sizeof(cfg.hw3CustomTarget));
+    prefs.putUChar(NV_LEG_OFF,  cfg.legacyOffset);
+    prefs.putBool(NV_LEG_RVSL,  cfg.removeVisionSpeedLimit);
     // WiFi keys written directly by /api/wifi — not touched here.
     prefs.end();
 }
@@ -459,8 +495,8 @@ void setupWebServer() {
         jsonEsc(apSSID,  escapedAp,  sizeof(escapedAp));
         jsonEsc(staSSID, escapedSta, sizeof(escapedSta));
 
-        char buf[2400];
-        static_assert(sizeof(buf) >= 2400, "JSON buffer too small");
+        char buf[2600];
+        static_assert(sizeof(buf) >= 2600, "JSON buffer too small");
         snprintf(buf, sizeof(buf),
             "{\"rx\":%u,\"modified\":%u,\"errors\":%u,\"uptime\":%u,"
             "\"canOK\":%s,\"fsdTriggered\":%s,"
@@ -469,6 +505,10 @@ void setupWebServer() {
             "\"hw3AutoOffset\":%d,\"hwDetected\":%d,"
             "\"hw3AutoSpeed\":%d,\"hw3CustomSpeed\":%d,"
             "\"hw3CustomTarget\":[%u,%u,%u,%u,%u],"
+            "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3OffsetTarget\":%u,\"hw3OffsetLast\":%u,\"hw3SlewCount\":%u,"
+            "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],"
+            "\"gps2F8Seen\":%s,\"gps2F8Count\":%u,\"gps2F8Period\":%u,\"gps2F8UserOffRaw\":%u,\"gps2F8MppLimRaw\":%u,"
+            "\"legacyOffset\":%u,\"removeVSL\":%d,"
             "\"fusedLimit\":%u,"
             "\"tempSeen\":%s,\"tempInRaw\":%u,\"tempOutRaw\":%u,"
             "\"bmsSeen\":%s,\"bmsV\":%u,\"bmsA\":%d,\"bmsSoc\":%u,"
@@ -504,6 +544,22 @@ void setupWebServer() {
             (unsigned)cfg.hw3CustomTarget[0], (unsigned)cfg.hw3CustomTarget[1],
             (unsigned)cfg.hw3CustomTarget[2], (unsigned)cfg.hw3CustomTarget[3],
             (unsigned)cfg.hw3CustomTarget[4],
+            (int)cfg.hw3OffsetSlew,
+            (unsigned)cfg.hw3SlewRatePctPerSec,
+            (unsigned)cfg.hw3OffsetTargetRaw,
+            (unsigned)cfg.hw3OffsetLastRaw,
+            (unsigned)cfg.hw3OffsetSlewCount,
+            (int)cfg.hw3HighSpeedEnable,
+            (unsigned)cfg.hw3HighSpeedTargetPct[0], (unsigned)cfg.hw3HighSpeedTargetPct[1],
+            (unsigned)cfg.hw3HighSpeedTargetPct[2], (unsigned)cfg.hw3HighSpeedTargetPct[3],
+            (unsigned)cfg.hw3HighSpeedTargetPct[4],
+            cfg.gpsSpeedSeen ? "true" : "false",
+            (unsigned)cfg.gpsSpeedCount,
+            (unsigned)cfg.gpsSpeedPeriodMs,
+            (unsigned)cfg.gpsUserOffsetRaw,
+            (unsigned)cfg.gpsMppLimitRaw,
+            (unsigned)cfg.legacyOffset,
+            (int)cfg.removeVisionSpeedLimit,
             (unsigned)cfg.fusedSpeedLimit,
             cfg.tempSeen ? "true" : "false",
             (unsigned)cfg.tempInsideRaw,    // × 0.25 = °C  (done in JS)
@@ -632,6 +688,18 @@ void setupWebServer() {
             hw3CTNew[i] = (uint8_t)raw;
             hw3CTHas[i] = true;
         }
+        // Same validate-before-apply dance for the ≥80 high-speed bucket table.
+        static const char* const kHw3HSKeys[kHw3HighSpeedBucketCount] =
+            {"hw3HsPct0","hw3HsPct1","hw3HsPct2","hw3HsPct3","hw3HsPct4"};
+        uint8_t hw3HSNew[kHw3HighSpeedBucketCount] = {0};
+        bool    hw3HSHas[kHw3HighSpeedBucketCount] = {false};
+        for (int i = 0; i < kHw3HighSpeedBucketCount; i++) {
+            if (!req->hasParam(kHw3HSKeys[i])) continue;
+            int p = req->getParam(kHw3HSKeys[i])->value().toInt();
+            if (p < 0 || p > 50) { req->send(400, "text/plain", "bad hw3HsPct"); return; }
+            hw3HSNew[i] = (uint8_t)p;
+            hw3HSHas[i] = true;
+        }
 
         bool changed = false;
 
@@ -674,6 +742,16 @@ void setupWebServer() {
             bool v = req->getParam("overrideSL")->value().toInt() != 0;
             if (v != cfg.overrideSpeedLimit) { cfg.overrideSpeedLimit = v; changed = true; }
         }
+        if (req->hasParam("legacyOffset")) {
+            int v = req->getParam("legacyOffset")->value().toInt();
+            if (v < 0 || v > 33) { req->send(400, "text/plain", "bad legacyOffset"); return; }
+            uint8_t nv = (uint8_t)v;
+            if (nv != cfg.legacyOffset) { cfg.legacyOffset = nv; changed = true; }
+        }
+        if (req->hasParam("removeVSL")) {
+            bool v = req->getParam("removeVSL")->value().toInt() != 0;
+            if (v != cfg.removeVisionSpeedLimit) { cfg.removeVisionSpeedLimit = v; changed = true; }
+        }
         if (req->hasParam("hw3AutoSpeed")) {
             bool v = req->getParam("hw3AutoSpeed")->value().toInt() != 0;
             if (v != cfg.hw3AutoSpeed) { cfg.hw3AutoSpeed = v; changed = true; }
@@ -682,12 +760,34 @@ void setupWebServer() {
             bool v = req->getParam("hw3CustomSpeed")->value().toInt() != 0;
             if (v != cfg.hw3CustomSpeed) { cfg.hw3CustomSpeed = v; changed = true; }
         }
+        if (req->hasParam("hw3OffsetSlew")) {
+            bool v = req->getParam("hw3OffsetSlew")->value().toInt() != 0;
+            if (v != cfg.hw3OffsetSlew) { cfg.hw3OffsetSlew = v; changed = true; }
+        }
+        if (req->hasParam("hw3SlewRate")) {
+            int r = req->getParam("hw3SlewRate")->value().toInt();
+            if (r < kHw3SlewRateMin) r = kHw3SlewRateMin;
+            if (r > kHw3SlewRateMax) r = kHw3SlewRateMax;
+            uint8_t nv = (uint8_t)r;
+            if (nv != cfg.hw3SlewRatePctPerSec) { cfg.hw3SlewRatePctPerSec = nv; changed = true; }
+        }
+        if (req->hasParam("hw3HighSpeedEnable")) {
+            bool v = req->getParam("hw3HighSpeedEnable")->value().toInt() != 0;
+            if (v != cfg.hw3HighSpeedEnable) { cfg.hw3HighSpeedEnable = v; changed = true; }
+        }
         // Apply pre-validated values — validate-all-then-apply preserves atomicity
         // so a late bad field can't leave earlier slots mutated in RAM.
         for (int i = 0; i < kHw3CustomTargetCount; i++) {
             if (!hw3CTHas[i]) continue;
             if (hw3CTNew[i] != cfg.hw3CustomTarget[i]) {
                 cfg.hw3CustomTarget[i] = hw3CTNew[i];
+                changed = true;
+            }
+        }
+        for (int i = 0; i < kHw3HighSpeedBucketCount; i++) {
+            if (!hw3HSHas[i]) continue;
+            if (hw3HSNew[i] != cfg.hw3HighSpeedTargetPct[i]) {
+                cfg.hw3HighSpeedTargetPct[i] = hw3HSNew[i];
                 changed = true;
             }
         }
@@ -1013,7 +1113,7 @@ void setupWebServer() {
         size_t recentBlocked = gDnsFilter.copyBlockedDomains(entries, kDnsBlockedDomainCapacity, totalBlocked);
 
         String json;
-        json.reserve(6400);
+        json.reserve(10240);
         json += "{";
         json += "\"upstreamEnable\":"; json += (gWifiBridgeCfg.enabled ? "true" : "false");
         json += ",\"upstreamConnected\":"; json += (upConnected ? "true" : "false");
@@ -1087,6 +1187,26 @@ void setupWebServer() {
 
     server.on("/api/wifi-bridge/set", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        // Validate sizes first — any oversize field rejects the whole request
+        // with 413 so we never half-apply state on a request the client thinks
+        // failed (UI would show 保存失败 then reload the old saved values).
+        String allowVal, blockVal;
+        bool hasAllow = false, hasBlock = false;
+        if (req->hasParam("dnsAllow")) {
+            allowVal = req->getParam("dnsAllow")->value(); allowVal.trim();
+            if (allowVal.length() >= (int)sizeof(gDnsFilterCfg.allowlist)) {
+                req->send(413, "text/plain", "dnsAllow too long"); return;
+            }
+            hasAllow = true;
+        }
+        if (req->hasParam("dnsBlock")) {
+            blockVal = req->getParam("dnsBlock")->value(); blockVal.trim();
+            if (blockVal.length() >= (int)sizeof(gDnsFilterCfg.blocklist)) {
+                req->send(413, "text/plain", "dnsBlock too long"); return;
+            }
+            hasBlock = true;
+        }
+
         bool changed = false, wifiChanged = false;
         if (req->hasParam("upstreamEnable")) {
             gWifiBridgeCfg.enabled = req->getParam("upstreamEnable")->value().toInt() != 0;
@@ -1096,19 +1216,13 @@ void setupWebServer() {
             gDnsFilterCfg.enabled = req->getParam("dnsEnable")->value().toInt() != 0;
             changed = true;
         }
-        if (req->hasParam("dnsAllow")) {
-            String v = req->getParam("dnsAllow")->value(); v.trim();
-            if (v.length() < (int)sizeof(gDnsFilterCfg.allowlist)) {
-                wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), v);
-                changed = true;
-            }
+        if (hasAllow) {
+            wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), allowVal);
+            changed = true;
         }
-        if (req->hasParam("dnsBlock")) {
-            String v = req->getParam("dnsBlock")->value(); v.trim();
-            if (v.length() < (int)sizeof(gDnsFilterCfg.blocklist)) {
-                wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), v);
-                changed = true;
-            }
+        if (hasBlock) {
+            wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), blockVal);
+            changed = true;
         }
         if (req->hasParam("pingEnable")) {
             pingSetEnabled(req->getParam("pingEnable")->value().toInt() != 0);

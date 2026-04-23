@@ -432,7 +432,33 @@ button{font-family:inherit;cursor:pointer}
             <div><div class="hw3ct-label">限速 70</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 105</div><input type="number" id="hw3CT4" min="70" max="105" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT4',this.value)"></div>
           </div>
         </div>
-        <div class="tip">🛈 ≥80 km/h 限速让原车 EAP 偏移接管；低速限速下按固定目标提速。自动/自定义互斥；两者都关 = 原厂透传。</div>
+        <div class="tip">🛈 &lt;80 km/h 走上面 Auto/自定义；≥80 可用下面"高速加速"开关。两者都关 = 原厂透传。</div>
+        <div class="row"><div class="rlbl">平滑减速（测试）</div><div class="tog" id="tgSlew" data-k="hw3OffsetSlew"></div><div class="rval">限速下降时偏移缓慢降下，避免急减速；提速仍立即生效</div></div>
+        <div id="rowHw3SlewDiag" style="display:none;padding:12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-size:13px;color:#94a3b8">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span>下降速率：</span>
+            <input type="number" id="cSlewRate" min="1" max="25" step="1" style="width:60px;padding:4px 6px;background:rgba(0,0,0,.3);color:#cbd5e1;border:1px solid #334155;border-radius:6px" onchange="apiSet('hw3SlewRate',this.value)">
+            <span>%/秒</span>
+            <span id="cSlewKphHint" style="color:#64748b;font-size:12px">(≈ -- kph/s @60限速)</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-family:monospace;color:#cbd5e1">
+            <div>目标 raw：<span id="cSlewTarget">--</span></div>
+            <div>发送 raw：<span id="cSlewSent" style="color:#38bdf8">--</span></div>
+            <div style="grid-column:1 / -1">已缓降次数：<span id="cSlewCount" style="color:#fbbf24">0</span></div>
+          </div>
+        </div>
+        <div class="row"><div class="rlbl">≥80 高速加速</div><div class="tog" id="tgHiSpd" data-k="hw3HighSpeedEnable"></div><div class="rval">限速 ≥80 时按百分比加速（默认关=原厂透传）</div></div>
+        <div id="rowHw3HiSpdPanel" style="display:none;padding:12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px">
+          <div style="font-size:12px;color:#64748b;margin-bottom:8px">每档百分比加速（限速 kph 档位）。Tesla 固件硬限 50%，超出自动夹紧。</div>
+          <div class="hw3ct-grid">
+            <div><div class="hw3ct-label">限速 80</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct0" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct0',this.value)"></div>
+            <div><div class="hw3ct-label">限速 90</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct1" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct1',this.value)"></div>
+            <div><div class="hw3ct-label">限速 100</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct2" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct2',this.value)"></div>
+            <div><div class="hw3ct-label">限速 110</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct3" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct3',this.value)"></div>
+            <div><div class="hw3ct-label">限速 120+</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct4" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct4',this.value)"></div>
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:8px;font-family:monospace" id="cHiSpdHint"></div>
+        </div>
       </div>
 
       <div class="panel" id="panelHw4" style="display:none">
@@ -452,6 +478,20 @@ button{font-family:inherit;cursor:pointer}
         <div class="row" id="rowEmerg" style="display:none"><div class="rlbl">紧急检测</div><div class="tog" id="tgEmerg" data-k="emergencyDet"></div><div class="rval">紧急制动/碰撞检测（HW4 专用）</div></div>
         <div class="row"><div class="rlbl">强制激活</div><div class="tog" id="tgForce" data-k="forceActivate"></div><div class="rval">强制启用 FSD（风险高）</div></div>
         <div class="row" id="rowOvr" style="display:none"><div class="rlbl">忽略限速</div><div class="tog" id="tgOvr" data-k="overrideSL"></div><div class="rval">忽略路牌限速（Legacy 专用）</div></div>
+        <div class="row" id="rowRvsl" style="display:none"><div class="rlbl">关闭视觉限速</div><div class="tog" id="tgRvsl" data-k="removeVSL"></div><div class="rval">屏蔽摄像头识别的限速（Legacy 专用）</div></div>
+        <div class="row" id="rowLegOff" style="display:none"><div class="rlbl">Legacy 偏移</div>
+          <input type="number" id="cLegOff" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:rgba(0,0,0,.3);color:#cbd5e1;border:1px solid #334155;border-radius:6px" onchange="apiSet('legacyOffset',this.value)">
+          <div class="rval">+0~33 kph/mph（遵循车辆单位）</div></div>
+        <div id="rowGps2F8" style="display:none;padding:10px 12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-family:monospace;font-size:12px">
+          <div style="color:#94a3b8;margin-bottom:6px">0x2F8 (760) Legacy 限速帧嗅探（只读，用来确认是否可改写）</div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#cbd5e1">
+            <div>可见：<span id="cGps2F8Seen">--</span></div>
+            <div>帧数：<span id="cGps2F8Count">0</span></div>
+            <div>周期：<span id="cGps2F8Period">-- ms</span></div>
+            <div>用户偏移 raw：<span id="cGps2F8UserOff">--</span></div>
+            <div style="grid-column:1 / -1">地图限速 raw：<span id="cGps2F8MppLim">--</span></div>
+          </div>
+        </div>
         <div class="row"><div class="rlbl">AP 自动恢复</div><div class="tog" id="tgApRs"></div><div class="rval">刹车后自动恢复 AP</div></div>
         <div class="row" id="rowTrack" style="display:none"><div class="rlbl">赛道模式</div><div class="tog" id="tgTrack" data-k="trackMode"></div><div class="rval">解锁高性能（HW3 专用）</div></div>
       </div>
@@ -1018,11 +1058,57 @@ function render(d){
     for(var _i=0;_i<5;_i++){var _e=document.getElementById('hw3CT'+_i); if(_e) _e.value=d.hw3CustomTarget[_i];}
     window._hw3CTLoaded=true;
   }
+  setTog('tgSlew', !!d.hw3OffsetSlew);
+  var rowSlew = document.getElementById('rowHw3SlewDiag');
+  if(rowSlew) rowSlew.style.display = (d.hwMode===1 && d.hw3OffsetSlew) ? '' : 'none';
+  (function(){
+    var cT=document.getElementById('cSlewTarget'); if(cT)cT.textContent=(d.hw3OffsetTarget!=null)?d.hw3OffsetTarget:'--';
+    var cS=document.getElementById('cSlewSent');   if(cS)cS.textContent=(d.hw3OffsetLast!=null)?d.hw3OffsetLast:'--';
+    var cC=document.getElementById('cSlewCount');  if(cC)cC.textContent=d.hw3SlewCount||0;
+    var cR=document.getElementById('cSlewRate');
+    if(cR && document.activeElement!==cR) cR.value=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
+    var rv=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
+    var cK=document.getElementById('cSlewKphHint');
+    if(cK) cK.textContent='(≈ -'+(rv*0.6).toFixed(1)+' kph/s @60限速)';
+  })();
+  setTog('tgHiSpd', !!d.hw3HighSpeedEnable);
+  var rowHi = document.getElementById('rowHw3HiSpdPanel');
+  if(rowHi) rowHi.style.display = (d.hwMode===1 && d.hw3HighSpeedEnable) ? '' : 'none';
+  (function(){
+    var hsArr=Array.isArray(d.hw3HighSpeedPct)?d.hw3HighSpeedPct:[15,15,15,15,15];
+    var hsLbl=[80,90,100,110,120];
+    var parts=[];
+    for(var i=0;i<5;i++){
+      var p=(hsArr[i]!=null?hsArr[i]:15);
+      var inp=document.getElementById('hw3HsPct'+i);
+      if(inp && document.activeElement!==inp && !hw3HSDirty['hw3HsPct'+i]){
+        inp.value=p;
+      }
+      parts.push(hsLbl[i]+'→+'+Math.round(hsLbl[i]*p/100));
+    }
+    var cH=document.getElementById('cHiSpdHint');
+    if(cH) cH.textContent='('+parts.join(' / ')+')';
+  })();
   setTog('tgIsa', d.isaChime);
   setTog('tgEmerg', d.emergencyDet);
   setTog('tgForce', d.forceActivate);
   setTog('tgOvr', d.overrideSL);
+  setTog('tgRvsl', d.removeVSL==null?true:!!d.removeVSL);
+  (function(){var e=document.getElementById('cLegOff'); if(e && document.activeElement!==e) e.value=(d.legacyOffset!=null?d.legacyOffset:0);})();
   setTog('tgTrack', d.trackMode);
+  (function(){
+    var r=document.getElementById('rowGps2F8'); if(!r) return;
+    r.style.display=(d.hwMode===0)?'':'none';
+    if(d.hwMode!==0) return;
+    var seen=document.getElementById('cGps2F8Seen');
+    if(seen){ seen.textContent=d.gps2F8Seen?'YES':'no'; seen.style.color=d.gps2F8Seen?'#4ade80':'#f87171'; }
+    document.getElementById('cGps2F8Count').textContent=d.gps2F8Count||0;
+    document.getElementById('cGps2F8Period').textContent=(d.gps2F8Period||0)+' ms';
+    var uo=(d.gps2F8UserOffRaw!=null?d.gps2F8UserOffRaw:0);
+    document.getElementById('cGps2F8UserOff').textContent=uo+' (='+(uo-30)+' kph)';
+    var ml=(d.gps2F8MppLimRaw!=null?d.gps2F8MppLimRaw:0);
+    document.getElementById('cGps2F8MppLim').textContent=ml+' (='+(ml*5)+' kph)';
+  })();
   // HW 选中
   document.querySelectorAll('#grpHw .pill').forEach(function(b){
     b.classList.toggle('active', parseInt(b.dataset.v)===d.hwMode);
@@ -1048,6 +1134,8 @@ function render(d){
   // 模式专属开关行
   document.getElementById('rowEmerg').style.display = isHW4 ? '' : 'none';
   document.getElementById('rowOvr').style.display = isLegacy ? '' : 'none';
+  document.getElementById('rowRvsl').style.display = isLegacy ? '' : 'none';
+  document.getElementById('rowLegOff').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowTrack').style.display = isHW3 ? '' : 'none';
   // HW4 偏移 pill 选中
   document.querySelectorAll('#grpHw4Off .pill').forEach(function(b){
@@ -1425,6 +1513,28 @@ function apiSetHw3CT(k, v){
     if(!qs)return;
     fetch('/api/set?'+qs.slice(1)+(tok?'&token='+encodeURIComponent(tok):''))
       .then(function(r){if(r.status===200){toast('已保存','ok');poll()}else if(r.status===403){showPin()}else{toast('失败','err')}});
+  },400);
+}
+// Same pattern for ≥80 high-speed bucket table. hw3HSDirty blocks poll overwrite
+// during debounce + in-flight window.
+var _hw3HSTimer=null, _hw3HSPending={};
+var hw3HSDirty={};
+function apiSetHw3HS(k, v){
+  hw3HSDirty[k]=true;
+  _hw3HSPending[k]=v;
+  clearTimeout(_hw3HSTimer);
+  _hw3HSTimer=setTimeout(function(){
+    var qs=''; for(var kk in _hw3HSPending){qs+='&'+kk+'='+encodeURIComponent(_hw3HSPending[kk]);}
+    var sent=_hw3HSPending; _hw3HSPending={};
+    if(!qs)return;
+    fetch('/api/set?'+qs.slice(1)+(tok?'&token='+encodeURIComponent(tok):''))
+      .then(function(r){
+        if(r.status===200){
+          toast('已保存','ok');
+          setTimeout(function(){ for(var kk in sent) delete hw3HSDirty[kk]; poll(); }, 600);
+        } else if(r.status===403){ showPin(); }
+        else { toast('失败','err'); for(var kk in sent) delete hw3HSDirty[kk]; }
+      });
   },400);
 }
 

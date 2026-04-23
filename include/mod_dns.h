@@ -56,10 +56,16 @@ void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t*
 #include <cctype>
 #include <cstring>
 
+// Buffer size for allow/block rule strings. 1024 was too small — user-customized
+// allowlists (full preset + extra domains) exceed 1024 and the /api/set handler
+// silently drops oversize writes. 3072 leaves headroom for ~30 extra entries
+// past the default preset while still staying well within NVS blob limits.
+static constexpr size_t kDnsRuleBufSize = 3072;
+
 struct DNSFilterConfig {
     bool enabled = false;
-    char allowlist[1024] = {};
-    char blocklist[1024] = {};
+    char allowlist[kDnsRuleBufSize] = {};
+    char blocklist[kDnsRuleBufSize] = {};
 };
 
 static constexpr size_t kDnsBlockedDomainCapacity = 50;
@@ -161,7 +167,7 @@ struct CachedIpEntry {
 portMUX_TYPE gDnsIpPolicyMux = portMUX_INITIALIZER_UNLOCKED;
 CachedIpEntry gBlockedIps[kBlockedIpCapacity];
 size_t gBlockedIpCount = 0;
-char gBlocklistSnapshot[1024] = {};
+char gBlocklistSnapshot[kDnsRuleBufSize] = {};
 uint32_t gLastBlockResolveAtSeconds = 0;
 uint32_t gLastFullRefreshAtSeconds = 0;
 size_t gNextBlockResolveRuleIndex = 0;

@@ -233,6 +233,24 @@ select:focus{outline:none;border-color:#38bdf8}
     <span class="row-label" id="iLblOverrideSL">重写速度限制</span>
     <label class="toggle"><input type="checkbox" id="overrideSL" onchange="setVal('overrideSL',this.checked?1:0)"><span class="slider"></span></label>
   </div>
+  <div class="row" id="rowRemoveVSL" style="display:none">
+    <span class="row-label" data-zh="关闭视觉限速识别" data-en="Disable Vision Speed Limit">关闭视觉限速识别</span>
+    <label class="toggle"><input type="checkbox" id="removeVSL" onchange="setVal('removeVSL',this.checked?1:0)"><span class="slider"></span></label>
+  </div>
+  <div class="row" id="rowLegOff" style="display:none">
+    <span class="row-label" data-zh="Legacy 速度偏移 (kph/mph)" data-en="Legacy Speed Offset (kph/mph)">Legacy 速度偏移 (kph/mph)</span>
+    <input type="number" id="legacyOffset" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px" onchange="setVal('legacyOffset',this.value)">
+  </div>
+  <div id="rowGps2F8" style="display:none;padding:10px 12px;background:#0b1220;border-radius:8px;margin-top:4px;font-family:monospace;font-size:12px;color:#cbd5e1">
+    <div style="color:#94a3b8;margin-bottom:6px" data-zh="0x2F8 (760) Legacy 限速帧嗅探" data-en="0x2F8 (760) Legacy speed-frame sniffer">0x2F8 (760) Legacy 限速帧嗅探</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px">
+      <div><span data-zh="可见：" data-en="seen:">可见：</span><span id="sGps2F8Seen">--</span></div>
+      <div><span data-zh="帧数：" data-en="count:">帧数：</span><span id="sGps2F8Count">0</span></div>
+      <div><span data-zh="周期：" data-en="period:">周期：</span><span id="sGps2F8Period">-- ms</span></div>
+      <div><span data-zh="用户偏移 raw：" data-en="userOff raw:">用户偏移 raw：</span><span id="sGps2F8UserOff">--</span></div>
+      <div style="grid-column:1 / -1"><span data-zh="地图限速 raw：" data-en="mppLimit raw:">地图限速 raw：</span><span id="sGps2F8MppLim">--</span></div>
+    </div>
+  </div>
   <div class="row">
     <span class="row-label" id="iLblAPRestart">AP 自动恢复</span>
     <label class="toggle"><input type="checkbox" id="apRestart" onchange="setAPRestart(this.checked)"><span class="slider"></span></label>
@@ -268,6 +286,39 @@ select:focus{outline:none;border-color:#38bdf8}
       <div><div class="hw3ct-label">60</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">max 90</div><input type="number" id="hw3CT3" min="60" max="90" class="hw3ct-input" onchange="setValHw3CT('hw3CT3',this.value)"></div>
       <div><div class="hw3ct-label">70</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">max 105</div><input type="number" id="hw3CT4" min="70" max="105" class="hw3ct-input" onchange="setValHw3CT('hw3CT4',this.value)"></div>
     </div>
+  </div>
+  <div class="row" id="rowHW3Slew" style="display:none">
+    <span class="row-label" id="iLblHW3Slew" data-zh="平滑减速（测试）" data-en="Smooth Decel (beta)">平滑减速（测试）</span>
+    <label class="toggle"><input type="checkbox" id="hw3OffsetSlew" onchange="setVal('hw3OffsetSlew',this.checked?1:0)"><span class="slider"></span></label>
+  </div>
+  <div id="rowHW3SlewDiag" style="display:none;padding:8px 12px;background:#0b1220;border-radius:8px;margin-top:4px;font-size:12px;color:#94a3b8">
+    <div style="margin-bottom:6px" id="iLblHW3SlewHint" data-zh="限速下降时，把偏移按下面速率慢慢降下，避免急减速。提速立即生效。" data-en="When posted limit drops, ramp offset down at the rate below instead of snapping. Upward steps stay instant.">限速下降时，把偏移按下面速率慢慢降下，避免急减速。提速立即生效。</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span data-zh="下降速率：" data-en="decel rate:">下降速率：</span>
+      <input type="number" id="hw3SlewRate" min="1" max="25" step="1" style="width:60px;padding:2px 4px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px" onchange="setVal('hw3SlewRate',this.value)">
+      <span>%/秒</span>
+      <span id="sSlewKphHint" style="color:#64748b">(≈ -- kph/s @60限速)</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;font-family:monospace;color:#cbd5e1">
+      <div><span data-zh="目标 raw：" data-en="target raw:">目标 raw：</span><span id="sSlewTarget">--</span></div>
+      <div><span data-zh="发送 raw：" data-en="sent raw:">发送 raw：</span><span id="sSlewSent" style="color:#38bdf8">--</span></div>
+      <div style="grid-column:1 / -1"><span data-zh="已缓降次数：" data-en="ramp frames:">已缓降次数：</span><span id="sSlewCount" style="color:#fbbf24">0</span></div>
+    </div>
+  </div>
+  <div class="row" id="rowHW3HiSpd" style="display:none">
+    <span class="row-label" id="iLblHW3HiSpd" data-zh="≥80 高速加速" data-en="≥80 High-Speed Offset">≥80 高速加速</span>
+    <label class="toggle"><input type="checkbox" id="hw3HighSpeedEnable" onchange="setVal('hw3HighSpeedEnable',this.checked?1:0)"><span class="slider"></span></label>
+  </div>
+  <div id="rowHW3HiSpdPanel" style="display:none;padding:10px 12px;background:#0b1220;border-radius:8px;margin-top:4px">
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:8px" id="iLblHW3HiSpdHint" data-zh="限速 ≥80 时每档的百分比加速（kph 档位）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 50%。" data-en="Per-bucket percentage offset when posted limit ≥80 kph. Below 80 use Auto/Custom. Tesla fw caps at 50%.">限速 ≥80 时每档的百分比加速（kph 档位）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 50%。</div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+      <div><div class="hw3ct-label">80</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct0" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct0',this.value)"></div>
+      <div><div class="hw3ct-label">90</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct1" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct1',this.value)"></div>
+      <div><div class="hw3ct-label">100</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct2" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct2',this.value)"></div>
+      <div><div class="hw3ct-label">110</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct3" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct3',this.value)"></div>
+      <div><div class="hw3ct-label">120+</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct4" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct4',this.value)"></div>
+    </div>
+    <div id="sHiSpdHint" style="font-size:11px;color:#64748b;margin-top:6px;font-family:monospace"></div>
   </div>
 </div>
 
@@ -718,6 +769,25 @@ function poll(){
     document.getElementById('forceActivate').checked=!!d.forceActivate;
     document.getElementById('overrideSL').checked=!!d.overrideSL;
     document.getElementById('rowOverrideSL').style.display=(d.hwMode===0)?'':'none';
+    document.getElementById('rowRemoveVSL').style.display=(d.hwMode===0)?'':'none';
+    document.getElementById('rowLegOff').style.display=(d.hwMode===0)?'':'none';
+    var rvslEl=document.getElementById('removeVSL');
+    if(rvslEl) rvslEl.checked=(d.removeVSL==null?true:!!d.removeVSL);
+    var legOffEl=document.getElementById('legacyOffset');
+    if(legOffEl && document.activeElement!==legOffEl) legOffEl.value=(d.legacyOffset!=null?d.legacyOffset:0);
+    (function(){
+      var r=document.getElementById('rowGps2F8'); if(!r) return;
+      r.style.display=(d.hwMode===0)?'':'none';
+      if(d.hwMode!==0) return;
+      document.getElementById('sGps2F8Seen').textContent=d.gps2F8Seen?'YES':'no';
+      document.getElementById('sGps2F8Seen').style.color=d.gps2F8Seen?'#4ade80':'#f87171';
+      document.getElementById('sGps2F8Count').textContent=d.gps2F8Count||0;
+      document.getElementById('sGps2F8Period').textContent=(d.gps2F8Period||0)+' ms';
+      var uo=(d.gps2F8UserOffRaw!=null?d.gps2F8UserOffRaw:0);
+      document.getElementById('sGps2F8UserOff').textContent=uo+' (='+(uo-30)+' kph)';
+      var ml=(d.gps2F8MppLimRaw!=null?d.gps2F8MppLimRaw:0);
+      document.getElementById('sGps2F8MppLim').textContent=ml+' (='+(ml*5)+' kph)';
+    })();
     if(d.tempSeen){
       document.getElementById('rowTemp').style.display='';
       var tIn=(d.tempInRaw*0.25).toFixed(1)+'°C';
@@ -773,6 +843,39 @@ function poll(){
         for(var i=0;i<5;i++){var inp=document.getElementById('hw3CT'+i); if(inp) inp.value=d.hw3CustomTarget[i];}
         hw3CTLoaded=true;
       }
+    }
+    var slewEl=document.getElementById('hw3OffsetSlew');
+    if(slewEl){
+      slewEl.checked=!!d.hw3OffsetSlew;
+      document.getElementById('rowHW3Slew').style.display=(d.hwMode===1)?'':'none';
+      document.getElementById('rowHW3SlewDiag').style.display=(d.hwMode===1&&d.hw3OffsetSlew)?'':'none';
+      document.getElementById('sSlewTarget').textContent=(d.hw3OffsetTarget!=null)?d.hw3OffsetTarget:'--';
+      document.getElementById('sSlewSent').textContent=(d.hw3OffsetLast!=null)?d.hw3OffsetLast:'--';
+      document.getElementById('sSlewCount').textContent=d.hw3SlewCount||0;
+      var rateInp=document.getElementById('hw3SlewRate');
+      if(rateInp && document.activeElement!==rateInp){
+        rateInp.value=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
+      }
+      var rate=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
+      document.getElementById('sSlewKphHint').textContent='(≈ -'+(rate*0.6).toFixed(1)+' kph/s @60限速)';
+    }
+    var hiSpdEl=document.getElementById('hw3HighSpeedEnable');
+    if(hiSpdEl){
+      hiSpdEl.checked=!!d.hw3HighSpeedEnable;
+      document.getElementById('rowHW3HiSpd').style.display=(d.hwMode===1)?'':'none';
+      document.getElementById('rowHW3HiSpdPanel').style.display=(d.hwMode===1&&d.hw3HighSpeedEnable)?'':'none';
+      var hsArr=Array.isArray(d.hw3HighSpeedPct)?d.hw3HighSpeedPct:[15,15,15,15,15];
+      var hsLbl=[80,90,100,110,120];
+      var hintParts=[];
+      for(var i=0;i<5;i++){
+        var p=(hsArr[i]!=null?hsArr[i]:15);
+        var inp=document.getElementById('hw3HsPct'+i);
+        if(inp && document.activeElement!==inp && !hw3HSDirty['hw3HsPct'+i]){
+          inp.value=p;
+        }
+        hintParts.push(hsLbl[i]+'→+'+Math.round(hsLbl[i]*p/100));
+      }
+      document.getElementById('sHiSpdHint').textContent='('+hintParts.join(' / ')+')';
     }
     document.getElementById('apRestart').checked=!!d.apRestart;
     var hw4OffEl=document.getElementById('hw4Offset');
@@ -1284,6 +1387,8 @@ function updateSpeedOptions(hwMode){
   document.getElementById('rowEmgDet').style.display=isHW4?'':'none';
   // Legacy-only rows
   document.getElementById('rowOverrideSL').style.display=(hwMode===0)?'':'none';
+  document.getElementById('rowRemoveVSL').style.display=(hwMode===0)?'':'none';
+  document.getElementById('rowLegOff').style.display=(hwMode===0)?'':'none';
   if(!isHW4){
     var emgEl=document.getElementById('emergencyDet');
     if(emgEl&&emgEl.checked){emgEl.checked=false;setVal('emergencyDet',0);}
@@ -1330,6 +1435,27 @@ function setValHw3CT(key,val){
     fetch('/api/set?'+qs.slice(1)+(token?'&token='+token:''))
       .then(function(r){if(r.status===403){token='';try{sessionStorage.removeItem('fsd_tok');}catch(e){}showPinStep();}})
       .catch(function(){});
+  },400);
+}
+// Same pattern for HW3 ≥80 high-speed buckets. hw3HSDirty blocks poll from
+// clobbering user edits between keystroke and round-trip settle.
+var _hw3HSTimer=null, _hw3HSPending={};
+var hw3HSDirty={};
+function setValHw3HS(key,val){
+  if(!agreed)return;
+  hw3HSDirty[key]=true;
+  _hw3HSPending[key]=val;
+  clearTimeout(_hw3HSTimer);
+  _hw3HSTimer=setTimeout(function(){
+    var qs=''; for(var k in _hw3HSPending){qs+='&'+k+'='+encodeURIComponent(_hw3HSPending[k]);}
+    var sent=_hw3HSPending; _hw3HSPending={};
+    if(!qs)return;
+    fetch('/api/set?'+qs.slice(1)+(token?'&token='+token:''))
+      .then(function(r){
+        if(r.status===403){token='';try{sessionStorage.removeItem('fsd_tok');}catch(e){}showPinStep();return;}
+        setTimeout(function(){ for(var k in sent) delete hw3HSDirty[k]; }, 600);
+      })
+      .catch(function(){ for(var k in sent) delete hw3HSDirty[k]; });
   },400);
 }
 // Paired toggles: turning one on forces its sibling off; `panelOwner` is the key whose

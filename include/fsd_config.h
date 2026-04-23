@@ -15,6 +15,12 @@ static_assert((kHw3StockOffsetCutoverKph - kHw3CustomBucketBaseKph)
                 / kHw3CustomBucketStepKph == kHw3CustomTargetCount,
               "Custom target table must cover [base, cutover) in step-sized buckets");
 
+// High-speed (≥80 kph) table: user-defined pct offset per bucket. Limits
+// above the top bucket clamp to the last entry (120 kph covers 120+).
+static constexpr int kHw3HighSpeedBucketBaseKph = 80;
+static constexpr int kHw3HighSpeedBucketStepKph = 10;
+static constexpr int kHw3HighSpeedBucketCount   = 5;  // 80/90/100/110/120 buckets
+
 // ── Runtime-configurable state (shared between CAN task and web server) ──
 // All fields are volatile — written by Core1 (CAN), read by Core0 (WiFi/web).
 // Individual 32-bit-or-smaller volatile reads are atomic on ESP32 Xtensa.
@@ -64,9 +70,52 @@ struct FSDConfig {
     volatile bool     adaptiveLighting    = false;  // DAS_adaptiveHeadlights bit 22
     volatile bool     highBeamForce       = false;  // user override via UI or stalk gesture
 
+    // Legacy 0x2F8 (760) UI_gpsVehicleSpeed sniffer — read-only, no transmission.
+    // Used to validate whether the frame is visible on Party CAN and sample its
+    // byte 5 (UI_userSpeedOffset) / byte 6 (UI_mppSpeedLimit) for Legacy speed
+    // breakout feasibility (see project_legacy_speed_breakout_pending memory).
+    volatile bool     gpsSpeedSeen        = false;
+    volatile uint8_t  gpsUserOffsetRaw    = 0;   // bit40|6 — actual kph = raw − 30
+    volatile uint8_t  gpsMppLimitRaw      = 0;   // bit48|5 — actual kph = raw × 5
+    volatile uint32_t gpsSpeedPeriodMs    = 0;   // last inter-frame delta
+    volatile uint32_t gpsSpeedLastMs      = 0;   // internal — last receive ts
+    volatile uint32_t gpsSpeedCount       = 0;
+
+    // Legacy speed breakout (v1.4.27): write 0x2F8 UI_userSpeedOffset (bit40|6, +30 raw).
+    // Only written when hwMode == 0 (LEGACY). Preserves bits 6-7 of byte 5 so
+    // UI_userSpeedOffsetUnits (bit 47) stays at whatever the car has configured,
+    // meaning the offset unit follows the car's display (kph/mph).
+    volatile uint8_t  legacyOffset            = 0;     // 0=off, 1..33 → raw = value+30 written to 0x2F8[5]
+    // removeVisionSpeedLimit: was hardcoded inside 0x3EE mux-1 (bit 48 clear) whenever
+    // FSD activation triggered. Now an independent user toggle — default true to preserve
+    // pre-v1.4.27 behavior. When false, UI_enableVisionSpeedControl is left untouched.
+    volatile bool     removeVisionSpeedLimit  = true;
+
     // DAS status — read from 0x39B (DAS_status), 0x399 (DAS_status ISA) and 0x389 (DAS_status2)
     volatile uint8_t  fusedSpeedLimit     = 0;   // DAS_fusedSpeedLimit        0x39B byte1[4:0]  ×5=kph; 0=none (camera+map)
     volatile uint8_t  visionSpeedLimit    = 0;   // DAS_visionOnlySpeedLimit   0x39B bit16|5     ×5=kph; 0=none (camera only)
+
+    // HW3 offset slew limiter (test feature, v1.4.27 — default OFF, opt-in):
+    // when the computed offset *drops* (e.g. posted limit fell from 80→40 and
+    // custom target shrinks), ramp the outgoing raw byte down over time instead
+    // of snapping. Prevents the harsh deceleration users see when the car's
+    // fused limit suddenly lowers. Upward steps still pass through immediately.
+    volatile bool     hw3OffsetSlew         = false;  // default off until field-validated
+    volatile uint8_t  hw3SlewRatePctPerSec  = 5;     // 1..25 %/s; 5 ≈ 3 kph/s at 60 limit (raw/s = ×4)
+    volatile uint8_t  hw3OffsetLastRaw      = 0;     // last raw byte we actually sent
+    volatile uint32_t hw3OffsetLastSentMs   = 0;     // when we last sent hw3OffsetLastRaw
+    volatile uint8_t  hw3OffsetTargetRaw    = 0;     // last target (raw) requested by encoder; for diag
+    volatile uint32_t hw3OffsetSlewCount    = 0;     // # frames the slew limiter capped a drop
+
+    // HW3 high-speed (≥80 kph fused limit) custom offset — default OFF.
+    // Original behavior (when disabled): passthrough stock EAP offset at ≥80.
+    // Enabled: write pct×4 raw using hw3HighSpeedTargetPct[] indexed by
+    // (fusedLimitKph − 80) / 10 (80/90/100/110/120 buckets; >120 uses last).
+    // Clamps to Tesla's 50% firmware ceiling; UI enforces a softer 30% default cap.
+    volatile bool     hw3HighSpeedEnable    = false;
+    // Per-bucket pct for 80/90/100/110/120 kph fused limits.
+    // Typical 10-20; clamps at 50 (Tesla fw cap). UI enforces softer default.
+    volatile uint8_t  hw3HighSpeedTargetPct[kHw3HighSpeedBucketCount] = {15, 15, 15, 15, 15};
     volatile uint8_t  nagLevel            = 0;   // DAS_autopilotHandsOnState  bit42|4  0=ok, 1-15=nag
     volatile uint8_t  fcwLevel            = 0;   // DAS_forwardCollisionWarning bit22|2  0=none
     volatile uint8_t  accState            = 0;   // DAS_ACC_report             bit26|5  0=off, >0=AP active

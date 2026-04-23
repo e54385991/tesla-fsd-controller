@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION "1.4.26"
+#define FIRMWARE_VERSION "1.4.27"
 
 // Variant tag shown in the web UI alongside the version number.
 // Empty string for baseline single-CAN builds.

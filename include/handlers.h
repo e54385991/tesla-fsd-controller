@@ -32,6 +32,7 @@ FSDConfig cfg;  // NOLINT(misc-definitions-in-headers)
 #include "mod_climate.h"
 #include "mod_perf.h"
 #include "mod_ota.h"
+#include "mod_gps_speed.h"
 
 #ifdef WIFI_BRIDGE_ENABLED
 // Single definition of the DNS hook in this TU (main.cpp).
@@ -81,6 +82,9 @@ static void handleMessage(CanFrame& frame, CanDriver& driver) {
     if (frame.id == 923) { handleDASStatus(frame);            return; }  // 0x39B DAS_status
     if (frame.id == 905) { handleDASStatus2(frame);           return; }  // 0x389 DAS_status2
     if (frame.id == 585) { handleSCCMStalk(frame, driver);    return; }  // 0x249 SCCM_leftStalk
+    // 0x2F8 (760) UI_gpsVehicleSpeed — sniff first, then fall through to isFilteredId()
+    // so the Legacy handler can TX-modify the frame (v1.4.27 legacyOffset feature).
+    if (frame.id == 760) handleGpsVehicleSpeed(frame);
     // 0x399 (921) DAS_status_ISA — dual-source fused speed limit reader.
     // NOTE: do NOT return here — the HW4 FSD injection handler below also
     // processes 921 for ISA chime suppression. Falls through to isFilteredId().
