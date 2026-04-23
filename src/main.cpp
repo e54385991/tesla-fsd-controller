@@ -16,6 +16,7 @@
 #include <esp_task_wdt.h>
 #include <driver/twai.h>
 #include <esp_netif.h>
+#include <esp_wifi.h>
 #include <SPIFFS.h>
 
 #include "can_frame_types.h"
@@ -127,6 +128,9 @@ static bool checkToken(AsyncWebServerRequest* req) {
 #define NV_HW3_HSPT  "da"   // blob: hw3HighSpeedTargetPct[kHw3HighSpeedBucketCount] (v1.4.27)
 #define NV_LEG_OFF   "db"   // u8: legacyOffset 0-33 kph, 0=off (v1.4.27)
 #define NV_LEG_RVSL  "dc"   // bool: removeVisionSpeedLimit, default true (v1.4.27)
+#define NV_HW3_ENC   "dd"   // u8: hw3WireEncoding 0=KPH5, 1=PCT4 (v1.4.28, default PCT4)
+#define NV_IP_BLK    "de"   // bool: ipBlockerEnabled (v1.4.29, default false — hot-path fast path)
+#define NV_ISA_OVR   "df"   // bool: isaOverride (v1.4.28, default false — HW4 ISA nav-limit clamp bypass)
 
 // ═══════════════════════════════════════════
 //  Config persistence (NVS)
@@ -203,6 +207,7 @@ void loadConfig() {
     // so it stops consuming NVS space. Feature was removed (needs Vehicle CAN).
     if (prefs.isKey(NV_PRECOND)) prefs.remove(NV_PRECOND);
     cfg.hw4OffsetRaw       = prefs.getUChar(NV_HW4_OFF, 0);
+    if (cfg.hw4OffsetRaw > 15) cfg.hw4OffsetRaw = 15;  // v1.4.28: cap lowered 21→15; clamp stored values from older firmware
     cfg.trackModeEnable    = prefs.getBool(NV_TRACK_MD, false);
     cfg.hw3AutoSpeed       = prefs.getBool(NV_HW3_AUTO, true);
     cfg.hw3CustomSpeed     = prefs.getBool(NV_HW3_CUST, false);
@@ -219,6 +224,13 @@ void loadConfig() {
         cfg.legacyOffset = v;
     }
     cfg.removeVisionSpeedLimit = prefs.getBool(NV_LEG_RVSL, true);
+    {
+        uint8_t enc = prefs.getUChar(NV_HW3_ENC, HW3_ENC_PCT4);
+        if (enc > HW3_ENC_MAX) enc = HW3_ENC_PCT4;  // NVS corruption fallback
+        cfg.hw3WireEncoding = enc;
+    }
+    cfg.ipBlockerEnabled = prefs.getBool(NV_IP_BLK, false);
+    cfg.isaOverride      = prefs.getBool(NV_ISA_OVR, false);
     {
         uint8_t buf[kHw3HighSpeedBucketCount];
         if (prefs.getBytes(NV_HW3_HSPT, buf, sizeof(buf)) == sizeof(buf)) {
@@ -281,6 +293,9 @@ void saveConfig() {
                    sizeof(cfg.hw3CustomTarget));
     prefs.putUChar(NV_LEG_OFF,  cfg.legacyOffset);
     prefs.putBool(NV_LEG_RVSL,  cfg.removeVisionSpeedLimit);
+    prefs.putUChar(NV_HW3_ENC,  cfg.hw3WireEncoding);
+    prefs.putBool(NV_IP_BLK,    cfg.ipBlockerEnabled);
+    prefs.putBool(NV_ISA_OVR,   cfg.isaOverride);
     // WiFi keys written directly by /api/wifi — not touched here.
     prefs.end();
 }
@@ -506,7 +521,7 @@ void setupWebServer() {
             "\"hw3AutoSpeed\":%d,\"hw3CustomSpeed\":%d,"
             "\"hw3CustomTarget\":[%u,%u,%u,%u,%u],"
             "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3OffsetTarget\":%u,\"hw3OffsetLast\":%u,\"hw3SlewCount\":%u,"
-            "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],"
+            "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],\"hw3WireEncoding\":%u,\"ipBlockerEnabled\":%d,\"isaOverride\":%d,"
             "\"gps2F8Seen\":%s,\"gps2F8Count\":%u,\"gps2F8Period\":%u,\"gps2F8UserOffRaw\":%u,\"gps2F8MppLimRaw\":%u,"
             "\"legacyOffset\":%u,\"removeVSL\":%d,"
             "\"fusedLimit\":%u,"
@@ -553,6 +568,9 @@ void setupWebServer() {
             (unsigned)cfg.hw3HighSpeedTargetPct[0], (unsigned)cfg.hw3HighSpeedTargetPct[1],
             (unsigned)cfg.hw3HighSpeedTargetPct[2], (unsigned)cfg.hw3HighSpeedTargetPct[3],
             (unsigned)cfg.hw3HighSpeedTargetPct[4],
+            (unsigned)cfg.hw3WireEncoding,
+            (int)cfg.ipBlockerEnabled,
+            (int)cfg.isaOverride,
             cfg.gpsSpeedSeen ? "true" : "false",
             (unsigned)cfg.gpsSpeedCount,
             (unsigned)cfg.gpsSpeedPeriodMs,
@@ -667,7 +685,7 @@ void setupWebServer() {
         }
         if (req->hasParam("hw4Offset")) {
             int raw = req->getParam("hw4Offset")->value().toInt();
-            if (raw != 0 && raw != 7 && raw != 10 && raw != 14 && raw != 21) {
+            if (raw < 0 || raw > 15) {
                 req->send(400, "text/plain", "bad hw4Offset"); return;
             }
         }
@@ -775,6 +793,21 @@ void setupWebServer() {
             bool v = req->getParam("hw3HighSpeedEnable")->value().toInt() != 0;
             if (v != cfg.hw3HighSpeedEnable) { cfg.hw3HighSpeedEnable = v; changed = true; }
         }
+        if (req->hasParam("hw3WireEncoding")) {
+            int v = req->getParam("hw3WireEncoding")->value().toInt();
+            if (v < 0) v = 0;
+            if (v > HW3_ENC_MAX) v = HW3_ENC_MAX;
+            uint8_t nv = (uint8_t)v;
+            if (nv != cfg.hw3WireEncoding) { cfg.hw3WireEncoding = nv; changed = true; }
+        }
+        if (req->hasParam("ipBlockerEnabled")) {
+            bool v = req->getParam("ipBlockerEnabled")->value().toInt() != 0;
+            if (v != cfg.ipBlockerEnabled) { cfg.ipBlockerEnabled = v; changed = true; }
+        }
+        if (req->hasParam("isaOverride")) {
+            bool v = req->getParam("isaOverride")->value().toInt() != 0;
+            if (v != cfg.isaOverride) { cfg.isaOverride = v; changed = true; }
+        }
         // Apply pre-validated values — validate-all-then-apply preserves atomicity
         // so a late bad field can't leave earlier slots mutated in RAM.
         for (int i = 0; i < kHw3CustomTargetCount; i++) {
@@ -793,7 +826,10 @@ void setupWebServer() {
         }
         // precond removed from UI — requires Vehicle CAN (X179 pin 9/10)
         if (req->hasParam("hw4Offset")) {
-            uint8_t v = (uint8_t)req->getParam("hw4Offset")->value().toInt();
+            int raw = req->getParam("hw4Offset")->value().toInt();
+            if (raw < 0)  raw = 0;
+            if (raw > 15) raw = 15;  // UI cap aligned with upstream Turkish fw; hardware field is 6 bits but >15 unverified
+            uint8_t v = (uint8_t)raw;
             if (v != cfg.hw4OffsetRaw) { cfg.hw4OffsetRaw = v; changed = true; }
         }
         if (req->hasParam("trackMode")) {
@@ -1611,6 +1647,18 @@ void setup() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(true);
     WiFi.mode(WIFI_AP_STA);
+
+#ifdef WIFI_BRIDGE_ENABLED
+    // v1.4.29: bridge-only throughput tuning — 240 MHz CPU + 11b/g/n + HT40.
+    // Non-bridge CAN-only envs don't do NAPT, don't need the extra thermal budget,
+    // and Tesla-screen-facing AP stays captive-portal-only (HT20 is enough).
+    // HT40 requested; stack downgrades STA to match the router's advertised width.
+    setCpuFrequencyMhz(240);
+    esp_wifi_set_protocol(WIFI_IF_AP,  WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    esp_wifi_set_bandwidth(WIFI_IF_AP,  WIFI_BW_HT40);
+    esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40);
+#endif
 
     // Connect to router first (if configured) so we can read the assigned STA IP
     if (staSSID[0] != '\0') {

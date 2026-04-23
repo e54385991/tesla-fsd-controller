@@ -857,6 +857,14 @@ extern "C" void dnsIpBlockerClear(void) {
 }
 
 extern "C" int dnsHookIp4CanForward(uint32_t destAddrNetOrder) {
+    // Hot path — called for every outbound IPv4 packet while NAPT is on.
+    // Short-circuit before touching the critical section when the blocker is
+    // disabled or the IP cache is empty. Per-packet overhead drops to a single
+    // volatile load + an atomic uint16 read, which is what users feel as
+    // "music streaming smoothly".
+    if (!cfg.ipBlockerEnabled) return -1;
+    if (gBlockedIpCount == 0)  return -1;
+
     // lwIP passes ip4_addr.addr which is stored in NETWORK byte order on ESP32
     // (little-endian host). Our cache stores in HOST order — byte-swap to match.
     uint32_t destAddrHostOrder =

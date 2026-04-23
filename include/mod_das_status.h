@@ -19,6 +19,8 @@
 //   DAS_ACC_report              bit26|5  (data[3]>>2) & 0x1F       0=AP off
 
 #include "can_frame_types.h"
+#include "can_helpers.h"
+#include "drivers/can_driver.h"
 #include "fsd_config.h"
 #include "mod_log.h"
 
@@ -47,6 +49,26 @@ inline void handleDASStatus(const CanFrame& frame) {
             logged923 = true;
         }
     }
+}
+
+// ── DAS_status (0x39B / 923) ISA override inject path ──────────────────────
+// When cfg.isaOverride is ON, FSD is active, and we're on HW4, re-broadcast
+// 0x39B with fusedSpeedLimit/visionOnlySpeedLimit forced to 31 ("NONE"). This
+// prevents 2024+ DAS firmware from clamping the set speed to the nav limit.
+// dlc>=8 required because we rewrite byte 7 checksum. Same re-send pattern
+// as 0x399 ISA chime in mod_fsd.h — DAS-originated frame; our echo reaches
+// the car bus after the original, and the car uses the newer arrival.
+inline void handleDASStatusISAOverride(const CanFrame& frame, CanDriver& driver) {
+    if (frame.dlc < 8) return;
+    if (!cfg.isaOverride) return;
+    if (!cfg.fsdTriggered || !cfg.fsdEnable) return;
+    if (cfg.hwMode != 2) return;  // HW4 only
+    CanFrame echo = frame;
+    echo.data[1] |= 0x1F;  // fusedSpeedLimit = 31 (NONE)
+    echo.data[2] |= 0x1F;  // visionOnlySpeedLimit = 31 (NONE)
+    echo.data[7] = computeVehicleChecksum(echo);
+    if (driver.send(echo)) cfg.modifiedCount++;
+    else                   cfg.errorCount++;
 }
 
 // ── DAS_status_ISA (0x399 / 921) ─────────────────────────────────────────────

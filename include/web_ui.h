@@ -256,14 +256,18 @@ select:focus{outline:none;border-color:#38bdf8}
     <label class="toggle"><input type="checkbox" id="apRestart" onchange="setAPRestart(this.checked)"><span class="slider"></span></label>
   </div>
   <div class="row" id="rowHW4Offset" style="display:none">
-    <span class="row-label" id="iLblHW4Off" data-zh="速度偏移 km/h（HW4）" data-en="HW4 Speed Offset (km/h)">速度偏移 km/h（HW4）</span>
-    <select id="hw4Offset" onchange="setVal('hw4Offset',this.value)">
-      <option value="0" data-zh="关闭" data-en="Off">关闭</option>
-      <option value="7" data-zh="+5 km/h" data-en="+5 km/h">+5 km/h</option>
-      <option value="10" data-zh="+7 km/h" data-en="+7 km/h">+7 km/h</option>
-      <option value="14" data-zh="+10 km/h" data-en="+10 km/h">+10 km/h</option>
-      <option value="21" data-zh="+15 km/h" data-en="+15 km/h">+15 km/h</option>
-    </select>
+    <span class="row-label" id="iLblHW4Off" data-zh="HW4 偏移强度 (0-15)" data-en="HW4 Offset Strength (0-15)">HW4 偏移强度 (0-15)</span>
+    <div style="display:flex;align-items:center;gap:8px">
+      <input type="range" id="hw4Offset" min="0" max="15" step="1" value="0"
+             oninput="document.getElementById('hw4OffVal').textContent=this.value"
+             onchange="setVal('hw4Offset',this.value)"
+             style="width:140px">
+      <span id="hw4OffVal" style="font-family:monospace;min-width:22px;text-align:right">0</span>
+    </div>
+  </div>
+  <div class="row" id="rowIsaOvr" style="display:none">
+    <span class="row-label" data-zh="ISA 限速覆盖（HW4）" data-en="ISA Speed Override (HW4)">ISA 限速覆盖（HW4）</span>
+    <label class="toggle"><input type="checkbox" id="isaOverride" onchange="setVal('isaOverride',this.checked?1:0)"><span class="slider"></span></label>
   </div>
   <div class="row" id="rowTrackMode" style="display:none">
     <span class="row-label" id="iLblTrackMode">赛道模式（实验性）</span>
@@ -286,6 +290,14 @@ select:focus{outline:none;border-color:#38bdf8}
       <div><div class="hw3ct-label">60</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">max 90</div><input type="number" id="hw3CT3" min="60" max="90" class="hw3ct-input" onchange="setValHw3CT('hw3CT3',this.value)"></div>
       <div><div class="hw3ct-label">70</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">max 105</div><input type="number" id="hw3CT4" min="70" max="105" class="hw3ct-input" onchange="setValHw3CT('hw3CT4',this.value)"></div>
     </div>
+  </div>
+  <div class="row" id="rowHW3Enc" style="display:none;flex-direction:column;align-items:flex-start;gap:4px">
+    <span class="row-label" id="iLblHW3Enc" data-zh="偏移编码（车机解码差异）" data-en="Offset Encoding (firmware-dependent)">偏移编码（车机解码差异）</span>
+    <select id="hw3WireEncoding" onchange="setVal('hw3WireEncoding',this.value)" style="width:100%;padding:6px 8px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:6px;font-size:13px">
+      <option value="1">PCT4（默认，多数车机）</option>
+      <option value="0">KPH5（少数车机）</option>
+    </select>
+    <div style="font-size:11px;color:#64748b" data-zh="若实际跑出的最高速明显低于目标，改用 KPH5 再试。" data-en="If actual speed is far below target, switch to KPH5.">若实际跑出的最高速明显低于目标，改用 KPH5 再试。</div>
   </div>
   <div class="row" id="rowHW3Slew" style="display:none">
     <span class="row-label" id="iLblHW3Slew" data-zh="平滑减速（测试）" data-en="Smooth Decel (beta)">平滑减速（测试）</span>
@@ -470,6 +482,9 @@ select:focus{outline:none;border-color:#38bdf8}
       <div style="color:#64748b;font-size:10px;margin-top:4px">此处为上方类别合并后的完整文本，保存时以此为准。手改会覆盖类别选择。</div>
     </details>
     <button class="save-btn" onclick="brSet()" style="margin-top:10px">保存 DNS 配置</button>
+    <div class="row" style="margin-top:10px"><span class="row-label">IP 层拦截</span>
+      <label class="switch"><input type="checkbox" id="ipBlkEn" onchange="setIpBlk()"><span class="slider"></span></label></div>
+    <div style="color:#64748b;font-size:11px;margin:-4px 0 6px 0;line-height:1.6">关闭可消除每包 lwIP 钩子开销（默认关，音乐/视频更流畅）；开启才会按黑名单解析出的 IP 在包转发层拦截。</div>
     <div style="margin-top:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
         <span style="font-size:12px;color:#64748b">DNS 拦截 <span id="brBlkTot">0</span> 次 · IP 拦截 <span id="brIpDrops">0</span> 次 (cache <span id="brIpCache">0</span>/<span id="brIpCap">256</span> · peak <span id="brIpPeak">0</span>)</span>
@@ -574,6 +589,8 @@ var lang='zh';
 var agreed=false;
 var token='';
 var pinRequired=false;
+// HW4 offset raw → km/h (~0.714 ratio, calibrated from legacy presets 7→5,10→7,14→10,15→11)
+function hw4RawToKph(r){ return r>0 ? Math.round(r*5/7) : 0; }
 try{token=sessionStorage.getItem('fsd_tok')||'';}catch(e){}
 var T={
   zh:{title:'特斯拉控制器',cardCtrl:'控制',cardStat:'状态',cardOTA:'固件更新',
@@ -830,6 +847,7 @@ function poll(){
       document.getElementById('rowHW3Auto').style.display=(d.hwMode===1)?'':'none';
       document.getElementById('rowHW3Custom').style.display=(d.hwMode===1)?'':'none';
       document.getElementById('rowHW4Offset').style.display=(d.hwMode===2)?'':'none';
+      document.getElementById('rowIsaOvr').style.display=(d.hwMode===2)?'':'none';
       document.getElementById('rowTrackMode').style.display=(d.hwMode===1)?'':'none';
     }
     // Server-authoritative sync: reset checkbox + panel from poll on every tick so a
@@ -844,6 +862,15 @@ function poll(){
         hw3CTLoaded=true;
       }
     }
+    var encEl=document.getElementById('hw3WireEncoding');
+    if(encEl){
+      if(document.activeElement!==encEl){
+        encEl.value=String(d.hw3WireEncoding!=null?d.hw3WireEncoding:1);
+      }
+      document.getElementById('rowHW3Enc').style.display=(d.hwMode===1)?'':'none';
+    }
+    var ipBlkEl=document.getElementById('ipBlkEn');
+    if(ipBlkEl)ipBlkEl.checked=!!d.ipBlockerEnabled;
     var slewEl=document.getElementById('hw3OffsetSlew');
     if(slewEl){
       slewEl.checked=!!d.hw3OffsetSlew;
@@ -879,7 +906,14 @@ function poll(){
     }
     document.getElementById('apRestart').checked=!!d.apRestart;
     var hw4OffEl=document.getElementById('hw4Offset');
-    if(hw4OffEl)hw4OffEl.value=String(d.hw4Offset!=null?d.hw4Offset:0);
+    if(hw4OffEl && document.activeElement!==hw4OffEl){
+      var hv=d.hw4Offset!=null?d.hw4Offset:0;
+      hw4OffEl.value=String(hv);
+      var hLbl=document.getElementById('hw4OffVal');
+      if(hLbl) hLbl.textContent=String(hv);
+    }
+    var isaOvrEl=document.getElementById('isaOverride');
+    if(isaOvrEl) isaOvrEl.checked=!!d.isaOverride;
     var trackModeEl=document.getElementById('trackMode');
     if(trackModeEl)trackModeEl.checked=!!d.trackMode;
 
@@ -927,7 +961,7 @@ function poll(){
     // below 80 kph snaps to calibrated floor (64/85/100 targets).
     var hw3Pct=(d.hw3AutoOffset>=0)?d.hw3AutoOffset:-1;
     var offKmh=(hw3Pct>=0&&spdLimKph>0)?Math.round(spdLimKph*hw3Pct/100):null;
-    var hw4OffKmh={0:0,7:5,10:7,14:10,21:15}[d.hw4Offset]||0;
+    var hw4OffKmh=hw4RawToKph(d.hw4Offset);
     var offVal=d.hwMode===1?(offKmh!=null?offKmh:null):
                (d.hwMode===2&&hw4OffKmh>0?hw4OffKmh:null);
     document.getElementById('liveOffset').textContent=offVal!=null?'+'+offVal:'--';
@@ -1097,6 +1131,11 @@ function brPoll(){
 function brSetPing(){
   var v=document.getElementById('brPingEn').checked?1:0;
   fetch('/api/wifi-bridge/set?pingEnable='+v+(token?'&token='+token:''))
+    .then(function(r){msg('brMsg',r.ok?'已保存':'保存失败',r.ok);});
+}
+function setIpBlk(){
+  var v=document.getElementById('ipBlkEn').checked?1:0;
+  fetch('/api/set?ipBlockerEnabled='+v+(token?'&token='+token:''))
     .then(function(r){msg('brMsg',r.ok?'已保存':'保存失败',r.ok);});
 }
 function escHtml(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
@@ -1384,6 +1423,7 @@ function updateSpeedOptions(hwMode){
   document.getElementById('rowTrackMode').style.display=isHW3?'':'none';
   // HW4-only rows — hide and reset on other modes
   document.getElementById('rowHW4Offset').style.display=isHW4?'':'none';
+  document.getElementById('rowIsaOvr').style.display=isHW4?'':'none';
   document.getElementById('rowEmgDet').style.display=isHW4?'':'none';
   // Legacy-only rows
   document.getElementById('rowOverrideSL').style.display=(hwMode===0)?'':'none';

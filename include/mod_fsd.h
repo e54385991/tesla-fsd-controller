@@ -62,17 +62,49 @@ static inline int computeHW3CustomTargetSpeedKph(int fusedLimitKph) {
     return (int)cfg.hw3CustomTarget[idx];
 }
 
-static inline uint8_t encodeHW3OffsetRawFromPct(int pct) {
+// Two wire-encoding variants observed in the field. cfg.hw3WireEncoding picks.
+enum Hw3WireEnc : uint8_t { HW3_ENC_KPH5 = 0, HW3_ENC_PCT4 = 1, HW3_ENC_MAX = HW3_ENC_PCT4 };
+
+// KPH5 encoding caps at 40 kph offset (raw 200). Observed correct on
+// 2024 Model Y HW3 (v1.4.28 reporter).
+static constexpr int kHw3EncKph5MaxKph = 40;
+static constexpr int kHw3EncKph5Scale  = 5;  // raw = offsetKph × 5
+static constexpr int kHw3EncPct4Scale  = 4;  // raw = pct × 4
+
+// raw = pct × 4 (tesla-open-can-mod reference; Issue #9 reporter).
+static inline uint8_t encodeHW3OffsetPct4(int pct) {
     int clamped = std::max(0, std::min(pct, kHw3SpeedOffsetMaxPct));
-    return (uint8_t)(clamped * 4);
+    return (uint8_t)(clamped * kHw3EncPct4Scale);
 }
 
-// Convert a desired km/h offset at a given posted limit into the raw byte
-// written to the 0x3FD active-offset field. Rounds to nearest pct.
-static inline uint8_t encodeHW3OffsetRawFromKph(int offsetKph, int fusedLimitKph) {
-    if (fusedLimitKph <= 0 || offsetKph <= 0) return 0;
+// raw = offsetKph × 5 (v1.4.25 behavior; 2024 Model Y HW3 reporter).
+static inline uint8_t encodeHW3OffsetKph5(int offsetKph) {
+    int clamped = std::max(0, std::min(offsetKph, kHw3EncKph5MaxKph));
+    return (uint8_t)(clamped * kHw3EncKph5Scale);
+}
+
+// Single entry point for HW3 0x3FD mux-2 offset writes when caller has km/h.
+// Dispatches by cfg.hw3WireEncoding; caller supplies both km/h offset and
+// posted limit so either path has what it needs without a second lookup.
+static inline uint8_t encodeHW3Offset(int offsetKph, int fusedLimitKph) {
+    if (offsetKph <= 0 || fusedLimitKph <= 0) return 0;
+    if (cfg.hw3WireEncoding == HW3_ENC_KPH5) {
+        return encodeHW3OffsetKph5(offsetKph);
+    }
     int pct = (offsetKph * 100 + fusedLimitKph / 2) / fusedLimitKph;
-    return encodeHW3OffsetRawFromPct(pct);
+    return encodeHW3OffsetPct4(pct);
+}
+
+// High-speed branch stores pct per bucket; dispatch based on wire encoding.
+// PCT4 encodes pct directly (avoids kph round-trip precision loss);
+// KPH5 converts pct → kph once, then to raw.
+static inline uint8_t encodeHW3OffsetFromPct(int pct, int fusedLimitKph) {
+    if (pct <= 0 || fusedLimitKph <= 0) return 0;
+    if (cfg.hw3WireEncoding == HW3_ENC_PCT4) {
+        return encodeHW3OffsetPct4(pct);
+    }
+    int offsetKph = (fusedLimitKph * pct + 50) / 100;
+    return encodeHW3OffsetKph5(offsetKph);
 }
 
 // ── CAN ID filter tables (used by handleMessage) ──────────────────────────
@@ -220,9 +252,7 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
                                 : computeHW3MinimumTargetSpeedKph(fusedLimitKph);
                             if (targetSpeedKph > 0) {
                                 int desiredOffsetKph = std::max(targetSpeedKph - fusedLimitKph, 0);
-                                // Convert kph → pct of fused limit; Tesla caps at 50% so values
-                                // beyond 1.5× limit silently clamp to the physical ceiling.
-                                activeRaw = encodeHW3OffsetRawFromKph(desiredOffsetKph, fusedLimitKph);
+                                activeRaw = encodeHW3Offset(desiredOffsetKph, fusedLimitKph);
                             }
                         }
                     } else {
@@ -233,7 +263,7 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
                             if (idx >= kHw3HighSpeedBucketCount) idx = kHw3HighSpeedBucketCount - 1;
                             uint8_t pct = cfg.hw3HighSpeedTargetPct[idx];
                             if (pct > 0) {
-                                activeRaw = encodeHW3OffsetRawFromPct((int)pct);
+                                activeRaw = encodeHW3OffsetFromPct((int)pct, fusedLimitKph);
                             }
                         }
                     }
@@ -306,10 +336,7 @@ static void handleHW4(CanFrame& frame, CanDriver& driver) {
         if (frame.dlc < 8) return;
         if (!cfg.isaChimeSuppress) return;
         frame.data[1] |= 0x20;
-        uint8_t sum = 0;
-        for (int i = 0; i < 7; i++) sum += frame.data[i];
-        sum += (921 & 0xFF) + (921 >> 8);
-        frame.data[7] = sum & 0xFF;
+        frame.data[7] = computeVehicleChecksum(frame);
         if (driver.send(frame)) cfg.modifiedCount++;
         else                    cfg.errorCount++;
         return;

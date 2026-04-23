@@ -48,7 +48,15 @@ struct FSDConfig {
         90,   // 60 kph bucket → max +30
         105,  // 70 kph bucket → max +35
     };
-    volatile uint8_t  hw4OffsetRaw       = 0;       // HW4 mux-2 data[1][5:0]; 0=off (presets: 7=+5,10=+7,14=+10,21=+15 km/h)
+    volatile uint8_t  hw4OffsetRaw       = 0;       // HW4 mux-2 data[1][5:0]; 0=off. Hardware field=6 bits (cap 63), UI cap=15 (v1.4.28, aligned with upstream Turkish fw). Legacy presets 7/10/14 still valid; 21 now clamps to 15.
+    // ISA speed-limit override (v1.4.28, HW4 only). When ON and FSD is active,
+    // we re-broadcast 0x39B with DAS_fusedSpeedLimit (byte1[4:0]) and
+    // DAS_visionOnlySpeedLimit (byte2[4:0]) forced to raw=31 ("NONE"), so the
+    // DAS stops clamping the set/cruise speed to the nav/vision limit on 2024+
+    // firmware. The chime also goes silent as a side effect — the car's chime
+    // logic is gated on a valid fusedSpeedLimit, and forcing NONE disarms it
+    // without needing isaChimeSuppress on top. NVS key "df".
+    volatile bool     isaOverride         = false;
     volatile uint8_t  hwDetected          = 0;       // from 0x398: 0=unknown, 1=HW3, 2=HW4 (informational only)
     volatile int8_t   gatewayAutopilot    = -1;      // from 0x7FF mux-2: -1=unseen, 0=NONE,1=HIGHWAY,2=ENHANCED,3=SELF_DRIVING,4=BASIC
     volatile bool     trackModeEnable     = false;   // HW3: echo 0x313 with UI_trackModeRequest=ON (off by default)
@@ -116,6 +124,21 @@ struct FSDConfig {
     // Per-bucket pct for 80/90/100/110/120 kph fused limits.
     // Typical 10-20; clamps at 50 (Tesla fw cap). UI enforces softer default.
     volatile uint8_t  hw3HighSpeedTargetPct[kHw3HighSpeedBucketCount] = {25, 25, 25, 25, 25};
+
+    // HW3 0x3FD mux-2 offset wire encoding (v1.4.28). Two Tesla firmware
+    // revisions in the wild decode this byte differently:
+    //   PCT4: raw = pct × 4  (tesla-open-can-mod reference; Issue #9 user)
+    //   KPH5: raw = offsetKph × 5  (v1.4.25 behavior; 2024 HW3 user)
+    // Default PCT4 preserves v1.4.27 behavior. Users whose car mis-targets
+    // can flip to KPH5 via UI. NVS key "dd".
+    volatile uint8_t  hw3WireEncoding       = 1;  // 0=KPH5, 1=PCT4
+
+    // IP blocker enable gate (v1.4.29). The DNS module's IPv4 forward hook
+    // scans a 256-entry blocked IP table on every outbound packet — a real
+    // per-packet cost even when no IPs are blocked yet. Default OFF so the
+    // hook short-circuits immediately; users who want IP-level blocking
+    // can opt in via UI. NVS key "de".
+    volatile bool     ipBlockerEnabled      = false;
     volatile uint8_t  nagLevel            = 0;   // DAS_autopilotHandsOnState  bit42|4  0=ok, 1-15=nag
     volatile uint8_t  fcwLevel            = 0;   // DAS_forwardCollisionWarning bit22|2  0=none
     volatile uint8_t  accState            = 0;   // DAS_ACC_report             bit26|5  0=off, >0=AP active

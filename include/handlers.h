@@ -79,7 +79,11 @@ static void handleMessage(CanFrame& frame, CanDriver& driver) {
     if (frame.id == 264) { handleTorque(frame); return; }  // 0x108 DI_torque (cmd/actual)
     if (frame.id == 643) { handleClimate(frame);               return; }  // 0x283 BODY_R1 (AirTemp)
     if (frame.id == 659) { handleDASSettings(frame);          return; }  // 0x293 DAS_settings
-    if (frame.id == 923) { handleDASStatus(frame);            return; }  // 0x39B DAS_status
+    if (frame.id == 923) {                                                // 0x39B DAS_status
+        handleDASStatus(frame);
+        handleDASStatusISAOverride(frame, driver);  // v1.4.28 ISA override
+        return;
+    }
     if (frame.id == 905) { handleDASStatus2(frame);           return; }  // 0x389 DAS_status2
     if (frame.id == 585) { handleSCCMStalk(frame, driver);    return; }  // 0x249 SCCM_leftStalk
     // 0x2F8 (760) UI_gpsVehicleSpeed — sniff first, then fall through to isFilteredId()

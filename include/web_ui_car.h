@@ -454,17 +454,25 @@ button{font-family:inherit;cursor:pointer}
           <div class="hw3ct-grid" id="gridHw3Hs"></div>
           <div style="font-size:13px;color:#a0a0a0;margin-top:10px;font-family:monospace" id="cHiSpdHint"></div>
         </div>
+        <div class="row"><div class="rlbl">偏移编码<span class="info-ic" onclick="hint('不同 Tesla 固件对 0x3FD 偏移字节解码不同。PCT4 是多数车；若实际跑出的最高速明显低于目标，切 KPH5 再观察。')">i</span></div>
+          <div class="bgroup" id="grpHw3Enc">
+            <button class="pill" data-enc="1">PCT4（默认）</button>
+            <button class="pill" data-enc="0">KPH5</button>
+          </div>
+        </div>
       </div>
 
       <div class="panel" id="panelHw4" style="display:none">
         <div class="ptitle">HW4 速度偏移</div>
-        <div class="bgroup" id="grpHw4Off">
-          <button class="pill" data-hw4="0">关闭</button>
-          <button class="pill" data-hw4="7">+5 km/h</button>
-          <button class="pill" data-hw4="10">+7 km/h</button>
-          <button class="pill" data-hw4="14">+10 km/h</button>
-          <button class="pill" data-hw4="21">+15 km/h</button>
+        <div class="row"><div class="rlbl">偏移强度</div>
+          <div class="ts-step" style="flex:0 0 200px">
+            <button class="ts-step-btn" onclick="hw4Step(-1)">−</button>
+            <div class="ts-step-val"><span id="cHw4Off">0</span><span class="ts-step-unit">raw ≈ <span id="cHw4OffKmh">0</span> km/h</span></div>
+            <button class="ts-step-btn" onclick="hw4Step(1)">+</button>
+          </div>
+          <div class="rval">0~15（0=关，15≈+11 km/h）</div>
         </div>
+        <div class="row"><div class="rlbl">ISA 限速覆盖</div><div class="tog" id="tgIsaOvr" data-k="isaOverride"></div><div class="rval">阻止 nav 限速压速（2024+ 固件必开）</div></div>
       </div>
 
       <div class="panel">
@@ -581,6 +589,14 @@ button{font-family:inherit;cursor:pointer}
       </div>
       <div class="panel" id="panelIpStats">
         <div class="ptitle">IP 拦截缓存</div>
+        <div class="ptile-row" style="margin-bottom:10px">
+          <div class="ptile-label">IP 层拦截开关</div>
+          <div class="pill-group" id="grpIpBlk">
+            <button class="pill" data-v="0" onclick="setIpBlk(0)">关</button>
+            <button class="pill" data-v="1" onclick="setIpBlk(1)">开</button>
+          </div>
+        </div>
+        <div class="tip" style="margin-bottom:10px">关闭可消除每包转发层开销，流媒体更流畅；开启才会按黑名单解析出的 IP 拦截。</div>
         <div class="info-grid">
           <div class="info-item"><div class="info-lbl">已丢弃包</div><div class="info-val"><span id="brIpDrops">--</span></div></div>
           <div class="info-item"><div class="info-lbl">缓存条数</div><div class="info-val"><span id="brIpCache">--</span> / <span id="brIpCacheCap">--</span></div></div>
@@ -960,8 +976,7 @@ function render(d){
   var offKmh = 0, offPctTxt = '', offShow = false;
   if(d.hwMode === 2){
     // HW4：离散档，与限速无关，只要非零就显示
-    var HW4MAP = {0:0, 7:5, 10:7, 14:10, 21:15};
-    offKmh = HW4MAP[d.hw4Offset] || 0;
+    offKmh = hw4RawToKph(d.hw4Offset);
     offPctTxt = 'HW4';
     offShow = offKmh > 0;
   } else if(fusedKmh > 0){
@@ -1086,6 +1101,7 @@ function render(d){
     if(cH) cH.textContent='('+parts.join(' / ')+')';
   })();
   setTog('tgIsa', d.isaChime);
+  setTog('tgIsaOvr', d.isaOverride);
   setTog('tgEmerg', d.emergencyDet);
   setTog('tgForce', d.forceActivate);
   setTog('tgOvr', d.overrideSL);
@@ -1133,9 +1149,24 @@ function render(d){
   document.getElementById('rowRvsl').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowLegOff').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowTrack').style.display = isHW3 ? '' : 'none';
-  // HW4 偏移 pill 选中
-  document.querySelectorAll('#grpHw4Off .pill').forEach(function(b){
-    b.classList.toggle('active', parseInt(b.dataset.hw4)===d.hw4Offset);
+  // HW4 偏移 stepper 值回填（respect dirty）
+  (function(){
+    var e=document.getElementById('cHw4Off'), k=document.getElementById('cHw4OffKmh');
+    if(e && !hw4OffDirty){
+      var v=(d.hw4Offset!=null)?Number(d.hw4Offset):HW4OFF_DEF;
+      e.textContent=v;
+      if(k) k.textContent=hw4RawToKph(v);
+    }
+  })();
+  // HW3 编码 pill 选中
+  var encCur = (d.hw3WireEncoding!=null)?parseInt(d.hw3WireEncoding):1;
+  document.querySelectorAll('#grpHw3Enc .pill').forEach(function(b){
+    b.classList.toggle('active', parseInt(b.dataset.enc)===encCur);
+  });
+  // IP 拦截开关 pill 选中
+  var ipBlkCur = d.ipBlockerEnabled?1:0;
+  document.querySelectorAll('#grpIpBlk .pill').forEach(function(b){
+    b.classList.toggle('active', parseInt(b.dataset.v)===ipBlkCur);
   });
 
   // CAN 页
@@ -1489,8 +1520,8 @@ document.getElementById('tgApRs').onclick = function(){
     .catch(function(){toast('网络错误','err')});
 };
 
-document.querySelectorAll('#grpHw4Off .pill').forEach(function(b){
-  b.onclick = function(){apiSet('hw4Offset', b.dataset.hw4)};
+document.querySelectorAll('#grpHw3Enc .pill').forEach(function(b){
+  b.onclick = function(){apiSet('hw3WireEncoding', b.dataset.enc)};
 });
 
 // ───── apiSet ─────
@@ -1504,8 +1535,10 @@ var STEP_DEBOUNCE_MS=400, STEP_SETTLE_MS=600;
 var HW3CT_RANGE=[[30,45],[40,60],[50,75],[60,90],[70,105]];
 var HW3CT_DEF=HW3CT_RANGE.map(function(r){return r[1];});
 var HW3HS_DEF=[25,25,25,25,25];
-var SLEW_DEF=5, LEGACY_DEF=0;
-var hw3CTDirty={}, hw3HSDirty={}, slewDirty=false, legacyDirty=false;
+var SLEW_DEF=5, LEGACY_DEF=0, HW4OFF_DEF=0;
+// HW4 offset raw → km/h (~0.714 ratio, calibrated from legacy presets 7→5,10→7,14→10,15→11)
+function hw4RawToKph(r){ return r>0 ? Math.round(r*5/7) : 0; }
+var hw3CTDirty={}, hw3HSDirty={}, slewDirty=false, legacyDirty=false, hw4OffDirty=false;
 function fmtSlewKph(rv){ return '≈ -'+(rv*0.6).toFixed(1)+' kph/s @60限速'; }
 
 // idOf(idx)→DOM id, paramOf(id)→POST key (default identity), range(idx)→[min,max], def(idx)→seed,
@@ -1523,6 +1556,7 @@ function makeStepper(opts){
     el.textContent=nv;
     if(opts.dirty==='slew') slewDirty=true;
     else if(opts.dirty==='legacy') legacyDirty=true;
+    else if(opts.dirty==='hw4off') hw4OffDirty=true;
     else opts.dirty[id]=true;
     pending[id]=nv;
     if(opts.onChange) opts.onChange(nv);
@@ -1536,6 +1570,7 @@ function makeStepper(opts){
           function clearDirty(){
             if(opts.dirty==='slew') slewDirty=false;
             else if(opts.dirty==='legacy') legacyDirty=false;
+            else if(opts.dirty==='hw4off') hw4OffDirty=false;
             else for(var k in sent) delete opts.dirty[k];
           }
           if(r.status===200){
@@ -1577,6 +1612,15 @@ var _legacyImpl=makeStepper({
   dirty:'legacy'
 });
 function legacyStep(delta){ _legacyImpl(0, delta); }
+var _hw4OffImpl=makeStepper({
+  idOf:function(){return 'cHw4Off';},
+  paramOf:function(){return 'hw4Offset';},
+  range:function(){return [0,15];},
+  def:function(){return HW4OFF_DEF;},
+  dirty:'hw4off',
+  onChange:function(nv){ var k=document.getElementById('cHw4OffKmh'); if(k) k.textContent=hw4RawToKph(nv); }
+});
+function hw4Step(delta){ _hw4OffImpl(0, delta); }
 function hint(msg){ toast(msg, '', 3500); }
 
 // Inject ts-step cells for the two HW3 grids at init — eliminates ~3KB of repeated PROGMEM HTML.
@@ -1648,6 +1692,12 @@ function highlightPreset(allow, block){
     var bk = String(block||'').trim().split(/\s+/).filter(Boolean).length;
     stat.innerHTML = '当前：<span style="color:#fbbf24">✍️ 自定义规则</span>（白名单 '+aw+' · 黑名单 '+bk+'）';
   }
+}
+function setIpBlk(v){
+  var qs = '?ipBlockerEnabled='+(v?1:0);
+  if(tok) qs += '&token='+encodeURIComponent(tok);
+  fetch('/api/set'+qs)
+    .then(function(r){if(r.status===200){toast('已保存','ok');poll()}else{toast('失败','err')}});
 }
 function dnsPreset(name){
   var p = DNS_PRESETS[name];
