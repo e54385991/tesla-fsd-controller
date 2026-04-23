@@ -21,45 +21,45 @@ const char CAR_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <title>特斯拉控制器 · 车机</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;background:#0b1120;color:#e2e8f0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{height:100%;background:#0a0a0a;color:#e5e5e5;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 button{font-family:inherit;cursor:pointer}
 .app{display:grid;grid-template-rows:88px 1fr;grid-template-columns:240px 1fr;grid-template-areas:"header header" "nav main";height:100vh;width:100vw}
-.header{grid-area:header;display:flex;align-items:center;gap:32px;padding:0 32px;background:#131d32;border-bottom:1px solid #1e293b}
-.logo{font-size:28px;font-weight:800;color:#38bdf8;letter-spacing:2px}
-.logo-ver{font-size:16px;color:#64748b;font-weight:500;margin-left:8px}
+.header{grid-area:header;display:flex;align-items:center;gap:32px;padding:0 32px;background:#141414;border-bottom:1px solid #222}
+.logo{font-size:28px;font-weight:800;color:#e5e5e5;letter-spacing:2px}
+.logo-ver{font-size:16px;color:#8a8a8a;font-weight:500;margin-left:8px}
 .hstat{display:flex;gap:24px;margin-left:auto;font-size:18px;font-weight:600}
 .hs{display:flex;align-items:center;gap:8px}
-.hs .dot{width:12px;height:12px;border-radius:50%;background:#64748b}
+.hs .dot{width:12px;height:12px;border-radius:50%;background:#555}
 .hs.ok .dot{background:#22c55e}
 .hs.warn .dot{background:#f59e0b}
 .hs.err .dot{background:#ef4444}
-.nav{grid-area:nav;background:#131d32;border-right:1px solid #1e293b;padding:20px 12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
-.nbtn{height:88px;background:transparent;color:#94a3b8;border:2px solid transparent;border-radius:12px;font-size:20px;font-weight:600;display:flex;align-items:center;gap:14px;padding:0 18px;text-align:left;transition:all .15s}
+.nav{grid-area:nav;background:#141414;border-right:1px solid #222;padding:20px 12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+.nbtn{height:88px;background:transparent;color:#a0a0a0;border:2px solid transparent;border-radius:12px;font-size:20px;font-weight:600;display:flex;align-items:center;gap:14px;padding:0 18px;text-align:left;transition:all .15s}
 .nbtn .ic{font-size:28px}
-.nbtn:active{background:#1e293b}
-.nbtn.active{background:#1e40af;color:#fff;border-color:#38bdf8}
+.nbtn:active{background:rgba(255,255,255,.08)}
+.nbtn.active{background:rgba(255,255,255,.22);color:#fff;border-color:transparent}
 .main{grid-area:main;padding:28px;overflow-y:auto}
-.main h2{font-size:24px;font-weight:700;color:#64748b;letter-spacing:3px;margin-bottom:20px}
+.main h2{font-size:24px;font-weight:700;color:#8a8a8a;letter-spacing:3px;margin-bottom:20px}
 .page{display:none}
 .page.show{display:block}
 /* ── dashboard v1.5 (全新设计) ─────────────────── */
-.cluster{position:relative;padding:30px 40px 24px;margin-bottom:24px;background:radial-gradient(ellipse 70% 55% at 50% 48%,#1a2c4e 0%,#0b1120 75%);border-radius:28px;overflow:hidden;min-height:660px;animation:cluster-in .6s cubic-bezier(.2,.8,.2,1)}
+.cluster{position:relative;padding:30px 40px 24px;margin-bottom:24px;background:radial-gradient(ellipse 70% 55% at 50% 48%,#1a2c4e 0%,#0a0a0a 75%);border-radius:28px;overflow:hidden;min-height:660px;animation:cluster-in .6s cubic-bezier(.2,.8,.2,1)}
 .cluster::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 30% 22% at 50% 48%,rgba(56,189,248,.1) 0%,transparent 70%),radial-gradient(ellipse 12% 8% at 20% 30%,rgba(52,211,153,.05),transparent 70%),radial-gradient(ellipse 12% 8% at 80% 30%,rgba(239,68,68,.05),transparent 70%);pointer-events:none}
 .scene{position:relative;display:grid;grid-template-columns:240px 1fr 170px;gap:20px;align-items:center;min-height:680px}
 /* ── 挡位列 ── */
 .c-gear{text-align:center;position:relative;z-index:2}
-.gear-big{font-size:260px;font-weight:900;line-height:.82;font-family:-apple-system,'SF Pro Display',system-ui,sans-serif;letter-spacing:-16px;color:#64748b;transform-origin:center center;transition:color .35s, transform .45s cubic-bezier(.2,.8,.2,1);text-shadow:0 6px 80px currentColor;display:inline-block;will-change:transform}
+.gear-big{font-size:260px;font-weight:900;line-height:.82;font-family:-apple-system,'SF Pro Display',system-ui,sans-serif;letter-spacing:-16px;color:#8a8a8a;transform-origin:center center;transition:color .35s, transform .45s cubic-bezier(.2,.8,.2,1);text-shadow:0 6px 80px currentColor;display:inline-block;will-change:transform}
 .cluster.driving .gear-big{transform:scale(.37)}
 .gear-big.P{color:#60a5fa}
 .gear-big.R{color:#f87171}
-.gear-big.N{color:#94a3b8}
+.gear-big.N{color:#a0a0a0}
 .gear-big.D{color:#34d399}
 .gear-big.pop{animation:gear-pop .55s cubic-bezier(.2,1.3,.3,1)}
 .cluster.driving .gear-big.pop{animation:gear-pop-small .5s cubic-bezier(.2,1.25,.3,1)}
 @keyframes gear-pop{0%{transform:scale(.55);opacity:.4}55%{transform:scale(1.2);opacity:1}100%{transform:scale(1);opacity:1}}
 @keyframes gear-pop-small{0%{transform:scale(.2);opacity:.4}55%{transform:scale(.44);opacity:1}100%{transform:scale(.37);opacity:1}}
-.ap-mini{margin-top:14px;padding:9px 22px;display:inline-flex;align-items:center;gap:10px;background:rgba(15,23,42,.55);border:1px solid rgba(30,41,59,.9);border-radius:22px;font-size:16px;color:#64748b;letter-spacing:3px;font-weight:700;backdrop-filter:blur(6px)}
-.ap-mini .apv{color:#64748b}
+.ap-mini{margin-top:14px;padding:9px 22px;display:inline-flex;align-items:center;gap:10px;background:rgba(15,23,42,.55);border:1px solid rgba(30,41,59,.9);border-radius:22px;font-size:16px;color:#8a8a8a;letter-spacing:3px;font-weight:700;backdrop-filter:blur(6px)}
+.ap-mini .apv{color:#8a8a8a}
 .ap-mini .ap-dot{width:10px;height:10px;border-radius:50%;background:#475569;transition:all .3s}
 .ap-mini.on{background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.35)}
 .ap-mini.on .apv{color:#34d399;animation:ap-pulse 2.2s ease-in-out infinite}
@@ -83,7 +83,7 @@ button{font-family:inherit;cursor:pointer}
 .spd-off .spd-off-sep{color:rgba(251,191,36,.4)}
 /* ── 限速牌 (缩小) ── */
 .c-limit{display:flex;flex-direction:column;align-items:center;gap:8px;position:relative;z-index:2}
-.c-limit .l-src{font-size:12px;color:#64748b;letter-spacing:3px;min-height:16px;font-weight:600;text-transform:uppercase}
+.c-limit .l-src{font-size:12px;color:#8a8a8a;letter-spacing:3px;min-height:16px;font-weight:600;text-transform:uppercase}
 .limit-sign{width:140px;height:140px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#fff 0%,#f8fafc 70%);border:11px solid #dc2626;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 6px 36px rgba(220,38,38,.4),inset 0 3px 10px rgba(0,0,0,.08);animation:glow-breath 3.5s ease-in-out infinite}
 @keyframes glow-breath{0%,100%{box-shadow:0 6px 36px rgba(220,38,38,.4),inset 0 3px 10px rgba(0,0,0,.08)}50%{box-shadow:0 6px 54px rgba(220,38,38,.65),inset 0 3px 10px rgba(0,0,0,.08)}}
 .limit-num{font-size:58px;font-weight:900;color:#0f172a;line-height:1;letter-spacing:-3px;font-family:-apple-system,system-ui,sans-serif}
@@ -91,7 +91,7 @@ button{font-family:inherit;cursor:pointer}
 /* ── SOC 宽条 ── */
 .soc-wide{margin-top:22px;padding:0 10px}
 .soc-wide-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
-.soc-wide-lbl{font-size:13px;color:#64748b;letter-spacing:4px;font-weight:700;text-transform:uppercase}
+.soc-wide-lbl{font-size:13px;color:#8a8a8a;letter-spacing:4px;font-weight:700;text-transform:uppercase}
 .soc-wide-val{font-size:32px;font-weight:900;color:#34d399;font-variant-numeric:tabular-nums;letter-spacing:-1px}
 .soc-wide-val.low{color:#fbbf24}
 .soc-wide-val.crit{color:#ef4444}
@@ -102,7 +102,7 @@ button{font-family:inherit;cursor:pointer}
 @keyframes soc-shimmer{0%{background-position:0 0}100%{background-position:-200% 0}}
 /* ── 信息芯片 ── */
 .chips{margin-top:18px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;padding:0 10px}
-.chip{display:inline-flex;align-items:center;gap:10px;padding:10px 22px;background:rgba(15,23,42,.55);border:1px solid rgba(30,41,59,.9);border-radius:22px;font-size:17px;color:#cbd5e1;font-weight:700;backdrop-filter:blur(6px)}
+.chip{display:inline-flex;align-items:center;gap:10px;padding:10px 22px;background:rgba(15,23,42,.55);border:1px solid rgba(30,41,59,.9);border-radius:22px;font-size:17px;color:#e5e5e5;font-weight:700;backdrop-filter:blur(6px)}
 .chip-ic{font-size:17px}
 .chip-v{font-variant-numeric:tabular-nums;color:#e2e8f0}
 /* ── fade 通用 ── */
@@ -117,22 +117,23 @@ button{font-family:inherit;cursor:pointer}
 .app.nav-collapsed .nav{padding:14px 6px;gap:6px}
 .app.nav-collapsed .nbtn{flex-direction:column;height:72px;padding:6px 0;gap:4px;font-size:11px;letter-spacing:1px;justify-content:center}
 .app.nav-collapsed .nbtn .ic{font-size:26px;margin:0}
-.panel{background:#131d32;border:1px solid #1e293b;border-radius:16px;padding:24px;margin-bottom:20px}
-.ptitle{font-size:18px;font-weight:700;color:#e2e8f0;margin-bottom:18px;letter-spacing:1px}
-.row{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid #1e293b}
+.panel{background:#141414;border:1px solid #222;border-radius:16px;padding:24px;margin-bottom:20px}
+.ptitle{font-size:18px;font-weight:700;color:#e5e5e5;margin-bottom:18px;letter-spacing:1px}
+.row{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid #222}
 .row:last-child{border-bottom:none}
 .rlbl{font-size:20px;font-weight:600;flex:0 0 200px}
-.rval{font-size:20px;color:#94a3b8;font-family:monospace}
+.rval{font-size:20px;color:#a0a0a0;font-family:monospace}
+.info-ic{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1.5px solid #666;color:#a0a0a0;font-size:12px;font-weight:700;margin-left:8px;cursor:help;font-style:italic}
 .bgroup{display:flex;gap:12px;flex:1}
-.pill{flex:1;height:72px;background:#1e293b;color:#cbd5e1;border:2px solid #334155;border-radius:12px;font-size:22px;font-weight:700;letter-spacing:1px;transition:all .15s}
-.pill:active{transform:scale(.98)}
-.pill.active{background:#1e40af;color:#fff;border-color:#38bdf8}
-.pill.dis{opacity:.4;pointer-events:none}
+.pill{flex:1;height:72px;background:rgba(255,255,255,.05);color:#a8a8a8;border:0;border-radius:12px;font-size:22px;font-weight:500;letter-spacing:1px;transition:background .15s,color .15s}
+.pill:active{background:rgba(255,255,255,.14)}
+.pill.active{background:rgba(255,255,255,.28);color:#fff;font-weight:600}
+.pill.dis{opacity:.35;pointer-events:none}
 .stepper{display:flex;align-items:center;gap:16px;flex:1}
-.sbtn{width:72px;height:72px;background:#1e293b;color:#e2e8f0;border:2px solid #334155;border-radius:12px;font-size:32px;font-weight:700}
-.sbtn:active{transform:scale(.96)}
-.sval{min-width:140px;height:72px;background:#0f172a;border:2px solid #38bdf8;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:800;color:#38bdf8;font-variant-numeric:tabular-nums}
-.tog{width:88px;height:48px;background:#334155;border-radius:24px;position:relative;transition:background .2s;flex:0 0 88px;cursor:pointer}
+.sbtn{width:72px;height:72px;background:rgba(255,255,255,.08);color:#e5e5e5;border:0;border-radius:12px;font-size:32px;font-weight:500}
+.sbtn:active{background:rgba(255,255,255,.18)}
+.sval{min-width:140px;height:72px;background:rgba(255,255,255,.05);border:0;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.tog{width:88px;height:48px;background:#3a3a3a;border-radius:24px;position:relative;transition:background .2s;flex:0 0 88px;cursor:pointer}
 .tog.on{background:#22c55e}
 .tog::after{content:'';position:absolute;top:4px;left:4px;width:40px;height:40px;background:#fff;border-radius:50%;transition:left .2s}
 .tog.on::after{left:44px}
@@ -140,95 +141,102 @@ button{font-family:inherit;cursor:pointer}
 .abtn{flex:1;height:80px;background:#22c55e;color:#fff;border:none;border-radius:14px;font-size:22px;font-weight:700;letter-spacing:2px}
 .abtn:active{transform:scale(.98)}
 .abtn.red{background:#ef4444}
-.abtn.blue{background:#1e40af}
-.abtn.gray{background:#1e293b;color:#94a3b8;border:2px solid #334155}
-.toast{position:fixed;top:100px;left:50%;transform:translateX(-50%);background:#131d32;border:2px solid #38bdf8;color:#e2e8f0;padding:16px 32px;border-radius:12px;font-size:18px;font-weight:600;z-index:1000;opacity:0;pointer-events:none;transition:opacity .2s}
+.abtn.blue{background:rgba(255,255,255,.12);color:#fff}
+.abtn.gray{background:rgba(255,255,255,.06);color:#a0a0a0}
+.toast{position:fixed;top:100px;left:50%;transform:translateX(-50%);background:#222;border:1px solid #444;color:#fff;padding:16px 32px;border-radius:12px;font-size:18px;font-weight:600;z-index:1000;opacity:0;pointer-events:none;transition:opacity .2s}
 .toast.show{opacity:1}
 .toast.err{border-color:#ef4444;color:#fca5a5}
 .toast.ok{border-color:#22c55e;color:#86efac}
 .info-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-.info-item{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:14px 18px}
-.info-lbl{font-size:13px;color:#64748b;letter-spacing:2px;margin-bottom:4px;font-weight:600}
-.info-val{font-size:20px;color:#e2e8f0;font-family:monospace;font-weight:600}
+.info-item{background:rgba(255,255,255,.04);border:0;border-radius:10px;padding:14px 18px}
+.info-lbl{font-size:13px;color:#8a8a8a;letter-spacing:2px;margin-bottom:4px;font-weight:600}
+.info-val{font-size:20px;color:#e5e5e5;font-family:monospace;font-weight:600}
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
-.scard{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:20px 16px;text-align:center}
-.snum{font-size:36px;font-weight:800;color:#38bdf8;font-variant-numeric:tabular-nums;line-height:1}
-.slbl{font-size:14px;color:#64748b;margin-top:8px;letter-spacing:2px;font-weight:600}
-.sunit{font-size:16px;color:#64748b;margin-left:4px;font-weight:600}
-.tip{font-size:14px;color:#64748b;margin-top:8px;line-height:1.6}
-.disclaimer{background:#7f1d1d;border:2px solid #ef4444;border-radius:12px;padding:16px 20px;margin-bottom:20px;color:#fca5a5;font-size:16px;font-weight:600;line-height:1.6}
-.ota-zone{border:3px dashed #334155;border-radius:16px;padding:40px;text-align:center;background:#0f172a;margin-bottom:20px}
-.ota-zone.drag{border-color:#38bdf8;background:#131d32}
-.ota-tip{font-size:20px;color:#94a3b8;margin-bottom:16px}
-.ota-fname{font-size:18px;color:#e2e8f0;margin:12px 0;font-family:monospace;word-break:break-all}
-.progress{width:100%;height:20px;background:#1e293b;border-radius:10px;overflow:hidden;margin:16px 0;display:none}
-.progress-bar{height:100%;background:linear-gradient(90deg,#38bdf8,#22c55e);transition:width .2s}
-.smart-rule{display:flex;align-items:center;gap:14px;padding:10px 0;font-size:18px;color:#cbd5e1}
-.smart-rule input[type=number]{background:#0f172a;color:#38bdf8;border:2px solid #334155;border-radius:8px;padding:8px 10px;font-size:20px;text-align:center;font-weight:700;width:90px;-moz-appearance:textfield}
+.scard{background:rgba(255,255,255,.04);border:0;border-radius:12px;padding:20px 16px;text-align:center}
+.snum{font-size:36px;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;line-height:1}
+.slbl{font-size:14px;color:#8a8a8a;margin-top:8px;letter-spacing:2px;font-weight:600}
+.sunit{font-size:16px;color:#8a8a8a;margin-left:4px;font-weight:600}
+.tip{font-size:14px;color:#8a8a8a;margin-top:8px;line-height:1.6}
+.disclaimer{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:12px;padding:16px 20px;margin-bottom:20px;color:#fca5a5;font-size:16px;font-weight:600;line-height:1.6}
+.ota-zone{border:3px dashed #333;border-radius:16px;padding:40px;text-align:center;background:rgba(255,255,255,.03);margin-bottom:20px}
+.ota-zone.drag{border-color:#e5e5e5;background:rgba(255,255,255,.08)}
+.ota-tip{font-size:20px;color:#a0a0a0;margin-bottom:16px}
+.ota-fname{font-size:18px;color:#e5e5e5;margin:12px 0;font-family:monospace;word-break:break-all}
+.progress{width:100%;height:20px;background:#2a2a2a;border-radius:10px;overflow:hidden;margin:16px 0;display:none}
+.progress-bar{height:100%;background:linear-gradient(90deg,#22c55e,#4ade80);transition:width .2s}
+.smart-rule{display:flex;align-items:center;gap:14px;padding:10px 0;font-size:18px;color:#e5e5e5}
+.smart-rule input[type=number]{background:rgba(255,255,255,.06);color:#fff;border:0;border-radius:8px;padding:8px 10px;font-size:20px;text-align:center;font-weight:700;width:90px;-moz-appearance:textfield}
 .smart-rule input::-webkit-outer-spin-button,.smart-rule input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-.car-num{width:100px;font-size:22px;background:#0f172a;border:2px solid #38bdf8;color:#38bdf8;border-radius:8px;padding:8px 10px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+.car-num{width:100px;font-size:22px;background:rgba(255,255,255,.06);border:0;color:#fff;border-radius:8px;padding:8px 10px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
 .car-num::-webkit-outer-spin-button,.car-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-.hw3ct-label{font-size:13px;color:#64748b;text-align:center;margin-bottom:4px}
-.hw3ct-input{width:100%;box-sizing:border-box;padding:10px;text-align:center;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:18px}
-.phone-link{position:fixed;bottom:20px;right:20px;background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:8px;padding:10px 16px;font-size:14px;text-decoration:none}
+.hw3ct-label{font-size:13px;color:#a0a0a0;text-align:center;margin-bottom:4px}
+.hw3ct-sub{font-size:11px;color:#707070;text-align:center;margin-bottom:6px}
+.hw3ct-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.ts-step{display:flex;align-items:stretch;background:rgba(255,255,255,.08);border-radius:10px;overflow:hidden;user-select:none;min-height:54px}
+.ts-step-btn{flex:0 0 34%;background:transparent;border:0;color:#e5e5e5;font-size:24px;font-weight:500;cursor:pointer;padding:0;line-height:1;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:rgba(255,255,255,.12);touch-action:manipulation}
+.ts-step-btn:active{background:rgba(255,255,255,.16)}
+.ts-step-val{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;color:#fff;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;padding:0 4px;line-height:1}
+.ts-step-unit{font-size:11px;color:#8a8a8a;font-weight:500;align-self:center;position:relative;top:1px}
+.ts-step-pfx{font-size:16px;color:#c0c0c0;font-weight:500}
+.phone-link{position:fixed;bottom:20px;right:20px;background:#222;color:#a0a0a0;border:1px solid #333;border-radius:8px;padding:10px 16px;font-size:14px;text-decoration:none}
 .pin-overlay{position:fixed;inset:0;background:rgba(11,17,32,.95);display:none;align-items:center;justify-content:center;z-index:2000}
 .pin-overlay.show{display:flex}
-.pin-box{background:#131d32;border:2px solid #38bdf8;border-radius:20px;padding:40px;width:520px}
-.pin-box h3{font-size:26px;color:#38bdf8;margin-bottom:20px;text-align:center}
-.pin-box input{width:100%;background:#0b1120;border:2px solid #334155;border-radius:12px;padding:16px 20px;color:#e2e8f0;font-size:24px;text-align:center;letter-spacing:8px;font-weight:700;box-sizing:border-box}
-.pin-box input:focus{outline:none;border-color:#38bdf8}
+.pin-box{background:#141414;border:1px solid #333;border-radius:20px;padding:40px;width:520px}
+.pin-box h3{font-size:26px;color:#fff;margin-bottom:20px;text-align:center}
+.pin-box input{width:100%;background:rgba(255,255,255,.06);border:0;border-radius:12px;padding:16px 20px;color:#fff;font-size:24px;text-align:center;letter-spacing:8px;font-weight:700;box-sizing:border-box}
+.pin-box input:focus{outline:none;background:rgba(255,255,255,.1)}
 .pw-wrap{position:relative;display:block;width:100%;box-sizing:border-box}
 .pw-wrap>input{width:100%;padding-right:54px !important;box-sizing:border-box}
-.pw-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:#94a3b8;font-size:22px;padding:6px 10px;cursor:pointer;line-height:1;min-height:44px;min-width:44px;z-index:2}
+.pw-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:#a0a0a0;font-size:22px;padding:6px 10px;cursor:pointer;line-height:1;min-height:44px;min-width:44px;z-index:2}
 .pw-eye:hover,.pw-eye:active{color:#e2e8f0}
 .pin-err{color:#ef4444;font-size:16px;text-align:center;margin-top:12px;min-height:20px}
 /* ── 测速页 ────────────────────────────────────────────────── */
-.perf-speed{background:#131d32;border-radius:16px;padding:24px 20px;margin-bottom:18px;text-align:center;position:relative;overflow:hidden}
-.perf-speed-val{font-size:96px;font-weight:900;color:#38bdf8;line-height:1;letter-spacing:-4px;font-variant-numeric:tabular-nums;transition:color .3s}
+.perf-speed{background:#141414;border-radius:16px;padding:24px 20px;margin-bottom:18px;text-align:center;position:relative;overflow:hidden}
+.perf-speed-val{font-size:96px;font-weight:900;color:#fff;line-height:1;letter-spacing:-4px;font-variant-numeric:tabular-nums;transition:color .3s}
 .perf-speed-val.amber{color:#f59e0b}
 .perf-speed-val.red{color:#ef4444}
-.perf-speed-lbl{font-size:14px;color:#64748b;letter-spacing:4px;margin-top:8px;font-weight:700}
-.perf-card{background:#131d32;border:2px solid transparent;border-radius:16px;padding:24px;margin-bottom:16px;transition:border-color .4s,box-shadow .4s}
+.perf-speed-lbl{font-size:14px;color:#8a8a8a;letter-spacing:4px;margin-top:8px;font-weight:700}
+.perf-card{background:#141414;border:2px solid transparent;border-radius:16px;padding:24px;margin-bottom:16px;transition:border-color .4s,box-shadow .4s}
 .perf-card.done{border-color:#22c55e;box-shadow:0 0 28px rgba(34,197,94,.28)}
 .perf-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .perf-title{font-size:22px;font-weight:700;color:#e2e8f0;letter-spacing:1px}
 .perf-badge{font-size:14px;font-weight:700;padding:6px 16px;border-radius:20px;letter-spacing:2px;transition:all .3s}
-.perf-badge.idle{background:#1e293b;color:#64748b}
+.perf-badge.idle{background:#222;color:#8a8a8a}
 .perf-badge.armed{background:#3d2f00;color:#f59e0b}
 .perf-badge.running{background:#0d2d1a;color:#22c55e;animation:perf-blink .7s ease-in-out infinite}
-.perf-badge.done{background:#0d2d4f;color:#38bdf8}
+.perf-badge.done{background:rgba(255,255,255,.12);color:#fff}
 @keyframes perf-blink{0%,100%{opacity:1}50%{opacity:.4}}
-.perf-bar{height:6px;background:#1e293b;border-radius:3px;overflow:hidden;margin-bottom:18px}
+.perf-bar{height:6px;background:#222;border-radius:3px;overflow:hidden;margin-bottom:18px}
 .perf-fill{height:100%;width:0%;border-radius:3px;transition:width .1s linear}
-.perf-fill.accel{background:linear-gradient(90deg,#38bdf8,#22c55e)}
+.perf-fill.accel{background:linear-gradient(90deg,#e5e5e5,#22c55e)}
 .perf-fill.brake{background:linear-gradient(90deg,#f59e0b,#ef4444)}
 .perf-result{display:flex;align-items:baseline;gap:10px;min-height:68px;margin-bottom:20px;flex-wrap:wrap}
 .perf-val{font-size:60px;font-weight:800;color:#f8fafc;font-variant-numeric:tabular-nums;line-height:1}
-.perf-unit{font-size:20px;color:#64748b;font-weight:500}
-.perf-entry{font-size:14px;color:#94a3b8;background:#1e293b;border-radius:6px;padding:5px 12px;align-self:center;margin-left:6px}
+.perf-unit{font-size:20px;color:#8a8a8a;font-weight:500}
+.perf-entry{font-size:14px;color:#a0a0a0;background:#222;border-radius:6px;padding:5px 12px;align-self:center;margin-left:6px}
 .perf-actions{display:flex;gap:14px}
 .perf-arm{flex:1;height:76px;background:#c41530;color:#fff;border:none;border-radius:12px;font-size:22px;font-weight:700;letter-spacing:3px;transition:background .2s,opacity .2s}
 .perf-arm:active:not(:disabled){transform:scale(.98)}
 .perf-arm:disabled{opacity:.35;cursor:not-allowed}
-.perf-reset{flex:0 0 140px;height:76px;background:#1e293b;color:#94a3b8;border:2px solid #334155;border-radius:12px;font-size:18px;font-weight:700;letter-spacing:2px}
+.perf-reset{flex:0 0 140px;height:76px;background:#222;color:#a0a0a0;border:2px solid #333;border-radius:12px;font-size:18px;font-weight:700;letter-spacing:2px}
 .perf-reset:active{transform:scale(.98)}
 .perf-hist-head{display:flex;align-items:center;justify-content:space-between;margin:18px 2px 8px}
-.perf-hist-t{font-size:14px;color:#64748b;font-weight:700;letter-spacing:3px}
+.perf-hist-t{font-size:14px;color:#8a8a8a;font-weight:700;letter-spacing:3px}
 .perf-hist-clr{font-size:13px;color:#475569;cursor:pointer;background:none;border:none;padding:4px 8px}
-.perf-hist-clr:active{color:#94a3b8}
-.perf-hist-row{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#0f172a;border-radius:10px;margin-bottom:6px;border-left:4px solid transparent}
-.perf-hist-row.accel{border-left-color:#38bdf8}
+.perf-hist-clr:active{color:#a0a0a0}
+.perf-hist-row{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:rgba(255,255,255,.04);border-radius:10px;margin-bottom:6px;border-left:4px solid transparent}
+.perf-hist-row.accel{border-left-color:#e5e5e5}
 .perf-hist-row.brake{border-left-color:#f59e0b}
-.perf-hist-ts{font-size:13px;color:#64748b}
+.perf-hist-ts{font-size:13px;color:#8a8a8a}
 .perf-hist-v{font-size:22px;font-weight:800;color:#f8fafc}
-.perf-hist-u{font-size:14px;color:#94a3b8;margin-left:4px}
-.perf-hist-e{font-size:12px;color:#94a3b8;background:#1e293b;border-radius:5px;padding:4px 10px;margin-left:10px}
-.perf-hist-empty{font-size:14px;color:#334155;text-align:center;padding:16px}
+.perf-hist-u{font-size:14px;color:#a0a0a0;margin-left:4px}
+.perf-hist-e{font-size:12px;color:#a0a0a0;background:#222;border-radius:5px;padding:4px 10px;margin-left:10px}
+.perf-hist-empty{font-size:14px;color:#333;text-align:center;padding:16px}
 .perf-disc{background:#3d2f00;border:2px solid #f59e0b;border-radius:14px;padding:18px 22px;margin-bottom:18px;color:#fde68a}
 .perf-disc-t{font-size:18px;font-weight:700;margin-bottom:10px;color:#fbbf24;letter-spacing:1px}
 .perf-disc-b{font-size:14px;line-height:1.9;margin-bottom:14px}
 .perf-disc-b b{color:#fff;font-weight:700}
-.perf-disc-btn{background:#f59e0b;color:#0b1120;border:none;border-radius:10px;padding:12px 22px;font-size:14px;font-weight:700;letter-spacing:2px}
+.perf-disc-btn{background:#f59e0b;color:#0a0a0a;border:none;border-radius:10px;padding:12px 22px;font-size:14px;font-weight:700;letter-spacing:2px}
 .perf-disc-btn:active{transform:scale(.98)}
 .perf-note{font-size:13px;color:#475569;text-align:center;padding:10px 0 4px}
 /* ── 响应式：车机浏览器不全屏时 (~800-1200px) 或小屏设备 ─────────── */
@@ -248,7 +256,7 @@ button{font-family:inherit;cursor:pointer}
   .app{grid-template-rows:auto auto 1fr;grid-template-columns:1fr;grid-template-areas:"header" "nav" "main";height:auto;min-height:100vh}
   .header{flex-wrap:wrap;height:auto;padding:10px 14px;gap:10px}
   .hstat{width:100%;gap:10px;font-size:13px;flex-wrap:wrap}
-  .nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:8px 10px;gap:6px;border-right:none;border-bottom:1px solid #1e293b;-webkit-overflow-scrolling:touch}
+  .nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:8px 10px;gap:6px;border-right:none;border-bottom:1px solid #222;-webkit-overflow-scrolling:touch}
   .nbtn{height:46px;flex:0 0 auto;white-space:nowrap;padding:0 14px;font-size:14px;border-radius:10px}
   .nbtn .ic{font-size:18px}
   .main{padding:14px}
@@ -420,44 +428,31 @@ button{font-family:inherit;cursor:pointer}
 
       <div class="panel" id="panelHw3" style="display:none">
         <div class="ptitle">HW3 速度偏移</div>
-        <div class="row"><div class="rlbl">自动突破</div><div class="tog" id="tgAuto" data-k="hw3AutoSpeed"></div><div class="rval">&lt;80 km/h 限速时自动拉到 64/85/100 目标</div></div>
-        <div class="row"><div class="rlbl">自定义</div><div class="tog" id="tgCustom" data-k="hw3CustomSpeed"></div><div class="rval">按档位设定目标速度（覆盖自动）</div></div>
-        <div id="rowHw3Custom" style="display:none;padding:14px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px">
-          <div style="font-size:14px;color:#94a3b8;margin-bottom:10px">遇到限速时的目标速度（km/h）。Tesla 固件硬限 +50%，超出按上限发送。≥80 限速始终透传原厂。</div>
-          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
-            <div><div class="hw3ct-label">限速 30</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 45</div><input type="number" id="hw3CT0" min="30" max="45" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT0',this.value)"></div>
-            <div><div class="hw3ct-label">限速 40</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 60</div><input type="number" id="hw3CT1" min="40" max="60" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT1',this.value)"></div>
-            <div><div class="hw3ct-label">限速 50</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 75</div><input type="number" id="hw3CT2" min="50" max="75" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT2',this.value)"></div>
-            <div><div class="hw3ct-label">限速 60</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 90</div><input type="number" id="hw3CT3" min="60" max="90" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT3',this.value)"></div>
-            <div><div class="hw3ct-label">限速 70</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">最大 105</div><input type="number" id="hw3CT4" min="70" max="105" class="hw3ct-input" onchange="apiSetHw3CT('hw3CT4',this.value)"></div>
+        <div class="row"><div class="rlbl">自动突破<span class="info-ic" onclick="hint('&lt;80 km/h 限速时自动把目标拉到 64/85/100，超过 80 透传原厂偏移')">i</span></div><div class="tog" id="tgAuto" data-k="hw3AutoSpeed"></div><div class="rval">&lt;80 自动拉到 64/85/100</div></div>
+        <div class="row"><div class="rlbl">自定义<span class="info-ic" onclick="hint('按限速档位设定目标速度，覆盖上面的自动突破。≥80 限速始终透传原厂')">i</span></div><div class="tog" id="tgCustom" data-k="hw3CustomSpeed"></div><div class="rval">按档位设定目标速度</div></div>
+        <div id="rowHw3Custom" style="display:none;padding:14px;background:rgba(255,255,255,.03);border-radius:10px;margin-top:6px">
+          <div style="font-size:14px;color:#a0a0a0;margin-bottom:10px">遇到限速时的目标速度。Tesla 固件硬限 +50%。</div>
+          <div class="hw3ct-grid" id="gridHw3CT"></div>
+        </div>
+        <div class="tip">&lt;80 走上面自动/自定义；≥80 用下面的高速加速。</div>
+        <div class="row"><div class="rlbl">平滑减速<span class="info-ic" onclick="hint('限速下降时偏移缓慢降下避免急减速，提速仍立即生效。实验功能')">i</span></div><div class="tog" id="tgSlew" data-k="hw3OffsetSlew"></div><div class="rval">限速下降时缓降偏移</div></div>
+        <div id="rowHw3SlewDiag" style="display:none;padding:14px;background:rgba(255,255,255,.03);border-radius:10px;margin-top:6px">
+          <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px">
+            <div style="font-size:13px;color:#a0a0a0;flex:0 0 90px">下降速率</div>
+            <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="slewStep(-1)">−</button><div class="ts-step-val"><span id="cSlewRate">--</span><span class="ts-step-unit">%/s</span></div><button class="ts-step-btn" onclick="slewStep(1)">+</button></div>
+            <div id="cSlewKphHint" style="color:#707070;font-size:12px">≈ -- kph/s @60限速</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-family:monospace;font-size:13px;color:#a0a0a0">
+            <div>目标 raw <span id="cSlewTarget" style="color:#e5e5e5">--</span></div>
+            <div>发送 raw <span id="cSlewSent" style="color:#e5e5e5">--</span></div>
+            <div>已缓降 <span id="cSlewCount" style="color:#fbbf24">0</span></div>
           </div>
         </div>
-        <div class="tip">🛈 &lt;80 km/h 走上面 Auto/自定义；≥80 可用下面"高速加速"开关。两者都关 = 原厂透传。</div>
-        <div class="row"><div class="rlbl">平滑减速（测试）</div><div class="tog" id="tgSlew" data-k="hw3OffsetSlew"></div><div class="rval">限速下降时偏移缓慢降下，避免急减速；提速仍立即生效</div></div>
-        <div id="rowHw3SlewDiag" style="display:none;padding:12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-size:13px;color:#94a3b8">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <span>下降速率：</span>
-            <input type="number" id="cSlewRate" min="1" max="25" step="1" style="width:60px;padding:4px 6px;background:rgba(0,0,0,.3);color:#cbd5e1;border:1px solid #334155;border-radius:6px" onchange="apiSet('hw3SlewRate',this.value)">
-            <span>%/秒</span>
-            <span id="cSlewKphHint" style="color:#64748b;font-size:12px">(≈ -- kph/s @60限速)</span>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-family:monospace;color:#cbd5e1">
-            <div>目标 raw：<span id="cSlewTarget">--</span></div>
-            <div>发送 raw：<span id="cSlewSent" style="color:#38bdf8">--</span></div>
-            <div style="grid-column:1 / -1">已缓降次数：<span id="cSlewCount" style="color:#fbbf24">0</span></div>
-          </div>
-        </div>
-        <div class="row"><div class="rlbl">≥80 高速加速</div><div class="tog" id="tgHiSpd" data-k="hw3HighSpeedEnable"></div><div class="rval">限速 ≥80 时按百分比加速（默认关=原厂透传）</div></div>
-        <div id="rowHw3HiSpdPanel" style="display:none;padding:12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px">
-          <div style="font-size:12px;color:#64748b;margin-bottom:8px">每档百分比加速（限速 kph 档位）。Tesla 固件硬限 50%，超出自动夹紧。</div>
-          <div class="hw3ct-grid">
-            <div><div class="hw3ct-label">限速 80</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct0" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct0',this.value)"></div>
-            <div><div class="hw3ct-label">限速 90</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct1" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct1',this.value)"></div>
-            <div><div class="hw3ct-label">限速 100</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct2" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct2',this.value)"></div>
-            <div><div class="hw3ct-label">限速 110</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct3" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct3',this.value)"></div>
-            <div><div class="hw3ct-label">限速 120+</div><div style="font-size:11px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct4" min="0" max="50" class="hw3ct-input" onchange="apiSetHw3HS('hw3HsPct4',this.value)"></div>
-          </div>
-          <div style="font-size:12px;color:#64748b;margin-top:8px;font-family:monospace" id="cHiSpdHint"></div>
+        <div class="row"><div class="rlbl">≥80 高速加速<span class="info-ic" onclick="hint('限速 ≥80 km/h 时按百分比增加偏移。默认关=原厂透传。Tesla 固件硬限 +50%')">i</span></div><div class="tog" id="tgHiSpd" data-k="hw3HighSpeedEnable"></div><div class="rval">≥80 按百分比加速</div></div>
+        <div id="rowHw3HiSpdPanel" style="display:none;padding:14px;background:rgba(255,255,255,.03);border-radius:10px;margin-top:6px">
+          <div style="font-size:14px;color:#a0a0a0;margin-bottom:10px">遇到限速路牌时按百分比加速。Tesla 固件硬限 +50%。</div>
+          <div class="hw3ct-grid" id="gridHw3Hs"></div>
+          <div style="font-size:13px;color:#a0a0a0;margin-top:10px;font-family:monospace" id="cHiSpdHint"></div>
         </div>
       </div>
 
@@ -480,11 +475,11 @@ button{font-family:inherit;cursor:pointer}
         <div class="row" id="rowOvr" style="display:none"><div class="rlbl">忽略限速</div><div class="tog" id="tgOvr" data-k="overrideSL"></div><div class="rval">忽略路牌限速（Legacy 专用）</div></div>
         <div class="row" id="rowRvsl" style="display:none"><div class="rlbl">关闭视觉限速</div><div class="tog" id="tgRvsl" data-k="removeVSL"></div><div class="rval">屏蔽摄像头识别的限速（Legacy 专用）</div></div>
         <div class="row" id="rowLegOff" style="display:none"><div class="rlbl">Legacy 偏移</div>
-          <input type="number" id="cLegOff" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:rgba(0,0,0,.3);color:#cbd5e1;border:1px solid #334155;border-radius:6px" onchange="apiSet('legacyOffset',this.value)">
-          <div class="rval">+0~33 kph/mph（遵循车辆单位）</div></div>
+          <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="legacyStep(-1)">−</button><div class="ts-step-val"><span class="ts-step-pfx">+</span><span id="cLegOff">--</span><span class="ts-step-unit">kph/mph</span></div><button class="ts-step-btn" onclick="legacyStep(1)">+</button></div>
+          <div class="rval">0~33（遵循车辆单位）</div></div>
         <div id="rowGps2F8" style="display:none;padding:10px 12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-family:monospace;font-size:12px">
-          <div style="color:#94a3b8;margin-bottom:6px">0x2F8 (760) Legacy 限速帧嗅探（只读，用来确认是否可改写）</div>
-          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#cbd5e1">
+          <div style="color:#a0a0a0;margin-bottom:6px">0x2F8 (760) Legacy 限速帧嗅探（只读，用来确认是否可改写）</div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#e5e5e5">
             <div>可见：<span id="cGps2F8Seen">--</span></div>
             <div>帧数：<span id="cGps2F8Count">0</span></div>
             <div>周期：<span id="cGps2F8Period">-- ms</span></div>
@@ -542,16 +537,16 @@ button{font-family:inherit;cursor:pointer}
           <div class="info-item"><div class="info-lbl">信号/温度</div><div class="info-val" id="brRssi">--</div></div>
         </div>
         <div style="margin-top:16px">
-          <div style="font-size:16px;color:#94a3b8;margin-bottom:8px">已保存热点</div>
-          <div id="brList" style="font-size:17px;line-height:1.9;color:#cbd5e1">--</div>
+          <div style="font-size:16px;color:#a0a0a0;margin-bottom:8px">已保存热点</div>
+          <div id="brList" style="font-size:17px;line-height:1.9;color:#e5e5e5">--</div>
         </div>
-        <div style="margin-top:18px;padding-top:16px;border-top:1px solid #1e293b">
-          <div style="font-size:16px;color:#94a3b8;margin-bottom:10px">添加热点</div>
+        <div style="margin-top:18px;padding-top:16px;border-top:1px solid #222">
+          <div style="font-size:16px;color:#a0a0a0;margin-bottom:10px">添加热点</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
             <input id="brAddSsid" placeholder="SSID"
-              style="flex:1;min-width:220px;height:52px;padding:0 14px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:10px;font-size:18px">
+              style="flex:1;min-width:220px;height:52px;padding:0 14px;background:rgba(255,255,255,.06);color:#fff;border:0;border-radius:10px;font-size:18px">
             <input id="brAddPass" type="password" placeholder="密码 (开放网络留空)"
-              style="flex:1;min-width:220px;height:52px;padding:0 14px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:10px;font-size:18px">
+              style="flex:1;min-width:220px;height:52px;padding:0 14px;background:rgba(255,255,255,.06);color:#fff;border:0;border-radius:10px;font-size:18px">
             <button class="abtn blue" onclick="brAdd()" style="min-width:130px">➕ 添加</button>
           </div>
           <div id="brAddMsg" class="tip" style="margin-top:8px;display:none"></div>
@@ -571,7 +566,7 @@ button{font-family:inherit;cursor:pointer}
       </div>
       <div class="panel">
         <div class="ptitle">快捷预设</div>
-        <div id="dnsPresetStat" style="margin-bottom:12px;font-size:15px;color:#94a3b8">--</div>
+        <div id="dnsPresetStat" style="margin-bottom:12px;font-size:15px;color:#a0a0a0">--</div>
         <div class="bgroup" id="grpDnsPreset" style="flex-direction:column;gap:14px">
           <button class="pill" id="pstTesla" style="flex:0 0 72px" onclick="dnsPreset('tesla_min')">⭐ Tesla 推荐（实测）</button>
           <button class="pill" id="pstLean"  style="flex:0 0 72px" onclick="dnsPreset('tesla_lean')">🔹 精简官方</button>
@@ -581,8 +576,8 @@ button{font-family:inherit;cursor:pointer}
         <div class="tip" style="margin-top:14px">🛈 自定义域名列表请点下方「📱 打开手机版」编辑。点上方预设会覆盖自定义规则。</div>
       </div>
       <div class="panel" id="panelDnsBlk">
-        <div class="ptitle">最近拦截 <span style="color:#64748b;font-size:13px;font-weight:500">总计 <span id="brBlkTot">0</span> 次</span></div>
-        <div id="brBlkList" style="font-size:17px;line-height:1.9;color:#cbd5e1">--</div>
+        <div class="ptitle">最近拦截 <span style="color:#8a8a8a;font-size:13px;font-weight:500">总计 <span id="brBlkTot">0</span> 次</span></div>
+        <div id="brBlkList" style="font-size:17px;line-height:1.9;color:#e5e5e5">--</div>
       </div>
       <div class="panel" id="panelIpStats">
         <div class="ptitle">IP 拦截缓存</div>
@@ -616,7 +611,7 @@ button{font-family:inherit;cursor:pointer}
             <button class="abtn gray" onclick="otaPick()">📁 选择文件</button>
             <button class="abtn blue" id="otaUp" onclick="showOtaConfirm()" disabled style="opacity:.5">⬆️ 开始升级</button>
           </div>
-          <div id="otaConfirmBox" style="display:none;background:#0b1120;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-top:14px;color:#fcd34d">
+          <div id="otaConfirmBox" style="display:none;background:#0a0a0a;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-top:14px;color:#fcd34d">
             <div style="font-size:18px;font-weight:700;margin-bottom:8px">⚠️ 确认刷入 <span id="otaConfirmName" style="font-family:monospace;color:#fbbf24">--</span>？</div>
             <div style="font-size:15px;margin-bottom:12px;color:#fca5a5">升级期间请勿断电或切换页面。</div>
             <div class="actions" style="margin-top:0">
@@ -641,7 +636,7 @@ button{font-family:inherit;cursor:pointer}
           <button class="abtn" id="otaPullBtn" onclick="otaPull()" disabled style="opacity:.5">⬇️ 下载并安装</button>
         </div>
         <div class="progress" id="otaDlBox" style="display:none;margin-top:14px"><div class="progress-bar" id="otaDlBar" style="width:0%"></div></div>
-        <div id="otaOnlineMsg" style="margin-top:10px;font-size:15px;color:#94a3b8;min-height:22px"></div>
+        <div id="otaOnlineMsg" style="margin-top:10px;font-size:15px;color:#a0a0a0;min-height:22px"></div>
         <div class="tip">🛈 需连接路由器（网络页 STA）才能联网检查和下载。国内访问 GitHub 慢时自动经 gh-proxy.com 加速，镜像失败自动回退直连。</div>
       </div>
       <div class="panel" id="carRollbackPanel" style="display:none">
@@ -652,7 +647,7 @@ button{font-family:inherit;cursor:pointer}
         <div class="actions" style="margin-top:14px">
           <button class="abtn" id="carRollbackBtn" onclick="carDoRollback()" style="background:#7c3aed">↩️ 回滚到上一版并重启</button>
         </div>
-        <div id="carRollbackMsg" style="margin-top:10px;font-size:15px;color:#94a3b8;min-height:22px"></div>
+        <div id="carRollbackMsg" style="margin-top:10px;font-size:15px;color:#a0a0a0;min-height:22px"></div>
         <div class="tip">🛈 回滚会切换到另一个 OTA 分区。仅在设备曾通过 OTA 升级过一次后可用。</div>
       </div>
     </div>
@@ -729,14 +724,14 @@ button{font-family:inherit;cursor:pointer}
     <div class="page" id="pg-log">
       <h2>诊断日志 · LOG</h2>
       <div class="panel">
-        <div class="ptitle">事件日志 <span style="color:#64748b;font-size:13px;font-weight:500">掉电清除 · 最近 80 条</span></div>
-        <textarea id="diagLog" readonly style="width:100%;height:460px;background:#0f172a;color:#94a3b8;border:1px solid #1e293b;border-radius:10px;padding:12px;font-size:15px;font-family:monospace;resize:none;box-sizing:border-box;line-height:1.5">(加载中...)</textarea>
+        <div class="ptitle">事件日志 <span style="color:#8a8a8a;font-size:13px;font-weight:500">掉电清除 · 最近 80 条</span></div>
+        <textarea id="diagLog" readonly style="width:100%;height:460px;background:rgba(255,255,255,.03);color:#a0a0a0;border:0;border-radius:10px;padding:12px;font-size:15px;font-family:monospace;resize:none;box-sizing:border-box;line-height:1.5">(加载中...)</textarea>
         <div class="actions">
           <button class="abtn blue" onclick="logRefresh()">🔄 刷新</button>
           <button class="abtn" onclick="logCopy()">📋 复制</button>
           <button class="abtn gray" onclick="showLogClear()">🗑 清除</button>
         </div>
-        <div id="logClearBox" style="display:none;background:#0b1120;border:2px solid #ef4444;border-radius:12px;padding:16px;margin-top:14px;color:#fca5a5">
+        <div id="logClearBox" style="display:none;background:#0a0a0a;border:2px solid #ef4444;border-radius:12px;padding:16px;margin-top:14px;color:#fca5a5">
           <div style="font-size:18px;font-weight:700;margin-bottom:12px">确认清除所有日志？</div>
           <div class="actions" style="margin-top:0">
             <button class="abtn red" onclick="logClear()">✓ 清除</button>
@@ -765,7 +760,7 @@ button{font-family:inherit;cursor:pointer}
           <button class="abtn blue" onclick="showRebootConfirm()">🔄 重启模块</button>
           <button class="abtn gray" onclick="openPhone()">📱 打开手机版</button>
         </div>
-        <div id="rebootConfirmBox" style="display:none;background:#0b1120;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-top:14px;color:#fcd34d">
+        <div id="rebootConfirmBox" style="display:none;background:#0a0a0a;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-top:14px;color:#fcd34d">
           <div style="font-size:18px;font-weight:700;margin-bottom:12px">确认重启模块？</div>
           <div class="actions" style="margin-top:0">
             <button class="abtn blue" onclick="doReboot()">✓ 确认重启</button>
@@ -877,12 +872,12 @@ window.__spdDisplay = 0; window.__spdTarget = 0; window.__spdLast = 0;
 })();
 
 // ───── Toast ─────
-function toast(msg, kind){
+function toast(msg, kind, duration){
   var t = document.getElementById('toast');
   t.textContent = msg;
   t.className = 'toast show ' + (kind||'');
   clearTimeout(t._timer);
-  t._timer = setTimeout(function(){t.className='toast'}, 2200);
+  t._timer = setTimeout(function(){t.className='toast'}, duration||2200);
 }
 
 // ───── PIN ─────
@@ -1054,9 +1049,12 @@ function render(d){
   setTog('tgCustom', !!d.hw3CustomSpeed);
   var rowCust = document.getElementById('rowHw3Custom');
   if(rowCust) rowCust.style.display = (d.hwMode===1 && d.hw3CustomSpeed) ? '' : 'none';
-  if(!window._hw3CTLoaded && Array.isArray(d.hw3CustomTarget)){
-    for(var _i=0;_i<5;_i++){var _e=document.getElementById('hw3CT'+_i); if(_e) _e.value=d.hw3CustomTarget[_i];}
-    window._hw3CTLoaded=true;
+  if(Array.isArray(d.hw3CustomTarget)){
+    for(var _i=0;_i<5;_i++){
+      var _e=document.getElementById('hw3CT'+_i);
+      var _v=(d.hw3CustomTarget[_i]!=null?Number(d.hw3CustomTarget[_i]):HW3CT_DEF[_i]);
+      if(_e && !hw3CTDirty['hw3CT'+_i]) _e.textContent=_v;
+    }
   }
   setTog('tgSlew', !!d.hw3OffsetSlew);
   var rowSlew = document.getElementById('rowHw3SlewDiag');
@@ -1066,24 +1064,22 @@ function render(d){
     var cS=document.getElementById('cSlewSent');   if(cS)cS.textContent=(d.hw3OffsetLast!=null)?d.hw3OffsetLast:'--';
     var cC=document.getElementById('cSlewCount');  if(cC)cC.textContent=d.hw3SlewCount||0;
     var cR=document.getElementById('cSlewRate');
-    if(cR && document.activeElement!==cR) cR.value=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
-    var rv=(d.hw3SlewRate!=null?d.hw3SlewRate:5);
+    var rv=(d.hw3SlewRate!=null?Number(d.hw3SlewRate):SLEW_DEF);
+    if(cR && !slewDirty) cR.textContent=rv;
     var cK=document.getElementById('cSlewKphHint');
-    if(cK) cK.textContent='(≈ -'+(rv*0.6).toFixed(1)+' kph/s @60限速)';
+    if(cK) cK.textContent=fmtSlewKph(rv);
   })();
   setTog('tgHiSpd', !!d.hw3HighSpeedEnable);
   var rowHi = document.getElementById('rowHw3HiSpdPanel');
   if(rowHi) rowHi.style.display = (d.hwMode===1 && d.hw3HighSpeedEnable) ? '' : 'none';
   (function(){
-    var hsArr=Array.isArray(d.hw3HighSpeedPct)?d.hw3HighSpeedPct:[25,25,25,25,25];
+    var hsArr=Array.isArray(d.hw3HighSpeedPct)?d.hw3HighSpeedPct:HW3HS_DEF;
     var hsLbl=[80,90,100,110,120];
     var parts=[];
     for(var i=0;i<5;i++){
-      var p=(hsArr[i]!=null?hsArr[i]:15);
-      var inp=document.getElementById('hw3HsPct'+i);
-      if(inp && document.activeElement!==inp && !hw3HSDirty['hw3HsPct'+i]){
-        inp.value=p;
-      }
+      var p=(hsArr[i]!=null?Number(hsArr[i]):HW3HS_DEF[i]);
+      var el=document.getElementById('hw3HsPct'+i);
+      if(el && !hw3HSDirty['hw3HsPct'+i]) el.textContent=p;
       parts.push(hsLbl[i]+'→+'+Math.round(hsLbl[i]*p/100));
     }
     var cH=document.getElementById('cHiSpdHint');
@@ -1094,7 +1090,7 @@ function render(d){
   setTog('tgForce', d.forceActivate);
   setTog('tgOvr', d.overrideSL);
   setTog('tgRvsl', d.removeVSL==null?true:!!d.removeVSL);
-  (function(){var e=document.getElementById('cLegOff'); if(e && document.activeElement!==e) e.value=(d.legacyOffset!=null?d.legacyOffset:0);})();
+  (function(){var e=document.getElementById('cLegOff'); if(e && !legacyDirty) e.textContent=(d.legacyOffset!=null?Number(d.legacyOffset):LEGACY_DEF);})();
   setTog('tgTrack', d.trackMode);
   (function(){
     var r=document.getElementById('rowGps2F8'); if(!r) return;
@@ -1420,7 +1416,7 @@ function brPoll(){
     var list = document.getElementById('brList');
     var nets = d.upstreamNetworks || [];
     if(!nets.length){
-      list.innerHTML = '<span style="color:#64748b">无已保存热点</span>';
+      list.innerHTML = '<span style="color:#8a8a8a">无已保存热点</span>';
     } else {
       list.innerHTML = nets.map(function(n){
         var dot = n.connected ? '🟢' : (n.active ? '🟡' : '⚪');
@@ -1428,13 +1424,13 @@ function brPoll(){
         var safeSsid = escHtml(n.ssid);
         var ssidAttr = n.ssid.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
         return ''
-          + '<div style="padding:6px 0;border-bottom:1px solid #1e293b">'
+          + '<div style="padding:6px 0;border-bottom:1px solid #222">'
           +   '<div style="display:flex;justify-content:space-between;align-items:center">'
           +     '<span>'+dot+' '+safeSsid+pass+'</span>'
           +     '<button class="abtn gray" style="min-width:84px;height:38px;font-size:15px" '
           +       'onclick="brDelConfirm(\''+ssidAttr+'\')">🗑 删除</button>'
           +   '</div>'
-          +   '<div data-del-ssid="'+ssidAttr+'" style="display:none;margin-top:8px;padding:10px;background:#0b1120;border:2px solid #ef4444;border-radius:10px">'
+          +   '<div data-del-ssid="'+ssidAttr+'" style="display:none;margin-top:8px;padding:10px;background:#0a0a0a;border:2px solid #ef4444;border-radius:10px">'
           +     '<div style="color:#fca5a5;margin-bottom:8px">确认删除 <b>'+safeSsid+'</b>？</div>'
           +     '<div style="display:flex;gap:10px">'
           +       '<button class="abtn red" onclick="brDelDo(\''+ssidAttr+'\')">✓ 确认</button>'
@@ -1457,11 +1453,11 @@ function brPoll(){
     var blk = d.dnsBlockedRecent || [];
     var blkEl = document.getElementById('brBlkList');
     if(!blk.length){
-      blkEl.innerHTML = '<span style="color:#64748b">暂无拦截</span>';
+      blkEl.innerHTML = '<span style="color:#8a8a8a">暂无拦截</span>';
     } else {
       blkEl.innerHTML = blk.map(function(e){
-        return '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1e293b">'+
-          '<span>'+escHtml(e.domain)+'</span><span style="color:#94a3b8">×'+e.count+'</span></div>';
+        return '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #222">'+
+          '<span>'+escHtml(e.domain)+'</span><span style="color:#a0a0a0">×'+e.count+'</span></div>';
       }).join('');
     }
   }).catch(function(){});
@@ -1502,41 +1498,112 @@ function apiSet(k, v){
   fetch('/api/set?'+k+'='+v+(tok?'&token='+encodeURIComponent(tok):''))
     .then(function(r){if(r.status===200){toast('已保存','ok');poll()}else if(r.status===403){showPin()}else{toast('失败','err')}});
 }
-// Debounced batch save for hw3CT* slots — 1 NVS commit per edit burst.
-var _hw3CTTimer=null, _hw3CTPending={};
-function apiSetHw3CT(k, v){
-  _hw3CTPending[k]=v;
-  clearTimeout(_hw3CTTimer);
-  _hw3CTTimer=setTimeout(function(){
-    var qs=''; for(var kk in _hw3CTPending){qs+='&'+kk+'='+encodeURIComponent(_hw3CTPending[kk]);}
-    _hw3CTPending={};
-    if(!qs)return;
-    fetch('/api/set?'+qs.slice(1)+(tok?'&token='+encodeURIComponent(tok):''))
-      .then(function(r){if(r.status===200){toast('已保存','ok');poll()}else if(r.status===403){showPin()}else{toast('失败','err')}});
-  },400);
+// ───── ±stepper factory ─────
+// debounce=coalesce rapid taps into one POST; settle=grace before poll overwrites dirty spans.
+var STEP_DEBOUNCE_MS=400, STEP_SETTLE_MS=600;
+var HW3CT_RANGE=[[30,45],[40,60],[50,75],[60,90],[70,105]];
+var HW3CT_DEF=HW3CT_RANGE.map(function(r){return r[1];});
+var HW3HS_DEF=[25,25,25,25,25];
+var SLEW_DEF=5, LEGACY_DEF=0;
+var hw3CTDirty={}, hw3HSDirty={}, slewDirty=false, legacyDirty=false;
+function fmtSlewKph(rv){ return '≈ -'+(rv*0.6).toFixed(1)+' kph/s @60限速'; }
+
+// idOf(idx)→DOM id, paramOf(id)→POST key (default identity), range(idx)→[min,max], def(idx)→seed,
+// dirty=map object OR string 'slew' (uses module-scoped slewDirty flag).
+function makeStepper(opts){
+  var pending={}, debounce=null, settle=null;
+  var paramOf=opts.paramOf||function(id){return id;};
+  return function(idx, delta){
+    var id=opts.idOf(idx);
+    var el=document.getElementById(id); if(!el) return;
+    var cur=parseInt(el.textContent,10); if(isNaN(cur)) cur=opts.def(idx);
+    var rng=opts.range(idx), nv=cur+delta;
+    if(nv<rng[0]) nv=rng[0]; if(nv>rng[1]) nv=rng[1];
+    if(nv===cur) return;
+    el.textContent=nv;
+    if(opts.dirty==='slew') slewDirty=true;
+    else if(opts.dirty==='legacy') legacyDirty=true;
+    else opts.dirty[id]=true;
+    pending[id]=nv;
+    if(opts.onChange) opts.onChange(nv);
+    clearTimeout(debounce); clearTimeout(settle);  // kill in-flight settle so new save isn't nuked
+    debounce=setTimeout(function(){
+      var qs=''; for(var _id in pending){ qs+='&'+paramOf(_id)+'='+encodeURIComponent(pending[_id]); }
+      var sent=pending; pending={};
+      if(!qs) return;
+      fetch('/api/set?'+qs.slice(1)+(tok?'&token='+encodeURIComponent(tok):''))
+        .then(function(r){
+          function clearDirty(){
+            if(opts.dirty==='slew') slewDirty=false;
+            else if(opts.dirty==='legacy') legacyDirty=false;
+            else for(var k in sent) delete opts.dirty[k];
+          }
+          if(r.status===200){
+            toast('已保存','ok');
+            settle=setTimeout(function(){ clearDirty(); poll(); }, STEP_SETTLE_MS);
+          } else if(r.status===403){ showPin(); }
+          else { toast('失败','err'); clearDirty(); }
+        });
+    }, STEP_DEBOUNCE_MS);
+  };
 }
-// Same pattern for ≥80 high-speed bucket table. hw3HSDirty blocks poll overwrite
-// during debounce + in-flight window.
-var _hw3HSTimer=null, _hw3HSPending={};
-var hw3HSDirty={};
-function apiSetHw3HS(k, v){
-  hw3HSDirty[k]=true;
-  _hw3HSPending[k]=v;
-  clearTimeout(_hw3HSTimer);
-  _hw3HSTimer=setTimeout(function(){
-    var qs=''; for(var kk in _hw3HSPending){qs+='&'+kk+'='+encodeURIComponent(_hw3HSPending[kk]);}
-    var sent=_hw3HSPending; _hw3HSPending={};
-    if(!qs)return;
-    fetch('/api/set?'+qs.slice(1)+(tok?'&token='+encodeURIComponent(tok):''))
-      .then(function(r){
-        if(r.status===200){
-          toast('已保存','ok');
-          setTimeout(function(){ for(var kk in sent) delete hw3HSDirty[kk]; poll(); }, 600);
-        } else if(r.status===403){ showPin(); }
-        else { toast('失败','err'); for(var kk in sent) delete hw3HSDirty[kk]; }
-      });
-  },400);
-}
+
+var hw3CtStep=makeStepper({
+  idOf:function(i){return 'hw3CT'+i;},
+  range:function(i){return HW3CT_RANGE[i];},
+  def:function(i){return HW3CT_DEF[i];},
+  dirty:hw3CTDirty
+});
+var hw3HsStep=makeStepper({
+  idOf:function(i){return 'hw3HsPct'+i;},
+  range:function(){return [0,50];},
+  def:function(i){return HW3HS_DEF[i];},
+  dirty:hw3HSDirty
+});
+var _slewImpl=makeStepper({
+  idOf:function(){return 'cSlewRate';},
+  paramOf:function(){return 'hw3SlewRate';},
+  range:function(){return [1,25];},
+  def:function(){return SLEW_DEF;},
+  dirty:'slew',
+  onChange:function(nv){ var e=document.getElementById('cSlewKphHint'); if(e) e.textContent=fmtSlewKph(nv); }
+});
+function slewStep(delta){ _slewImpl(0, delta); }
+var _legacyImpl=makeStepper({
+  idOf:function(){return 'cLegOff';},
+  paramOf:function(){return 'legacyOffset';},
+  range:function(){return [0,33];},
+  def:function(){return LEGACY_DEF;},
+  dirty:'legacy'
+});
+function legacyStep(delta){ _legacyImpl(0, delta); }
+function hint(msg){ toast(msg, '', 3500); }
+
+// Inject ts-step cells for the two HW3 grids at init — eliminates ~3KB of repeated PROGMEM HTML.
+(function initSteppers(){
+  var g=document.getElementById('gridHw3CT');
+  if(g){
+    var ctLbl=[30,40,50,60,70], h='';
+    for(var i=0;i<5;i++){
+      h+='<div><div class="hw3ct-label">限速 '+ctLbl[i]+'</div><div class="hw3ct-sub">最大 '+HW3CT_RANGE[i][1]+'</div>'
+       + '<div class="ts-step"><button class="ts-step-btn" onclick="hw3CtStep('+i+',-1)">−</button>'
+       + '<div class="ts-step-val"><span id="hw3CT'+i+'">--</span><span class="ts-step-unit">km/h</span></div>'
+       + '<button class="ts-step-btn" onclick="hw3CtStep('+i+',1)">+</button></div></div>';
+    }
+    g.innerHTML=h;
+  }
+  var g2=document.getElementById('gridHw3Hs');
+  if(g2){
+    var hsLbl=['80','90','100','110','120+'], hsMax=[40,45,50,55,60], h2='';
+    for(var j=0;j<5;j++){
+      h2+='<div><div class="hw3ct-label">限速 '+hsLbl[j]+'</div><div class="hw3ct-sub">上限 +'+hsMax[j]+'</div>'
+        + '<div class="ts-step"><button class="ts-step-btn" onclick="hw3HsStep('+j+',-5)">−</button>'
+        + '<div class="ts-step-val"><span class="ts-step-pfx">+</span><span id="hw3HsPct'+j+'">--</span><span class="ts-step-unit">%</span></div>'
+        + '<button class="ts-step-btn" onclick="hw3HsStep('+j+',5)">+</button></div></div>';
+    }
+    g2.innerHTML=h2;
+  }
+})();
 
 // ───── DNS 预设 ─────
 var DNS_PRESETS = {
@@ -1735,9 +1802,9 @@ function otaRenderOnline(s){
   if(s.current) cur.textContent = 'v'+s.current;
   if(s.envTag)  env.textContent = s.envTag;
   function setBtn(b, on){ b.disabled=!on; b.style.opacity = on?1:.5; }
-  if(s.state===1){ msg.textContent='正在查询 GitHub…'; msg.style.color='#94a3b8'; setBtn(chk,false); setBtn(pull,false); }
-  else if(s.state===2){ msg.textContent='正在下载…'; msg.style.color='#38bdf8'; box.style.display='block'; setBtn(chk,false); setBtn(pull,false); }
-  else if(s.state===3){ box.style.display='block'; var pct=s.total>0?Math.round(s.written/s.total*100):0; bar.style.width=pct+'%'; msg.textContent='正在写入 '+pct+'%'; msg.style.color='#38bdf8'; setBtn(chk,false); setBtn(pull,false); }
+  if(s.state===1){ msg.textContent='正在查询 GitHub…'; msg.style.color='#a0a0a0'; setBtn(chk,false); setBtn(pull,false); }
+  else if(s.state===2){ msg.textContent='正在下载…'; msg.style.color='#fff'; box.style.display='block'; setBtn(chk,false); setBtn(pull,false); }
+  else if(s.state===3){ box.style.display='block'; var pct=s.total>0?Math.round(s.written/s.total*100):0; bar.style.width=pct+'%'; msg.textContent='正在写入 '+pct+'%'; msg.style.color='#fff'; setBtn(chk,false); setBtn(pull,false); }
   else if(s.state===4){ if(s.latest) lat.textContent='v'+s.latest; msg.textContent=s.message||'已找到新版本'; msg.style.color='#22c55e'; setBtn(chk,true); setBtn(pull,!!s.url); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} }
   else if(s.state===5){ msg.textContent=s.message||'更新成功，正在重启…'; msg.style.color='#22c55e'; bar.style.width='100%'; setBtn(chk,false); setBtn(pull,false); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} setTimeout(function(){location.reload()}, 8000); }
   else if(s.state===6){ msg.textContent=s.message||'失败'; msg.style.color='#ef4444'; setBtn(chk,true); setBtn(pull,!!s.url); if(__otaOnlinePoll){clearInterval(__otaOnlinePoll);__otaOnlinePoll=null;} }
@@ -1756,7 +1823,7 @@ function otaStartOnlinePoll(){
 }
 function otaCheck(){
   var msg = document.getElementById('otaOnlineMsg');
-  msg.textContent = ''; msg.style.color='#94a3b8';
+  msg.textContent = ''; msg.style.color='#a0a0a0';
   document.getElementById('otaChkBtn').disabled = true;
   fetch('/api/ota/check'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
     .then(function(r){
@@ -1769,7 +1836,7 @@ function otaCheck(){
 function otaPull(){
   if(!confirm('确认下载并安装新版？期间请勿断电')) return;
   var msg = document.getElementById('otaOnlineMsg');
-  msg.textContent = ''; msg.style.color='#94a3b8';
+  msg.textContent = ''; msg.style.color='#a0a0a0';
   document.getElementById('otaPullBtn').disabled = true;
   document.getElementById('otaChkBtn').disabled = true;
   fetch('/api/ota/pull'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
@@ -1799,7 +1866,7 @@ function carLoadPartInfo(){
 function carDoRollback(){
   if(!confirm('将切换到上一个固件并重启，确定吗？')) return;
   var msg = document.getElementById('carRollbackMsg');
-  msg.textContent = ''; msg.style.color='#94a3b8';
+  msg.textContent = ''; msg.style.color='#a0a0a0';
   document.getElementById('carRollbackBtn').disabled = true;
   fetch('/api/ota/rollback'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
     .then(function(r){

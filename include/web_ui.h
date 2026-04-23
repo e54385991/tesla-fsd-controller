@@ -310,15 +310,15 @@ select:focus{outline:none;border-color:#38bdf8}
     <label class="toggle"><input type="checkbox" id="hw3HighSpeedEnable" onchange="setVal('hw3HighSpeedEnable',this.checked?1:0)"><span class="slider"></span></label>
   </div>
   <div id="rowHW3HiSpdPanel" style="display:none;padding:10px 12px;background:#0b1220;border-radius:8px;margin-top:4px">
-    <div style="font-size:12px;color:#94a3b8;margin-bottom:8px" id="iLblHW3HiSpdHint" data-zh="限速 ≥80 时每档的百分比加速（kph 档位）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 50%。" data-en="Per-bucket percentage offset when posted limit ≥80 kph. Below 80 use Auto/Custom. Tesla fw caps at 50%.">限速 ≥80 时每档的百分比加速（kph 档位）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 50%。</div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:8px" id="iLblHW3HiSpdHint" data-zh="限速路牌 ≥80 时按百分比加速（%）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 +50%，超出自动夹紧。" data-en="Percentage offset when posted speed limit is ≥80 kph. Below 80 uses Auto/Custom. Tesla firmware caps at +50%.">限速路牌 ≥80 时按百分比加速（%）。&lt;80 走上面 Auto/自定义。Tesla 固件硬限 +50%，超出自动夹紧。</div>
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
-      <div><div class="hw3ct-label">80</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct0" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct0',this.value)"></div>
-      <div><div class="hw3ct-label">90</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct1" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct1',this.value)"></div>
-      <div><div class="hw3ct-label">100</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct2" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct2',this.value)"></div>
-      <div><div class="hw3ct-label">110</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct3" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct3',this.value)"></div>
-      <div><div class="hw3ct-label">120+</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">%</div><input type="number" id="hw3HsPct4" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct4',this.value)"></div>
+      <div><div class="hw3ct-label">限速 80</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">上限 +40</div><input type="number" id="hw3HsPct0" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct0',this.value)"></div>
+      <div><div class="hw3ct-label">限速 90</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">上限 +45</div><input type="number" id="hw3HsPct1" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct1',this.value)"></div>
+      <div><div class="hw3ct-label">限速 100</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">上限 +50</div><input type="number" id="hw3HsPct2" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct2',this.value)"></div>
+      <div><div class="hw3ct-label">限速 110</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">上限 +55</div><input type="number" id="hw3HsPct3" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct3',this.value)"></div>
+      <div><div class="hw3ct-label">限速 120+</div><div style="font-size:10px;color:#64748b;margin-bottom:2px">上限 +60</div><input type="number" id="hw3HsPct4" min="0" max="50" class="hw3ct-input" onchange="setValHw3HS('hw3HsPct4',this.value)"></div>
     </div>
-    <div id="sHiSpdHint" style="font-size:11px;color:#64748b;margin-top:6px;font-family:monospace"></div>
+    <div id="sHiSpdHint" style="font-size:12px;color:#38bdf8;margin-top:6px;font-family:monospace;font-weight:600"></div>
   </div>
 </div>
 
@@ -1157,11 +1157,11 @@ function catRenderRow(c){
     '<label class="switch cat-switch"><input type="checkbox" id="cat_'+c.id+'" '+(c.defaultOn?'checked':'')+' onchange="catOnChange()"><span class="slider"></span></label>'+
     '<div class="cat-info">'+
       '<div class="cat-title">'+c.icon+' '+c.label+' <span class="cat-count">· '+count+' 个</span></div>'+
-      '<div class="cat-desc">'+c.desc+'</div>'+
     '</div>'+
     '<button type="button" class="cat-btn" id="btnEdit_'+c.id+'" onclick="catToggle(\''+c.id+'\')">编辑 ▼</button>'+
     '</div>'+
     '<div class="cat-body" id="catBody_'+c.id+'">'+
+      '<div class="cat-desc">'+c.desc+'</div>'+
       '<textarea id="catTa_'+c.id+'" class="text-input cat-ta" rows="2" oninput="catOnChange()">'+c.domains+'</textarea>'+
       '<div><button type="button" class="cat-reset" onclick="catReset(\''+c.id+'\')">↺ 恢复默认域名</button></div>'+
     '</div></div>';
