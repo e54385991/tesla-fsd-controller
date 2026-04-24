@@ -131,6 +131,8 @@ static bool checkToken(AsyncWebServerRequest* req) {
 #define NV_HW3_ENC   "dd"   // u8: hw3WireEncoding 0=KPH5, 1=PCT4 (v1.4.28, default PCT4)
 #define NV_IP_BLK    "de"   // bool: ipBlockerEnabled (v1.4.29, default false — hot-path fast path)
 #define NV_ISA_OVR   "df"   // bool: isaOverride (v1.4.28, default false — HW4 ISA nav-limit clamp bypass)
+#define NV_LEG_B7E   "dg"   // bool: legacyByte7Enable (default true — write 0x3EE mux-0 byte7 low-nibble in Legacy mode)
+#define NV_LEG_B7V   "dh"   // u8:   legacyByte7Value 0..15 (default 0x0F — historic value)
 
 // ═══════════════════════════════════════════
 //  Config persistence (NVS)
@@ -224,6 +226,12 @@ void loadConfig() {
         cfg.legacyOffset = v;
     }
     cfg.removeVisionSpeedLimit = prefs.getBool(NV_LEG_RVSL, true);
+    cfg.legacyByte7Enable = prefs.getBool(NV_LEG_B7E, true);
+    {
+        uint8_t v = prefs.getUChar(NV_LEG_B7V, 0x0F);
+        if (v > 15) v = 15;  // 4-bit field
+        cfg.legacyByte7Value = v;
+    }
     {
         uint8_t enc = prefs.getUChar(NV_HW3_ENC, HW3_ENC_PCT4);
         if (enc > HW3_ENC_MAX) enc = HW3_ENC_PCT4;  // NVS corruption fallback
@@ -293,6 +301,8 @@ void saveConfig() {
                    sizeof(cfg.hw3CustomTarget));
     prefs.putUChar(NV_LEG_OFF,  cfg.legacyOffset);
     prefs.putBool(NV_LEG_RVSL,  cfg.removeVisionSpeedLimit);
+    prefs.putBool(NV_LEG_B7E,   cfg.legacyByte7Enable);
+    prefs.putUChar(NV_LEG_B7V,  cfg.legacyByte7Value);
     prefs.putUChar(NV_HW3_ENC,  cfg.hw3WireEncoding);
     prefs.putBool(NV_IP_BLK,    cfg.ipBlockerEnabled);
     prefs.putBool(NV_ISA_OVR,   cfg.isaOverride);
@@ -523,7 +533,7 @@ void setupWebServer() {
             "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3OffsetTarget\":%u,\"hw3OffsetLast\":%u,\"hw3SlewCount\":%u,"
             "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],\"hw3WireEncoding\":%u,\"ipBlockerEnabled\":%d,\"isaOverride\":%d,"
             "\"gps2F8Seen\":%s,\"gps2F8Count\":%u,\"gps2F8Period\":%u,\"gps2F8UserOffRaw\":%u,\"gps2F8MppLimRaw\":%u,"
-            "\"legacyOffset\":%u,\"removeVSL\":%d,"
+            "\"legacyOffset\":%u,\"removeVSL\":%d,\"legacyByte7Enable\":%d,\"legacyByte7Value\":%u,"
             "\"fusedLimit\":%u,"
             "\"tempSeen\":%s,\"tempInRaw\":%u,\"tempOutRaw\":%u,"
             "\"bmsSeen\":%s,\"bmsV\":%u,\"bmsA\":%d,\"bmsSoc\":%u,"
@@ -578,6 +588,8 @@ void setupWebServer() {
             (unsigned)cfg.gpsMppLimitRaw,
             (unsigned)cfg.legacyOffset,
             (int)cfg.removeVisionSpeedLimit,
+            (int)cfg.legacyByte7Enable,
+            (unsigned)cfg.legacyByte7Value,
             (unsigned)cfg.fusedSpeedLimit,
             cfg.tempSeen ? "true" : "false",
             (unsigned)cfg.tempInsideRaw,    // × 0.25 = °C  (done in JS)
@@ -769,6 +781,17 @@ void setupWebServer() {
         if (req->hasParam("removeVSL")) {
             bool v = req->getParam("removeVSL")->value().toInt() != 0;
             if (v != cfg.removeVisionSpeedLimit) { cfg.removeVisionSpeedLimit = v; changed = true; }
+        }
+        if (req->hasParam("legacyByte7Enable")) {
+            bool v = req->getParam("legacyByte7Enable")->value().toInt() != 0;
+            if (v != cfg.legacyByte7Enable) { cfg.legacyByte7Enable = v; changed = true; }
+        }
+        if (req->hasParam("legacyByte7Value")) {
+            int raw = req->getParam("legacyByte7Value")->value().toInt();
+            if (raw < 0)  raw = 0;
+            if (raw > 15) raw = 15;
+            uint8_t v = (uint8_t)raw;
+            if (v != cfg.legacyByte7Value) { cfg.legacyByte7Value = v; changed = true; }
         }
         if (req->hasParam("hw3AutoSpeed")) {
             bool v = req->getParam("hw3AutoSpeed")->value().toInt() != 0;

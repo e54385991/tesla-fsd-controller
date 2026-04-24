@@ -230,6 +230,20 @@ select:focus{outline:none;border-color:#38bdf8}
     <span class="row-label" data-zh="Legacy 速度偏移 (kph/mph)" data-en="Legacy Speed Offset (kph/mph)">Legacy 速度偏移 (kph/mph)</span>
     <input type="number" id="legacyOffset" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px" onchange="setVal('legacyOffset',this.value)">
   </div>
+  <div class="row" id="rowLegB7En" style="display:none">
+    <span class="row-label" data-zh="Legacy 0x3EE 字节7 写入" data-en="Legacy 0x3EE byte7 write">Legacy 0x3EE 字节7 写入</span>
+    <label class="toggle"><input type="checkbox" id="legacyByte7Enable" onchange="setVal('legacyByte7Enable',this.checked?1:0)"><span class="slider"></span></label>
+  </div>
+  <div class="row" id="rowLegB7Val" style="display:none">
+    <span class="row-label" data-zh="Legacy 字节7 低位 (0-15)" data-en="Legacy byte7 low-nibble (0-15)">Legacy 字节7 低位 (0-15)</span>
+    <div style="display:flex;align-items:center;gap:8px">
+      <input type="range" id="legacyByte7Value" min="0" max="15" step="1" value="15"
+             oninput="document.getElementById('legB7ValLbl').textContent=this.value"
+             onchange="setVal('legacyByte7Value',this.value)"
+             style="width:140px">
+      <span id="legB7ValLbl" style="font-family:monospace;min-width:22px;text-align:right">15</span>
+    </div>
+  </div>
   <div id="rowGps2F8" style="display:none;padding:10px 12px;background:#0b1220;border-radius:8px;margin-top:4px;font-family:monospace;font-size:12px;color:#cbd5e1">
     <div style="color:#94a3b8;margin-bottom:6px" data-zh="0x2F8 (760) Legacy 限速帧嗅探" data-en="0x2F8 (760) Legacy speed-frame sniffer">0x2F8 (760) Legacy 限速帧嗅探</div>
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px">
@@ -761,10 +775,21 @@ function poll(){
     document.getElementById('rowOverrideSL').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowRemoveVSL').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegOff').style.display=(d.hwMode===0)?'':'none';
+    document.getElementById('rowLegB7En').style.display=(d.hwMode===0)?'':'none';
+    document.getElementById('rowLegB7Val').style.display=(d.hwMode===0)?'':'none';
     var rvslEl=document.getElementById('removeVSL');
     if(rvslEl) rvslEl.checked=(d.removeVSL==null?true:!!d.removeVSL);
     var legOffEl=document.getElementById('legacyOffset');
     if(legOffEl && document.activeElement!==legOffEl) legOffEl.value=(d.legacyOffset!=null?d.legacyOffset:0);
+    var legB7EnEl=document.getElementById('legacyByte7Enable');
+    if(legB7EnEl) legB7EnEl.checked=(d.legacyByte7Enable==null?true:!!d.legacyByte7Enable);
+    var legB7ValEl=document.getElementById('legacyByte7Value');
+    if(legB7ValEl && document.activeElement!==legB7ValEl){
+      var lv=(d.legacyByte7Value!=null?d.legacyByte7Value:15);
+      legB7ValEl.value=String(lv);
+      var lvLbl=document.getElementById('legB7ValLbl');
+      if(lvLbl) lvLbl.textContent=String(lv);
+    }
     (function(){
       var r=document.getElementById('rowGps2F8'); if(!r) return;
       r.style.display=(d.hwMode===0)?'':'none';
