@@ -231,11 +231,14 @@ select:focus{outline:none;border-color:#38bdf8}
     <input type="number" id="legacyOffset" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px" onchange="setVal('legacyOffset',this.value)">
   </div>
   <div class="row" id="rowLegB7En" style="display:none">
-    <span class="row-label" data-zh="Legacy 0x3EE 字节7 写入" data-en="Legacy 0x3EE byte7 write">Legacy 0x3EE 字节7 写入</span>
+    <span class="row-label" data-zh="写入 FSD 最大速度偏移" data-en="Write FSD Max Speed Offset">写入 FSD 最大速度偏移</span>
     <label class="toggle"><input type="checkbox" id="legacyByte7Enable" onchange="setVal('legacyByte7Enable',this.checked?1:0)"><span class="slider"></span></label>
   </div>
+  <div class="row" id="rowLegB7Hint" style="display:none;padding:6px 0 0;border-bottom:none">
+    <span style="font-size:11px;color:#94a3b8;line-height:1.4" data-zh="0x3EE mux-0 字节7 低 4 位 = UI_fsdMaxSpeedOffsetPercentage（FSD 速度偏移百分比，0=最低 / 15=最高）。关闭后保留车辆原始值。" data-en="0x3EE mux-0 byte7 low-nibble = UI_fsdMaxSpeedOffsetPercentage (FSD speed-offset %, 0=min / 15=max). When disabled, the car's original value is preserved.">0x3EE mux-0 字节7 低 4 位 = UI_fsdMaxSpeedOffsetPercentage（FSD 速度偏移百分比，0=最低 / 15=最高）。关闭后保留车辆原始值。</span>
+  </div>
   <div class="row" id="rowLegB7Val" style="display:none">
-    <span class="row-label" data-zh="Legacy 字节7 低位 (0-15)" data-en="Legacy byte7 low-nibble (0-15)">Legacy 字节7 低位 (0-15)</span>
+    <span class="row-label" data-zh="FSD 最大速度偏移 (0-15)" data-en="FSD Max Speed Offset (0-15)">FSD 最大速度偏移 (0-15)</span>
     <div style="display:flex;align-items:center;gap:8px">
       <input type="range" id="legacyByte7Value" min="0" max="15" step="1" value="15"
              oninput="document.getElementById('legB7ValLbl').textContent=this.value"
@@ -776,6 +779,7 @@ function poll(){
     document.getElementById('rowRemoveVSL').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegOff').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegB7En').style.display=(d.hwMode===0)?'':'none';
+    document.getElementById('rowLegB7Hint').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegB7Val').style.display=(d.hwMode===0)?'':'none';
     var rvslEl=document.getElementById('removeVSL');
     if(rvslEl) rvslEl.checked=(d.removeVSL==null?true:!!d.removeVSL);
