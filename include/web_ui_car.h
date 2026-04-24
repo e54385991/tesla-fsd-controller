@@ -485,8 +485,8 @@ button{font-family:inherit;cursor:pointer}
         <div class="row" id="rowLegOff" style="display:none"><div class="rlbl">Legacy 偏移</div>
           <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="legacyStep(-1)">−</button><div class="ts-step-val"><span class="ts-step-pfx">+</span><span id="cLegOff">--</span><span class="ts-step-unit">kph/mph</span></div><button class="ts-step-btn" onclick="legacyStep(1)">+</button></div>
           <div class="rval">0~33（遵循车辆单位）</div></div>
-        <div class="row" id="rowLegB7En" style="display:none"><div class="rlbl">写入 FSD 偏移</div><div class="tog" id="tgLegB7En" data-k="legacyByte7Enable"></div><div class="rval">0x3EE 字节7 低 4 位 = UI_fsdMaxSpeedOffsetPercentage（关闭则保留车辆原值）</div></div>
-        <div class="row" id="rowLegB7Val" style="display:none"><div class="rlbl">FSD 速度偏移</div>
+        <div class="row" id="rowLegB7En" style="display:none"><div class="rlbl">写入 FSD 最大速度偏移</div><div class="tog" id="tgLegB7En" data-k="legacyByte7Enable"></div><div class="rval">0x3EE 字节7 低 4 位 = UI_fsdMaxSpeedOffsetPercentage（关闭则保留车辆原值）</div></div>
+        <div class="row" id="rowLegB7Val" style="display:none"><div class="rlbl">FSD 最大速度偏移</div>
           <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="legB7Step(-1)">−</button><div class="ts-step-val"><span id="cLegB7">--</span><span class="ts-step-unit">/ 15</span></div><button class="ts-step-btn" onclick="legB7Step(1)">+</button></div>
           <div class="rval">UI_fsdMaxSpeedOffsetPercentage（0=最低 / 15=最高，原固件默认 15）</div></div>
         <div id="rowGps2F8" style="display:none;padding:10px 12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-family:monospace;font-size:12px">
