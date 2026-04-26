@@ -217,6 +217,10 @@ select:focus{outline:none;border-color:#38bdf8}
     <span class="row-label" id="iLblCN">强制激活</span>
     <label class="toggle"><input type="checkbox" id="forceActivate" onchange="setVal('forceActivate',this.checked?1:0)"><span class="slider"></span></label>
   </div>
+  <div class="row" id="rowTlsscBypass" style="display:none">
+    <span class="row-label" id="iLblTlsscBp" data-zh="TLSSC 旁路（HW3/HW4）" data-en="TLSSC Bypass (HW3/HW4)">TLSSC 旁路（HW3/HW4）</span>
+    <label class="toggle"><input type="checkbox" id="tlsscBypass" onchange="setVal('tlsscBypass',this.checked?1:0)"><span class="slider"></span></label>
+  </div>
   <!-- highbeam hidden: requires Vehicle CAN (X179 pin 9/10), not available on Party CAN -->
   <div class="row" id="rowOverrideSL" style="display:none">
     <span class="row-label" id="iLblOverrideSL">重写速度限制</span>
@@ -245,9 +249,9 @@ select:focus{outline:none;border-color:#38bdf8}
     <label class="toggle"><input type="checkbox" id="apRestart" onchange="setAPRestart(this.checked)"><span class="slider"></span></label>
   </div>
   <div class="row" id="rowHW4Offset" style="display:none">
-    <span class="row-label" id="iLblHW4Off" data-zh="HW4 偏移强度 (0-15)" data-en="HW4 Offset Strength (0-15)">HW4 偏移强度 (0-15)</span>
+    <span class="row-label" id="iLblHW4Off" data-zh="HW4 偏移强度 (0-21)" data-en="HW4 Offset Strength (0-21)">HW4 偏移强度 (0-21)</span>
     <div style="display:flex;align-items:center;gap:8px">
-      <input type="range" id="hw4Offset" min="0" max="15" step="1" value="0"
+      <input type="range" id="hw4Offset" min="0" max="21" step="1" value="0"
              oninput="document.getElementById('hw4OffVal').textContent=this.value"
              onchange="setVal('hw4Offset',this.value)"
              style="width:140px">
@@ -878,6 +882,11 @@ function poll(){
       document.getElementById('sHiSpdHint').textContent='('+hintParts.join(' / ')+')';
     }
     document.getElementById('apRestart').checked=!!d.apRestart;
+    var tlsscEl=document.getElementById('tlsscBypass');
+    if(tlsscEl){
+      tlsscEl.checked=!!d.tlsscBypass;
+      document.getElementById('rowTlsscBypass').style.display=(d.hwMode===1||d.hwMode===2)?'':'none';
+    }
     var hw4OffEl=document.getElementById('hw4Offset');
     if(hw4OffEl && document.activeElement!==hw4OffEl){
       var hv=d.hw4Offset!=null?d.hw4Offset:0;

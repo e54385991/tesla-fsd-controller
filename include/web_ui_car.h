@@ -480,6 +480,7 @@ button{font-family:inherit;cursor:pointer}
         <div class="row"><div class="rlbl">ISA 提示音</div><div class="tog" id="tgIsa" data-k="isaChime"></div><div class="rval">屏蔽限速提示音</div></div>
         <div class="row" id="rowEmerg" style="display:none"><div class="rlbl">紧急检测</div><div class="tog" id="tgEmerg" data-k="emergencyDet"></div><div class="rval">紧急制动/碰撞检测（HW4 专用）</div></div>
         <div class="row"><div class="rlbl">强制激活</div><div class="tog" id="tgForce" data-k="forceActivate"></div><div class="rval">强制启用 FSD（风险高）</div></div>
+        <div class="row" id="rowTlssc" style="display:none"><div class="rlbl">TLSSC 旁路</div><div class="tog" id="tgTlssc" data-k="tlsscBypass"></div><div class="rval">激活时同时清 TLSSC（HW3/HW4）</div></div>
         <div class="row" id="rowOvr" style="display:none"><div class="rlbl">忽略限速</div><div class="tog" id="tgOvr" data-k="overrideSL"></div><div class="rval">忽略路牌限速（Legacy 专用）</div></div>
         <div class="row" id="rowRvsl" style="display:none"><div class="rlbl">关闭视觉限速</div><div class="tog" id="tgRvsl" data-k="removeVSL"></div><div class="rval">屏蔽摄像头识别的限速（Legacy 专用）</div></div>
         <div class="row" id="rowLegOff" style="display:none"><div class="rlbl">Legacy 偏移</div>
@@ -1104,6 +1105,7 @@ function render(d){
   setTog('tgIsaOvr', d.isaOverride);
   setTog('tgEmerg', d.emergencyDet);
   setTog('tgForce', d.forceActivate);
+  setTog('tgTlssc', d.tlsscBypass);
   setTog('tgOvr', d.overrideSL);
   setTog('tgRvsl', d.removeVSL==null?true:!!d.removeVSL);
   (function(){var e=document.getElementById('cLegOff'); if(e && !legacyDirty) e.textContent=(d.legacyOffset!=null?Number(d.legacyOffset):LEGACY_DEF);})();
@@ -1149,6 +1151,7 @@ function render(d){
   document.getElementById('rowRvsl').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowLegOff').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowTrack').style.display = isHW3 ? '' : 'none';
+  document.getElementById('rowTlssc').style.display = (isHW3||isHW4) ? '' : 'none';
   // HW4 偏移 stepper 值回填（respect dirty）
   (function(){
     var e=document.getElementById('cHw4Off'), k=document.getElementById('cHw4OffKmh');
@@ -1615,7 +1618,7 @@ function legacyStep(delta){ _legacyImpl(0, delta); }
 var _hw4OffImpl=makeStepper({
   idOf:function(){return 'cHw4Off';},
   paramOf:function(){return 'hw4Offset';},
-  range:function(){return [0,15];},
+  range:function(){return [0,21];},
   def:function(){return HW4OFF_DEF;},
   dirty:'hw4off',
   onChange:function(nv){ var k=document.getElementById('cHw4OffKmh'); if(k) k.textContent=hw4RawToKph(nv); }

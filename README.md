@@ -12,7 +12,7 @@
 
 ---
 
-基于 [tesla-open-can-mod](https://gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod) 的 ESP32 + WiFi 控制面板版本。
+基于 [ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools)（原 tesla-open-can-mod） 的 ESP32 + WiFi 控制面板版本。
 
 烧录后，ESP32 会创建一个 WiFi 热点，手机连上就能用浏览器实时控制所有参数，**无需重新编程**。
 
@@ -441,14 +441,17 @@ platformio.ini          ← 4 个 env：esp32 / esp32s3_waveshare /
 
 ## Credits
 
-本项目基于以下开源项目开发，核心 CAN 报文处理逻辑直接来源于原项目：
+本项目基于以下开源项目开发。核心 CAN 报文处理逻辑直接源自 ev-open-can-tools，其他几项作为信号定义、bit 位置和功能扩展的交叉参考：
 
-| 项目 | 链接 | 许可证 |
-|------|------|--------|
-| tesla-open-can-mod | [gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod](https://gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod) | GPLv3 |
+| 项目 | 用途 | 链接 | 许可证 |
+|------|------|------|--------|
+| ev-open-can-tools | 上游主项目，CAN 帧注入核心逻辑 | [github.com/ev-open-can-tools/ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools)（原 tesla-open-can-mod，已迁出 GitLab） | GPLv3 |
+| ev-open-can-tools-plugins | 功能扩展插件库（v1.4.32 起 HW4 offset 上限、TLSSC 旁路依据） | [github.com/ev-open-can-tools/ev-open-can-tools-plugins](https://github.com/ev-open-can-tools/ev-open-can-tools-plugins) | GPLv3 |
+| opendbc | 权威 Tesla DBC 信号定义（bit 位置、width、factor、checksum） | [github.com/commaai/opendbc](https://github.com/commaai/opendbc) | MIT |
+| flipper-tesla-fsd | Flipper Zero 版 FSD 注入实现，bit 提取/checksum 交叉验证 | [github.com/hypery11/flipper-tesla-fsd](https://github.com/hypery11/flipper-tesla-fsd) | GPLv3 |
 
 ---
 
 ## 许可证
 
-GPLv3 — 基于 [tesla-open-can-mod](https://gitlab.com/Tesla-OPEN-CAN-MOD/tesla-open-can-mod)（GPLv3）开发。
+GPLv3 — 基于 [ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools)（原 tesla-open-can-mod）（GPLv3）开发。

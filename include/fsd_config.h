@@ -34,6 +34,14 @@ struct FSDConfig {
     volatile bool     isaChimeSuppress    = false;
     volatile bool     emergencyDetection  = true;
     volatile bool     forceActivate       = false;   // bypass isFSDSelectedInUI (regions without TLSSC)
+    // TLSSC bypass (v1.4.32). Sets bit 38 on 0x3FD mux 0 alongside the normal
+    // FSD activation bits — same as the bypass-tlssc plugins from
+    // ev-open-can-tools-plugins (HW3 + HW4). Different from forceActivate:
+    // forceActivate skips Tesla's own UI selector check; this writes the
+    // explicit "TLSSC bypass" bit the car looks for. Useful in regions where
+    // the activation handshake stalls. Default OFF — unverified on every
+    // firmware. NVS key "e0".
+    volatile bool     tlsscBypass         = false;
     volatile bool     overrideSpeedLimit  = false;   // Legacy: set UI_visionSpeedSlider=100 in frame 1080
     volatile int      hw3SpeedOffset      = 0;       // stock offset from mux-0 data[3] as pct*5 (0-100); display only
     volatile bool     hw3AutoSpeed        = true;    // HW3 auto speed targeting: <60→64, =60→100, 60-79→85, ≥80→stock passthrough
@@ -48,7 +56,7 @@ struct FSDConfig {
         90,   // 60 kph bucket → max +30
         105,  // 70 kph bucket → max +35
     };
-    volatile uint8_t  hw4OffsetRaw       = 0;       // HW4 mux-2 data[1][5:0]; 0=off. Hardware field=6 bits (cap 63), UI cap=15 (v1.4.28, aligned with upstream Turkish fw). Legacy presets 7/10/14 still valid; 21 now clamps to 15.
+    volatile uint8_t  hw4OffsetRaw       = 0;       // HW4 0x3FD mux-2 data[1][5:0]; 0=off. Hardware field=6 bits (max 63). UI cap=21 (v1.4.32, validated by ev-open-can-tools-plugins HW4 +15 preset); raw≈mph_offset×1.4 → 7=+5, 10=+7, 14=+10, 21=+15.
     // ISA speed-limit override (v1.4.28, HW4 only). When ON and FSD is active,
     // we re-broadcast 0x39B with DAS_fusedSpeedLimit (byte1[4:0]) and
     // DAS_visionOnlySpeedLimit (byte2[4:0]) forced to raw=31 ("NONE"), so the

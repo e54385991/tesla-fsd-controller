@@ -223,6 +223,7 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
             // follow tesla-open-can-mod verbatim: ((d3>>1)&0x3F - 30)*5 clamped [0,100].
             cfg.hw3SpeedOffset = std::max(std::min(((int)((frame.data[3] >> 1) & 0x3F) - 30) * 5, 100), 0);
             setBit(frame, 46, true);
+            if (cfg.tlsscBypass) setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw3
             setSpeedProfileV12V13(frame, cfg.speedProfile);
             if (driver.send(frame)) cfg.modifiedCount++;
             else                    cfg.errorCount++;
@@ -368,6 +369,7 @@ static void handleHW4(CanFrame& frame, CanDriver& driver) {
             setBit(frame, 46, true);
             setBit(frame, 60, true);
             if (cfg.emergencyDetection) setBit(frame, 59, true);
+            if (cfg.tlsscBypass)        setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw4
             if (driver.send(frame)) cfg.modifiedCount++;
             else                    cfg.errorCount++;
         }

@@ -131,6 +131,7 @@ static bool checkToken(AsyncWebServerRequest* req) {
 #define NV_HW3_ENC   "dd"   // u8: hw3WireEncoding 0=KPH5, 1=PCT4 (v1.4.28, default PCT4)
 #define NV_IP_BLK    "de"   // bool: ipBlockerEnabled (v1.4.29, default false — hot-path fast path)
 #define NV_ISA_OVR   "df"   // bool: isaOverride (v1.4.28, default false — HW4 ISA nav-limit clamp bypass)
+#define NV_TLSSC_BP  "e0"   // bool: tlsscBypass (v1.4.32, default false — 0x3FD mux 0 bit 38 alongside FSD activation)
 
 // ═══════════════════════════════════════════
 //  Config persistence (NVS)
@@ -207,7 +208,7 @@ void loadConfig() {
     // so it stops consuming NVS space. Feature was removed (needs Vehicle CAN).
     if (prefs.isKey(NV_PRECOND)) prefs.remove(NV_PRECOND);
     cfg.hw4OffsetRaw       = prefs.getUChar(NV_HW4_OFF, 0);
-    if (cfg.hw4OffsetRaw > 15) cfg.hw4OffsetRaw = 15;  // v1.4.28: cap lowered 21→15; clamp stored values from older firmware
+    if (cfg.hw4OffsetRaw > 21) cfg.hw4OffsetRaw = 21;  // v1.4.32: cap raised 15→21 (ev-open-can-tools-plugins +15 preset uses raw 21); clamp absurd stored values
     cfg.trackModeEnable    = prefs.getBool(NV_TRACK_MD, false);
     cfg.hw3AutoSpeed       = prefs.getBool(NV_HW3_AUTO, true);
     cfg.hw3CustomSpeed     = prefs.getBool(NV_HW3_CUST, false);
@@ -231,6 +232,7 @@ void loadConfig() {
     }
     cfg.ipBlockerEnabled = prefs.getBool(NV_IP_BLK, false);
     cfg.isaOverride      = prefs.getBool(NV_ISA_OVR, false);
+    cfg.tlsscBypass      = prefs.getBool(NV_TLSSC_BP, false);
     {
         uint8_t buf[kHw3HighSpeedBucketCount];
         if (prefs.getBytes(NV_HW3_HSPT, buf, sizeof(buf)) == sizeof(buf)) {
@@ -296,6 +298,7 @@ void saveConfig() {
     prefs.putUChar(NV_HW3_ENC,  cfg.hw3WireEncoding);
     prefs.putBool(NV_IP_BLK,    cfg.ipBlockerEnabled);
     prefs.putBool(NV_ISA_OVR,   cfg.isaOverride);
+    prefs.putBool(NV_TLSSC_BP,  cfg.tlsscBypass);
     // WiFi keys written directly by /api/wifi — not touched here.
     prefs.end();
 }
@@ -521,7 +524,7 @@ void setupWebServer() {
             "\"hw3AutoSpeed\":%d,\"hw3CustomSpeed\":%d,"
             "\"hw3CustomTarget\":[%u,%u,%u,%u,%u],"
             "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3OffsetTarget\":%u,\"hw3OffsetLast\":%u,\"hw3SlewCount\":%u,"
-            "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],\"hw3WireEncoding\":%u,\"ipBlockerEnabled\":%d,\"isaOverride\":%d,"
+            "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],\"hw3WireEncoding\":%u,\"ipBlockerEnabled\":%d,\"isaOverride\":%d,\"tlsscBypass\":%d,"
             "\"gps2F8Seen\":%s,\"gps2F8Count\":%u,\"gps2F8Period\":%u,\"gps2F8UserOffRaw\":%u,\"gps2F8MppLimRaw\":%u,"
             "\"legacyOffset\":%u,\"removeVSL\":%d,"
             "\"fusedLimit\":%u,"
@@ -571,6 +574,7 @@ void setupWebServer() {
             (unsigned)cfg.hw3WireEncoding,
             (int)cfg.ipBlockerEnabled,
             (int)cfg.isaOverride,
+            (int)cfg.tlsscBypass,
             cfg.gpsSpeedSeen ? "true" : "false",
             (unsigned)cfg.gpsSpeedCount,
             (unsigned)cfg.gpsSpeedPeriodMs,
@@ -685,7 +689,7 @@ void setupWebServer() {
         }
         if (req->hasParam("hw4Offset")) {
             int raw = req->getParam("hw4Offset")->value().toInt();
-            if (raw < 0 || raw > 15) {
+            if (raw < 0 || raw > 21) {
                 req->send(400, "text/plain", "bad hw4Offset"); return;
             }
         }
@@ -808,6 +812,10 @@ void setupWebServer() {
             bool v = req->getParam("isaOverride")->value().toInt() != 0;
             if (v != cfg.isaOverride) { cfg.isaOverride = v; changed = true; }
         }
+        if (req->hasParam("tlsscBypass")) {
+            bool v = req->getParam("tlsscBypass")->value().toInt() != 0;
+            if (v != cfg.tlsscBypass) { cfg.tlsscBypass = v; changed = true; }
+        }
         // Apply pre-validated values — validate-all-then-apply preserves atomicity
         // so a late bad field can't leave earlier slots mutated in RAM.
         for (int i = 0; i < kHw3CustomTargetCount; i++) {
@@ -828,7 +836,7 @@ void setupWebServer() {
         if (req->hasParam("hw4Offset")) {
             int raw = req->getParam("hw4Offset")->value().toInt();
             if (raw < 0)  raw = 0;
-            if (raw > 15) raw = 15;  // UI cap aligned with upstream Turkish fw; hardware field is 6 bits but >15 unverified
+            if (raw > 21) raw = 21;  // v1.4.32: ev-open-can-tools-plugins validates raw 21 ≈ +15 mph; >21 untested
             uint8_t v = (uint8_t)raw;
             if (v != cfg.hw4OffsetRaw) { cfg.hw4OffsetRaw = v; changed = true; }
         }
