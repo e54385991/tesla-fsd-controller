@@ -381,6 +381,7 @@ button{font-family:inherit;cursor:pointer}
         <div class="chips">
           <div class="chip fade-el hide" id="miBmsT"><span class="chip-ic">🔋</span><span class="chip-v"><span id="vBmsT"></span>°C</span></div>
           <div class="chip fade-el hide" id="rowCabinTemp"><span class="chip-ic">🌡</span><span class="chip-v"><span id="vCabinTemp"></span>°C</span></div>
+          <div class="chip fade-el hide" id="rowChipTemp"><span class="chip-ic">🔥</span><span class="chip-v"><span id="vChipTemp"></span></span></div>
           <div class="chip fade-el hide" id="miUp"><span class="chip-ic">⏱</span><span class="chip-v" id="vUp"></span></div>
         </div>
       </div>
@@ -652,6 +653,9 @@ button{font-family:inherit;cursor:pointer}
           <button class="abtn blue" id="otaChkBtn" onclick="otaCheck()">🔍 检查更新</button>
           <button class="abtn" id="otaPullBtn" onclick="otaPull()" disabled style="opacity:.5">⬇️ 下载并安装</button>
         </div>
+        <div class="actions" style="margin-top:8px;display:none" id="carOtaNotesRow">
+          <button class="abtn" id="carOtaNotesBtn" onclick="carShowOtaNotes()" style="background:#0e7490;width:100%">📋 查看更新内容</button>
+        </div>
         <div class="progress" id="otaDlBox" style="display:none;margin-top:14px"><div class="progress-bar" id="otaDlBar" style="width:0%"></div></div>
         <div id="otaOnlineMsg" style="margin-top:10px;font-size:15px;color:#a0a0a0;min-height:22px"></div>
         <div class="tip">🛈 需连接路由器（网络页 STA）才能联网检查和下载。国内访问 GitHub 慢时自动经 gh-proxy.com 加速，镜像失败自动回退直连。</div>
@@ -812,6 +816,21 @@ button{font-family:inherit;cursor:pointer}
     <div class="pin-err" id="pinErr"></div>
     <div class="actions" style="margin-top:20px">
       <button class="abtn blue" onclick="submitPin()">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- OTA Release Notes 弹窗 -->
+<div id="carOtaNotesOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1500;align-items:center;justify-content:center;padding:24px;box-sizing:border-box" onclick="carHideOtaNotes(event)">
+  <div style="background:#0a0a0a;border:1px solid #333;border-radius:14px;max-width:680px;width:100%;max-height:86vh;display:flex;flex-direction:column" onclick="event.stopPropagation()">
+    <div style="padding:18px 22px;border-bottom:1px solid #222;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:18px;font-weight:600;color:#fff" id="carOtaNotesTitle">更新内容</div>
+      <button onclick="carHideOtaNotes()" style="background:none;border:none;color:#888;font-size:28px;cursor:pointer;padding:0 6px;line-height:1">×</button>
+    </div>
+    <div id="carOtaNotesBody" style="padding:18px 22px;overflow-y:auto;color:#ccc;font-size:15px;line-height:1.7;flex:1"></div>
+    <div class="actions" style="padding:14px 22px;border-top:1px solid #222">
+      <button class="abtn" onclick="carHideOtaNotes()" style="flex:1">关闭</button>
+      <button class="abtn blue" id="carOtaNotesInstallBtn" onclick="carHideOtaNotes();otaPull()" style="flex:1">⬇️ 下载并安装</button>
     </div>
   </div>
 </div>
@@ -1054,6 +1073,17 @@ function render(d){
     document.getElementById('vCabinTemp').textContent = tIn+' / '+tOut;
   }
   document.getElementById('rowCabinTemp').classList.toggle('hide', !d.tempSeen);
+  // 芯片温度（thermalLevel: 0 normal / 1 warning / 2 throttled / 3 protect）
+  var hasChip = d.chipTempC!=null;
+  document.getElementById('rowChipTemp').classList.toggle('hide', !hasChip);
+  if(hasChip){
+    var s = d.chipTempC.toFixed(1)+'°C';
+    if(d.thermalLevel>0 && d.thermalStatus) s += ' · '+d.thermalStatus;
+    var ce = document.getElementById('vChipTemp');
+    ce.textContent = s;
+    var lvl = d.thermalLevel||0;
+    ce.style.color = lvl===0?'':(lvl===1?'#fbbf24':lvl===2?'#fb923c':'#ef4444');
+  }
   // 安全模式横幅
   document.getElementById('rowSafeMode').style.display = d.safeMode ? '' : 'none';
 
@@ -1854,6 +1884,11 @@ function otaRenderOnline(s){
   var pull = document.getElementById('otaPullBtn');
   if(s.current) cur.textContent = 'v'+s.current;
   if(s.envTag)  env.textContent = s.envTag;
+  // Track latest release version so /api/ota/notes can be fetched on demand
+  // (kept off the hot-path /api/ota/status poll).
+  if(s.latest && __carOtaNotesVersion!==s.latest){__carOtaNotesVersion=s.latest;__carOtaNotesCache=null;}
+  var notesRow=document.getElementById('carOtaNotesRow');
+  if(notesRow){notesRow.style.display = (s.hasNotes && s.latest) ? '' : 'none';}
   function setBtn(b, on){ b.disabled=!on; b.style.opacity = on?1:.5; }
   if(s.state===1){ msg.textContent='正在查询 GitHub…'; msg.style.color='#a0a0a0'; setBtn(chk,false); setBtn(pull,false); }
   else if(s.state===2){ msg.textContent='正在下载…'; msg.style.color='#fff'; box.style.display='block'; setBtn(chk,false); setBtn(pull,false); }
@@ -1899,6 +1934,117 @@ function otaPull(){
       otaStartOnlinePoll();
     })
     .catch(function(){ msg.textContent='网络错误'; msg.style.color='#ef4444'; });
+}
+// Minimal markdown → HTML for release notes. Tesla black/white theme variant.
+// HTML-escapes all input first (defends against XSS via crafted release body).
+// Supports # ## ### headings, ``` fenced code, `inline` code, **bold**,
+// *italic*, [text](url) links, `- ` and `1. ` lists, GitHub-style tables,
+// `---` horizontal rule. Unknown markup falls through as escaped text.
+function carMdMini(src){
+  if(!src)return'';
+  var esc=function(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
+  var inline=function(s){
+    s=esc(s);
+    s=s.replace(/`([^`]+)`/g,'<code style="background:#000;padding:1px 6px;border:1px solid #333;border-radius:3px;font-family:monospace;font-size:0.92em">$1</code>');
+    s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    s=s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g,'$1<em>$2</em>');
+    s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline">$1</a>');
+    return s;
+  };
+  var lines=src.replace(/\r\n/g,'\n').split('\n');
+  var out=[],i=0,inCode=false,codeBuf=[],listType=null,tableRows=null,tableAligns=null;
+  var closeList=function(){if(listType){out.push('</'+listType+'>');listType=null;}};
+  var closeTable=function(){
+    if(!tableRows)return;
+    var html='<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:0.92em;margin:8px 0">';
+    for(var r=0;r<tableRows.length;r++){
+      var tag=r===0?'th':'td';
+      var bg=r===0?'background:#1a1a1a;':'';
+      html+='<tr>';
+      for(var c=0;c<tableRows[r].length;c++){
+        var al=tableAligns&&tableAligns[c]?'text-align:'+tableAligns[c]+';':'';
+        html+='<'+tag+' style="border:1px solid #333;padding:6px 10px;'+bg+al+'">'+inline(tableRows[r][c])+'</'+tag+'>';
+      }
+      html+='</tr>';
+    }
+    html+='</table></div>';
+    out.push(html);
+    tableRows=null;tableAligns=null;
+  };
+  while(i<lines.length){
+    var ln=lines[i];
+    if(inCode){
+      if(/^```/.test(ln)){
+        out.push('<pre style="background:#000;border:1px solid #333;padding:10px;border-radius:6px;overflow-x:auto;font-family:monospace;font-size:0.88em">'+esc(codeBuf.join('\n'))+'</pre>');
+        codeBuf=[];inCode=false;
+      } else codeBuf.push(ln);
+      i++;continue;
+    }
+    if(/^```/.test(ln)){closeList();closeTable();inCode=true;i++;continue;}
+    var isTable=/^\s*\|.*\|\s*$/.test(ln) && i+1<lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i+1]) && /[-]/.test(lines[i+1]);
+    if(isTable){
+      closeList();
+      var split=function(row){return row.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(function(c){return c.trim();});};
+      tableRows=[split(ln)];
+      var sep=split(lines[i+1]);
+      tableAligns=sep.map(function(s){
+        var L=/^:/.test(s),R=/:$/.test(s);
+        return L&&R?'center':R?'right':L?'left':'';
+      });
+      i+=2;
+      while(i<lines.length && /^\s*\|.*\|\s*$/.test(lines[i])){tableRows.push(split(lines[i]));i++;}
+      closeTable();continue;
+    }
+    var h=/^(#{1,3})\s+(.+)/.exec(ln);
+    if(h){closeList();closeTable();var lv=h[1].length;var sz=lv===1?'1.4em':lv===2?'1.2em':'1.05em';out.push('<h'+lv+' style="margin:14px 0 6px;font-size:'+sz+';color:#fff;font-weight:600">'+inline(h[2])+'</h'+lv+'>');i++;continue;}
+    if(/^\s*---+\s*$/.test(ln)){closeList();closeTable();out.push('<hr style="border:none;border-top:1px solid #333;margin:10px 0">');i++;continue;}
+    var ul=/^\s*[-*]\s+(.+)/.exec(ln);
+    var ol=/^\s*\d+\.\s+(.+)/.exec(ln);
+    if(ul||ol){
+      var want=ul?'ul':'ol';
+      if(listType&&listType!==want){closeList();}
+      if(!listType){out.push('<'+want+' style="margin:6px 0 6px 24px;padding:0">');listType=want;}
+      out.push('<li style="margin:3px 0">'+inline((ul||ol)[1])+'</li>');
+      i++;continue;
+    }
+    closeList();closeTable();
+    if(/^\s*$/.test(ln)){out.push('');i++;continue;}
+    out.push('<div style="margin:5px 0">'+inline(ln)+'</div>');
+    i++;
+  }
+  closeList();closeTable();
+  if(inCode){out.push('<pre style="background:#000;padding:10px;border-radius:6px">'+esc(codeBuf.join('\n'))+'</pre>');}
+  return out.join('\n');
+}
+var __carOtaNotesCache=null;
+var __carOtaNotesVersion='';
+function carShowOtaNotes(){
+  var ov=document.getElementById('carOtaNotesOverlay');
+  var body=document.getElementById('carOtaNotesBody');
+  var title=document.getElementById('carOtaNotesTitle');
+  var pull=document.getElementById('otaPullBtn');
+  var installBtn=document.getElementById('carOtaNotesInstallBtn');
+  if(installBtn) installBtn.disabled = pull ? pull.disabled : false;
+  if(installBtn) installBtn.style.opacity = installBtn.disabled ? .5 : 1;
+  body.innerHTML='<div style="color:#888">加载中…</div>';
+  ov.style.display='flex';
+  var fetchNotes=function(){
+    if(__carOtaNotesCache!==null) return Promise.resolve(__carOtaNotesCache);
+    return fetch('/api/ota/notes'+(tok?'?token='+encodeURIComponent(tok):''))
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(j){
+        if(j && typeof j.notes==='string'){__carOtaNotesCache=j.notes;return j.notes;}
+        return null;
+      }).catch(function(){return null;});
+  };
+  fetchNotes().then(function(notes){
+    if(__carOtaNotesVersion) title.textContent='v'+__carOtaNotesVersion+' 更新内容';
+    body.innerHTML = notes ? carMdMini(notes) : '<div style="color:#888">没有发布说明</div>';
+  });
+}
+function carHideOtaNotes(e){
+  if(e && e.target && e.target.id!=='carOtaNotesOverlay')return;
+  document.getElementById('carOtaNotesOverlay').style.display='none';
 }
 function carLoadPartInfo(){
   fetch('/api/ota/partinfo'+(tok?'?token='+encodeURIComponent(tok):''))

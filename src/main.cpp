@@ -513,8 +513,21 @@ void setupWebServer() {
         jsonEsc(apSSID,  escapedAp,  sizeof(escapedAp));
         jsonEsc(staSSID, escapedSta, sizeof(escapedSta));
 
-        char buf[2600];
-        static_assert(sizeof(buf) >= 2600, "JSON buffer too small");
+        // Chip temp values: serialise NaN as JSON null so the front-end can
+        // hide the badge while waiting for the first sample (boot has no data).
+        char tempC[16], tempAvgC[16], tempPeakC[16];
+        if (std::isfinite(gThermalStatus.currentC))
+            snprintf(tempC, sizeof(tempC), "%.1f", gThermalStatus.currentC);
+        else strlcpy(tempC, "null", sizeof(tempC));
+        if (std::isfinite(gThermalStatus.averageC))
+            snprintf(tempAvgC, sizeof(tempAvgC), "%.1f", gThermalStatus.averageC);
+        else strlcpy(tempAvgC, "null", sizeof(tempAvgC));
+        if (std::isfinite(gThermalStatus.peakC))
+            snprintf(tempPeakC, sizeof(tempPeakC), "%.1f", gThermalStatus.peakC);
+        else strlcpy(tempPeakC, "null", sizeof(tempPeakC));
+
+        char buf[2800];
+        static_assert(sizeof(buf) >= 2800, "JSON buffer too small");
         snprintf(buf, sizeof(buf),
             "{\"rx\":%u,\"modified\":%u,\"errors\":%u,\"uptime\":%u,"
             "\"canOK\":%s,\"fsdTriggered\":%s,"
@@ -541,6 +554,8 @@ void setupWebServer() {
             "\"apRestart\":%s,\"hw4Offset\":%u,\"trackMode\":%d,"
             "\"perfAccel\":%u,\"perfBrake\":%u,\"perfAccelMs\":%u,\"perfBrakeMs\":%u,\"brakeEntryKph\":%u,"
             "\"apSSID\":\"%s\",\"staSSID\":\"%s\",\"staIP\":\"%s\",\"staOK\":%s,"
+            "\"chipTempC\":%s,\"chipTempAvgC\":%s,\"chipTempPeakC\":%s,"
+            "\"thermalLevel\":%u,\"thermalStatus\":\"%s\",\"thermalProtect\":%s,"
             "\"variant\":\"%s\",\"version\":\"%s\"}",
             (unsigned)cfg.rxCount, (unsigned)cfg.modifiedCount,
             (unsigned)cfg.errorCount, (unsigned)uptime,
@@ -622,6 +637,10 @@ void setupWebServer() {
             escapedSta,
             (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str() : "",
             (WiFi.status() == WL_CONNECTED) ? "true" : "false",
+            tempC, tempAvgC, tempPeakC,
+            (unsigned)gThermalStatus.level,
+            thermalStatusText(),
+            thermalProtectActive() ? "true" : "false",
             FIRMWARE_VARIANT,
             FIRMWARE_VERSION
         );
@@ -885,6 +904,13 @@ void setupWebServer() {
     // exact() required — default matcher would let /api/scan swallow /api/scan/result.
     server.on(AsyncURIMatcher::exact("/api/scan"), HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        // Dedup: don't relaunch a scan that's still running. Double-clicking the
+        // UI button used to call WiFi.scanDelete() while a scan was active,
+        // which silently aborted the in-flight result. Just acknowledge.
+        if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+            req->send(200, "application/json", "{\"scanning\":true,\"already\":true}");
+            return;
+        }
         WiFi.scanDelete();
         WiFi.scanNetworks(/*async=*/true, /*hidden=*/false,
                           /*passive=*/false, /*max_ms_per_chan=*/300,
@@ -1114,6 +1140,24 @@ void setupWebServer() {
         char buf[640];
         otaStatusJson(buf, sizeof(buf));
         req->send(200, "application/json", buf);
+    });
+
+    // Release notes for the most-recent /api/ota/check result. Fetched once
+    // by the UI when a new version is detected, kept off the hot-path
+    // /api/ota/status poll. Notes can approach 6 KB after JSON-escaping
+    // (4 KB raw × ~1.5 max ratio for typical CN/EN/markdown content).
+    server.on("/api/ota/notes", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        constexpr size_t kCap = 6144;
+        char* buf = (char*)malloc(kCap);
+        if (!buf) { req->send(500, "application/json", "{\"error\":\"oom\"}"); return; }
+        otaNotesJson(buf, kCap);
+        // Use String form so AsyncWebServer copies into its own buffer
+        // before we free — the const char* overload may stream by pointer
+        // and outlive the local buf.
+        String body(buf);
+        free(buf);
+        req->send(200, "application/json", body);
     });
 
     // Partition info — UI uses this to show what the rollback target would be.
@@ -1774,8 +1818,15 @@ void loop() {
         ESP.restart();
     }
 
+    // Thermal sampling on all builds — UI surfaces chip temp regardless of
+    // whether the bridge is compiled in. Wi-Fi-specific reactions (PS-mode
+    // throttling, retry slowdown) still run only under WIFI_BRIDGE_ENABLED below.
+    if (!otaIsActive()) {
+        serviceThermalStatus();
+    }
+
 #ifdef WIFI_BRIDGE_ENABLED
-    // WiFi bridge: thermal + upstream reconnect + blocklist IP cache + NAT sync.
+    // WiFi bridge: upstream reconnect + blocklist IP cache + NAT sync.
     // DNS filtering itself runs in its own pinned task (set up in setup()).
     //
     // Skip non-essential Wi-Fi service during OTA. serviceUpstreamWiFi() can
@@ -1785,7 +1836,6 @@ void loop() {
     // triggers rst:0xc (RTC_SW_CPU_RST). Observed on v1.4.19 when a user
     // clicked "检查更新".
     if (!otaIsActive()) {
-        serviceThermalStatus();
         // Sync Wi-Fi PS mode with thermal state.
         // PS_NONE keeps the radio fully awake — 3-4× STA downlink throughput and
         // removes the 50-300 ms DTIM-sync jitter on small requests. Only applied

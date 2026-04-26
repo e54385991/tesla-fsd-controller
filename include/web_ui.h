@@ -170,6 +170,7 @@ select:focus{outline:none;border-color:#38bdf8}
   <div class="status-row" id="rowLiveGWAP" style="display:none"><span id="iLblLiveGWAP">AP 类型</span><span id="liveGWAP" style="color:#38bdf8;font-weight:700">--</span></div>
   <div class="status-row" id="rowLiveTier" style="display:none"><span id="iLblLiveTier">智能档位</span><span id="liveTier" style="color:#38bdf8;font-weight:700">--</span></div>
   <div class="status-row" id="rowLiveTemp" style="display:none"><span id="iLblLiveTemp">车内/外温度</span><span id="liveTemp" style="color:#38bdf8;font-weight:700">--</span></div>
+  <div class="status-row" id="rowLiveChipTemp" style="display:none"><span id="iLblLiveChipTemp">芯片温度</span><span id="liveChipTemp" style="font-weight:700">--</span></div>
 </div>
 
 <div class="card">
@@ -521,6 +522,7 @@ select:focus{outline:none;border-color:#38bdf8}
     <button class="save-btn" id="otaCheckBtn" onclick="doOtaCheck()" style="flex:1;background:#1e40af">检查更新</button>
     <button class="save-btn" id="otaPullBtn" onclick="doOtaPull()" style="flex:1" disabled>下载并安装</button>
   </div>
+  <button class="save-btn" id="otaNotesBtn" onclick="showOtaNotes()" style="display:none;background:#0e7490;margin-top:6px;width:100%" disabled>查看更新内容</button>
   <div class="progress" id="otaDlWrap"><div class="progress-bar" id="otaDlBar"></div></div>
   <div class="msg" id="otaPullMsg"></div>
   <div style="font-size:11px;color:#475569;margin-top:6px" id="iOnlineOtaHint">需连接路由器 (STA) 才能联网检查/下载</div>
@@ -561,6 +563,20 @@ select:focus{outline:none;border-color:#38bdf8}
   <a href="https://github.com/wjsall/tesla-fsd-controller" style="color:#334155;text-decoration:none">github.com/wjsall/tesla-fsd-controller</a>
 </div>
 
+<div id="otaNotesOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;padding:16px;box-sizing:border-box" onclick="hideOtaNotes(event)">
+  <div style="background:#0f172a;border:1px solid #334155;border-radius:12px;max-width:560px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.5)" onclick="event.stopPropagation()">
+    <div style="padding:14px 18px;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:15px;font-weight:600;color:#e2e8f0" id="otaNotesTitle">更新内容</div>
+      <button onclick="hideOtaNotes()" style="background:none;border:none;color:#94a3b8;font-size:22px;cursor:pointer;padding:0 4px;line-height:1">×</button>
+    </div>
+    <div id="otaNotesBody" style="padding:14px 18px;overflow-y:auto;color:#cbd5e1;font-size:13px;line-height:1.6;flex:1"></div>
+    <div style="padding:10px 18px;border-top:1px solid #1e293b;display:flex;gap:8px">
+      <button onclick="hideOtaNotes()" style="flex:1;background:#334155;color:#cbd5e1;border:none;border-radius:6px;padding:8px 0;font-size:13px;cursor:pointer" id="iOtaNotesClose">关闭</button>
+      <button onclick="hideOtaNotes();doOtaPull()" id="iOtaNotesInstallBtn" style="flex:1;background:#1e40af;color:#fff;border:none;border-radius:6px;padding:8px 0;font-size:13px;cursor:pointer">下载并安装</button>
+    </div>
+  </div>
+</div>
+
 <script>
 var lang='zh';
 var agreed=false;
@@ -579,7 +595,7 @@ var T={
     lblVer:'固件版本',
     canOK:'正常',canErr:'异常',fsdYes:'是',fsdNo:'否',
     otaOK:'上传成功，正在重启...',otaFail:'上传失败: ',otaConn:'连接失败',
-    otaCurrent:'当前',otaLatest:'最新',otaChecking:'正在查询 GitHub…',otaDownloading:'正在下载…',otaWriting:'正在写入',otaSuccess:'更新成功,正在重启',otaConfirm:'确认下载并安装新版? 期间请勿断电',otaOnlineTitle:'在线更新 (GitHub)',otaOnlineHint:'需连接路由器 (STA) 才能联网检查/下载',otaCheckBtn:'检查更新',otaPullBtn:'下载并安装',otaPrev:'上一版',otaRollbackBtn:'回滚到上一版',otaRollbackConfirm:'将切换到上一个固件并重启，确定吗？',otaRollbackConfirmBtn:'确认回滚',otaRollbackOK:'已切换，正在重启...',otaRollbackFail:'回滚失败',rebootBtn:'重启设备',rebootConfirm:'确定要重启吗？',rebootConfirmBtn:'确认重启',rebootOK:'正在重启...',rebootFail:'重启失败',resetAllBtn:'恢复出厂设置',resetAllConfirm:'将清除所有配置（包括 WiFi、PIN、所有参数），确定吗？',resetAllConfirmBtn:'确认重置',resetAllOK:'已重置，正在重启...',resetAllFail:'重置失败',
+    otaCurrent:'当前',otaLatest:'最新',otaChecking:'正在查询 GitHub…',otaDownloading:'正在下载…',otaWriting:'正在写入',otaSuccess:'更新成功,正在重启',otaConfirm:'确认下载并安装新版? 期间请勿断电',otaOnlineTitle:'在线更新 (GitHub)',otaOnlineHint:'需连接路由器 (STA) 才能联网检查/下载',otaCheckBtn:'检查更新',otaPullBtn:'下载并安装',otaNotesBtn:'查看更新内容',otaNotesTitle:'更新内容',otaNotesClose:'关闭',otaPrev:'上一版',otaRollbackBtn:'回滚到上一版',otaRollbackConfirm:'将切换到上一个固件并重启，确定吗？',otaRollbackConfirmBtn:'确认回滚',otaRollbackOK:'已切换，正在重启...',otaRollbackFail:'回滚失败',rebootBtn:'重启设备',rebootConfirm:'确定要重启吗？',rebootConfirmBtn:'确认重启',rebootOK:'正在重启...',rebootFail:'重启失败',resetAllBtn:'恢复出厂设置',resetAllConfirm:'将清除所有配置（包括 WiFi、PIN、所有参数），确定吗？',resetAllConfirmBtn:'确认重置',resetAllOK:'已重置，正在重启...',resetAllFail:'重置失败',
     uptH:'时',uptM:'分',uptS:'秒',langBtn:'EN',
     hwHint:'HW4 硬件 + 固件 2026.8.x 或更旧（FSD V13）→ 请选 HW3',
     cardWifi:'WiFi 设置',lblSSID:'热点名称（SSID）',lblPass:'新密码（留空保持不变）',
@@ -603,7 +619,7 @@ var T={
     hwDetHW3:'CAN 检测到：HW3',hwDetHW4:'CAN 检测到：HW4',
     hwDetNone:'未自动检测到，请手动选择（2020+ 车型不支持）',
     cardLive:'实时摘要',lblLiveCAN:'CAN',lblLiveSpeed:'车速',lblLiveLimit:'限速',lblLiveOffset:'偏移',
-    lblLiveFSD:'FSD 注入',lblLiveTier:'智能档位',lblLiveTemp:'车内/外温度',liveSpeedUnit:'km/h',liveLimitUnit:'km/h',liveOffUnit:'km/h',
+    lblLiveFSD:'FSD 注入',lblLiveTier:'智能档位',lblLiveTemp:'车内/外温度',lblLiveChipTemp:'芯片温度',liveSpeedUnit:'km/h',liveLimitUnit:'km/h',liveOffUnit:'km/h',
     lblLiveTorque:'扭矩 Nm',lblLiveGear:'挡位',lblLiveAP:'AP',lblLiveBrake:'刹车'},
   en:{title:'Tesla Controller',cardCtrl:'CONTROL',cardStat:'STATUS',cardOTA:'OTA UPDATE',
     lblFsdEn:'FSD Enable',lblHW:'Hardware',lblSpeed:'Speed Profile',lblPMode:'Profile Source',
@@ -615,7 +631,7 @@ var T={
     lblVer:'Firmware Version',
     canOK:'OK',canErr:'ERROR',fsdYes:'Yes',fsdNo:'No',
     otaOK:'Upload success, rebooting...',otaFail:'Upload failed: ',otaConn:'Connection error',
-    otaCurrent:'Current',otaLatest:'Latest',otaChecking:'Querying GitHub…',otaDownloading:'Downloading…',otaWriting:'Writing',otaSuccess:'Update OK, rebooting',otaConfirm:'Download and install now? Do not power off.',otaOnlineTitle:'Online Update (GitHub)',otaOnlineHint:'STA (router) connection required to fetch releases',otaCheckBtn:'Check for Update',otaPullBtn:'Download & Install',otaPrev:'Previous',otaRollbackBtn:'Roll Back to Previous',otaRollbackConfirm:'Switch to the previous firmware and reboot?',otaRollbackConfirmBtn:'Confirm Rollback',otaRollbackOK:'Switched, rebooting...',otaRollbackFail:'Rollback failed',rebootBtn:'Restart Device',rebootConfirm:'Restart the device?',rebootConfirmBtn:'Confirm Restart',rebootOK:'Rebooting...',rebootFail:'Reboot failed',resetAllBtn:'Factory Reset',resetAllConfirm:'This will erase all settings (WiFi, PIN, all config). Continue?',resetAllConfirmBtn:'Confirm Reset',resetAllOK:'Reset done, rebooting...',resetAllFail:'Reset failed',
+    otaCurrent:'Current',otaLatest:'Latest',otaChecking:'Querying GitHub…',otaDownloading:'Downloading…',otaWriting:'Writing',otaSuccess:'Update OK, rebooting',otaConfirm:'Download and install now? Do not power off.',otaOnlineTitle:'Online Update (GitHub)',otaOnlineHint:'STA (router) connection required to fetch releases',otaCheckBtn:'Check for Update',otaPullBtn:'Download & Install',otaNotesBtn:'View Release Notes',otaNotesTitle:'Release Notes',otaNotesClose:'Close',otaPrev:'Previous',otaRollbackBtn:'Roll Back to Previous',otaRollbackConfirm:'Switch to the previous firmware and reboot?',otaRollbackConfirmBtn:'Confirm Rollback',otaRollbackOK:'Switched, rebooting...',otaRollbackFail:'Rollback failed',rebootBtn:'Restart Device',rebootConfirm:'Restart the device?',rebootConfirmBtn:'Confirm Restart',rebootOK:'Rebooting...',rebootFail:'Reboot failed',resetAllBtn:'Factory Reset',resetAllConfirm:'This will erase all settings (WiFi, PIN, all config). Continue?',resetAllConfirmBtn:'Confirm Reset',resetAllOK:'Reset done, rebooting...',resetAllFail:'Reset failed',
     uptH:'h',uptM:'m',uptS:'s',langBtn:'中文',
     hwHint:'HW4 hardware + firmware 2026.8.x or older (FSD V13) → select HW3',
     cardWifi:'WiFi Settings',lblSSID:'AP Name (SSID)',lblPass:'New Password (blank = keep current)',
@@ -699,6 +715,10 @@ function applyLang(){
   if(el=document.getElementById('iOnlineOtaHint')) el.textContent=t.otaOnlineHint;
   if(el=document.getElementById('otaCheckBtn')) el.textContent=t.otaCheckBtn;
   if(el=document.getElementById('otaPullBtn')) el.textContent=t.otaPullBtn;
+  if(el=document.getElementById('otaNotesBtn')) el.textContent=t.otaNotesBtn;
+  if(el=document.getElementById('otaNotesTitle')) el.textContent=t.otaNotesTitle;
+  if(el=document.getElementById('iOtaNotesClose')) el.textContent=t.otaNotesClose;
+  if(el=document.getElementById('iOtaNotesInstallBtn')) el.textContent=t.otaPullBtn;
   if(el=document.getElementById('otaRollbackBtn')) el.textContent=t.otaRollbackBtn;
   if(el=document.getElementById('iRollbackConfirmMsg')) el.textContent=t.otaRollbackConfirm;
   if(el=document.getElementById('iRollbackConfirmBtn')) el.textContent=t.otaRollbackConfirmBtn;
@@ -937,6 +957,22 @@ function poll(){
       document.getElementById('liveTemp').textContent=(d.tempInRaw*0.25).toFixed(1)+'°C / '+(d.tempOutRaw*0.5-40).toFixed(1)+'°C';
     } else {
       liveTempRow.style.display='none';
+    }
+    var chipTempRow=document.getElementById('rowLiveChipTemp');
+    if(chipTempRow){
+      if(d.chipTempC!=null){
+        chipTempRow.style.display='';
+        var chipEl=document.getElementById('liveChipTemp');
+        var s=d.chipTempC.toFixed(1)+'°C';
+        if(d.chipTempPeakC!=null) s+=' (peak '+d.chipTempPeakC.toFixed(1)+')';
+        if(d.thermalStatus) s+=' · '+d.thermalStatus;
+        chipEl.textContent=s;
+        // thermalLevel: 0 normal, 1 warning, 2 throttled, 3 protect
+        var lvl=d.thermalLevel||0;
+        chipEl.style.color = lvl===0?'#38bdf8':lvl===1?'#fbbf24':lvl===2?'#fb923c':'#ef4444';
+      } else {
+        chipTempRow.style.display='none';
+      }
     }
     var spdLimKph=d.fusedLimit>0?d.fusedLimit*5:(d.visionLimit>0?d.visionLimit*5:0);
     // HW3 offset: shows stock pct (hw3AutoOffset) as km/h estimate; auto mode
@@ -1593,8 +1629,18 @@ function otaRenderStatus(s){
   var bar=document.getElementById('otaDlBar');
   var pullBtn=document.getElementById('otaPullBtn');
   var chkBtn=document.getElementById('otaCheckBtn');
+  var notesBtn=document.getElementById('otaNotesBtn');
   if(s.current)cur.textContent=(t.otaCurrent||'当前')+': '+s.current;
   if(s.envTag)env.textContent=s.envTag;
+  // Track latest version so /api/ota/notes can be fetched lazily on user click.
+  if(s.latest && __otaNotesVersion!==s.latest){__otaNotesVersion=s.latest;__otaNotesCache=null;}
+  // Show "View notes" button only when the server says notes exist for the
+  // currently-resolved release. Default state preserves old user flow:
+  // users who don't click the button get the original two-button experience.
+  if(notesBtn){
+    if(s.hasNotes && s.latest){notesBtn.style.display='';notesBtn.disabled=false;}
+    else{notesBtn.style.display='none';notesBtn.disabled=true;}
+  }
   // state: 0=idle 1=checking 2=downloading 3=writing 4=ready 5=success 6=error
   if(s.state===1){msg.textContent=t.otaChecking||'正在查询 GitHub…';msg.className='msg';chkBtn.disabled=true;pullBtn.disabled=true;}
   else if(s.state===2){msg.textContent=t.otaDownloading||'正在下载…';msg.className='msg';wrap.style.display='block';chkBtn.disabled=true;pullBtn.disabled=true;}
@@ -1608,6 +1654,121 @@ function otaStartPoll(){
   if(__otaPoll)clearInterval(__otaPoll);
   var tick=function(){fetch('/api/ota/status'+(token?'?token='+token:'')).then(r=>r.ok?r.json():null).then(j=>{if(j)otaRenderStatus(j);}).catch(function(){});};
   tick();__otaPoll=setInterval(tick,1500);
+}
+// Minimal markdown → HTML for release notes. HTML-escapes all input first
+// (defends against XSS via crafted release body), then walks line-by-line
+// applying a small set of transforms: # ## ### headings, ``` fenced code,
+// `inline` code, **bold**, *italic*, [text](url) links, `- ` and `1. ` lists,
+// `|...|` GitHub-style tables, `---` horizontal rule. Unknown markup falls
+// through as escaped text (safe — never as raw HTML).
+function mdMini(src){
+  if(!src)return'';
+  var esc=function(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
+  var inline=function(s){
+    s=esc(s);
+    // Code spans first so other rules don't touch their contents
+    s=s.replace(/`([^`]+)`/g,'<code style="background:#1e293b;padding:1px 5px;border-radius:3px;font-family:monospace;font-size:0.92em">$1</code>');
+    s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    s=s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g,'$1<em>$2</em>');
+    // Links — only allow http(s) URLs to avoid javascript: schemes
+    s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:#38bdf8">$1</a>');
+    return s;
+  };
+  var lines=src.replace(/\r\n/g,'\n').split('\n');
+  var out=[],i=0,inCode=false,codeBuf=[],listType=null,tableRows=null,tableAligns=null;
+  var closeList=function(){if(listType){out.push('</'+listType+'>');listType=null;}};
+  var closeTable=function(){
+    if(!tableRows)return;
+    var html='<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:0.92em;margin:6px 0">';
+    for(var r=0;r<tableRows.length;r++){
+      var tag=r===0?'th':'td';
+      var bg=r===0?'background:#1e293b;':'';
+      html+='<tr>';
+      for(var c=0;c<tableRows[r].length;c++){
+        var al=tableAligns&&tableAligns[c]?'text-align:'+tableAligns[c]+';':'';
+        html+='<'+tag+' style="border:1px solid #334155;padding:4px 8px;'+bg+al+'">'+inline(tableRows[r][c])+'</'+tag+'>';
+      }
+      html+='</tr>';
+    }
+    html+='</table></div>';
+    out.push(html);
+    tableRows=null;tableAligns=null;
+  };
+  while(i<lines.length){
+    var ln=lines[i];
+    if(inCode){
+      if(/^```/.test(ln)){
+        out.push('<pre style="background:#1e293b;padding:10px;border-radius:6px;overflow-x:auto;font-family:monospace;font-size:0.88em">'+esc(codeBuf.join('\n'))+'</pre>');
+        codeBuf=[];inCode=false;
+      } else codeBuf.push(ln);
+      i++;continue;
+    }
+    if(/^```/.test(ln)){closeList();closeTable();inCode=true;i++;continue;}
+    // Table: header line followed by separator line
+    var isTable=/^\s*\|.*\|\s*$/.test(ln) && i+1<lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i+1]) && /[-]/.test(lines[i+1]);
+    if(isTable){
+      closeList();
+      var split=function(row){return row.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(function(c){return c.trim();});};
+      tableRows=[split(ln)];
+      var sep=split(lines[i+1]);
+      tableAligns=sep.map(function(s){
+        var L=/^:/.test(s),R=/:$/.test(s);
+        return L&&R?'center':R?'right':L?'left':'';
+      });
+      i+=2;
+      while(i<lines.length && /^\s*\|.*\|\s*$/.test(lines[i])){tableRows.push(split(lines[i]));i++;}
+      closeTable();continue;
+    }
+    var h=/^(#{1,3})\s+(.+)/.exec(ln);
+    if(h){closeList();closeTable();var lv=h[1].length;var sz=lv===1?'1.25em':lv===2?'1.1em':'1em';out.push('<h'+lv+' style="margin:10px 0 4px;font-size:'+sz+';color:#e2e8f0">'+inline(h[2])+'</h'+lv+'>');i++;continue;}
+    if(/^\s*---+\s*$/.test(ln)){closeList();closeTable();out.push('<hr style="border:none;border-top:1px solid #334155;margin:8px 0">');i++;continue;}
+    var ul=/^\s*[-*]\s+(.+)/.exec(ln);
+    var ol=/^\s*\d+\.\s+(.+)/.exec(ln);
+    if(ul||ol){
+      var want=ul?'ul':'ol';
+      if(listType&&listType!==want){closeList();}
+      if(!listType){out.push('<'+want+' style="margin:6px 0 6px 22px;padding:0">');listType=want;}
+      out.push('<li style="margin:2px 0">'+inline((ul||ol)[1])+'</li>');
+      i++;continue;
+    }
+    closeList();closeTable();
+    if(/^\s*$/.test(ln)){out.push('');i++;continue;}
+    out.push('<div style="margin:4px 0">'+inline(ln)+'</div>');
+    i++;
+  }
+  closeList();closeTable();
+  if(inCode){out.push('<pre style="background:#1e293b;padding:10px;border-radius:6px">'+esc(codeBuf.join('\n'))+'</pre>');}
+  return out.join('\n');
+}
+var __otaNotesCache=null;
+var __otaNotesVersion='';
+function loadOtaNotes(version){
+  if(__otaNotesVersion===version && __otaNotesCache!==null) return Promise.resolve(__otaNotesCache);
+  return fetch('/api/ota/notes'+(token?'?token='+token:''))
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(j && j.notes){__otaNotesCache=j.notes;__otaNotesVersion=j.version||version;return j.notes;}
+      return null;
+    }).catch(function(){return null;});
+}
+function showOtaNotes(){
+  var ov=document.getElementById('otaNotesOverlay');
+  var body=document.getElementById('otaNotesBody');
+  var title=document.getElementById('otaNotesTitle');
+  var lat=document.getElementById('otaLatest');
+  var pullBtn=document.getElementById('otaPullBtn');
+  var installBtn=document.getElementById('iOtaNotesInstallBtn');
+  if(installBtn) installBtn.disabled = pullBtn ? pullBtn.disabled : false;
+  body.innerHTML='<div style="color:#64748b">加载中…</div>';
+  ov.style.display='flex';
+  loadOtaNotes(__otaNotesVersion).then(function(notes){
+    if(__otaNotesVersion) title.textContent='v'+__otaNotesVersion+' 更新内容';
+    body.innerHTML = notes ? mdMini(notes) : '<div style="color:#64748b">没有发布说明</div>';
+  });
+}
+function hideOtaNotes(e){
+  if(e && e.target && e.target.id!=='otaNotesOverlay')return;
+  document.getElementById('otaNotesOverlay').style.display='none';
 }
 function doOtaCheck(){
   var msg=document.getElementById('otaPullMsg');

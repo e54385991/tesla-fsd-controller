@@ -33,13 +33,16 @@ FSDConfig cfg;  // NOLINT(misc-definitions-in-headers)
 #include "mod_perf.h"
 #include "mod_ota.h"
 #include "mod_gps_speed.h"
+// Thermal sampling is now universal — needs to be visible in all envs so the
+// /api/status JSON can carry chipTempC. Wi-Fi-specific reactions still gate on
+// WIFI_BRIDGE_ENABLED below.
+#include "mod_thermal.h"
 
 #ifdef WIFI_BRIDGE_ENABLED
 // Single definition of the DNS hook in this TU (main.cpp).
 // lwip_hooks.h (invoked by IDF lwIP C code) sees only the extern "C" decl.
 #define MOD_DNS_IMPLEMENTATION
 #include "mod_dns.h"
-#include "mod_thermal.h"
 #include "mod_telemetry_ping.h"
 #include "mod_wifi_bridge.h"
 #endif
