@@ -360,6 +360,16 @@ After modifying and rebuilding the firmware, you can update wirelessly — no US
 
 ---
 
+## 🧪 Help build the compatibility matrix
+
+Activation success varies a lot by firmware × HW chip × protocol (V13/V14) × region. We're still collecting samples — **whether activation worked or not, please take 1 minute to file an anonymous report**:
+
+➡️ **[New compatibility report](../../issues/new?template=compat-report.yml)** — pick the "Compatibility Report" template
+
+Only firmware version, HW chip, selected protocol, activation result, and region. **Do not include VIN, license plate, or account info.** Aggregated results will feed back into the README compatibility table.
+
+---
+
 ## Project Structure (for developers)
 
 ```
