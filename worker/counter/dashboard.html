@@ -567,8 +567,13 @@ function renderBars(containerId, obj, totalElId) {
   el.className = 'bars';
   el.innerHTML = entries.map(([k, v], i) => {
     const pct = Math.max(2, Math.round(v / max * 100));
+    const tip = k === '(empty)'
+      ? '设备没填写 carVer（绝大多数用户没注意要填，正常）'
+      : k === '(invalid)'
+      ? '设备填了 carVer 但含非法字符或超长（>32），仅保留计数不留原文'
+      : k;
     return `<div class="row" style="animation: fade-up .45s ${0.04 + i * 0.04}s cubic-bezier(.2,.7,.2,1) backwards">
-      <span class="k" title="${escapeHtml(k)}">${escapeHtml(k)}</span>
+      <span class="k" title="${escapeHtml(tip)}">${escapeHtml(k)}</span>
       <span class="bar"><span style="--w:${pct}%; width:${pct}%; animation-delay:${0.10 + i * 0.05}s"></span></span>
       <span class="v">${v}</span>
     </div>`;

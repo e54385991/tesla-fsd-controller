@@ -89,7 +89,9 @@ def _compress(source, target, env):  # noqa: ARG001
             r'\)' + re.escape(delimiter) + r'"\s*DIAG_SHARED_JS\s*R"' + re.escape(delimiter) + r'\(',
             re.DOTALL,
         )
-        src_text = diag_pat.sub(diag_js, src_text)
+        # Pass diag_js through a lambda so re.sub doesn't interpret backslash
+        # sequences (e.g. JS regex \d, \s) as replacement-template references.
+        src_text = diag_pat.sub(lambda _m: diag_js, src_text)
 
         pattern = r'R"' + re.escape(delimiter) + r'\((.*?)\)' + re.escape(delimiter) + r'"'
         match = re.search(pattern, src_text, re.DOTALL)

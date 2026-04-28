@@ -22,7 +22,22 @@
 var carVerDirty=false;
 (function(){
   var inp=document.getElementById('carVerInput');
-  if(inp)inp.addEventListener('input',function(){carVerDirty=true;});
+  if(!inp) return;
+  // Tesla MCU 版本格式 YYYY.WW.PP[.SUB]（年.周.补丁[.子号]）。社区/媒体常省略 SUB。
+  // 仅做软提示，不阻止保存：worker 端用允许字符集再过滤一次，不合规归 (invalid) 桶。
+  var RE=/^\d{4}\.\d{1,2}\.\d{1,3}(\.\d{1,3})?$/;
+  inp.addEventListener('input',function(){
+    carVerDirty=true;
+    var msg=document.getElementById('carVerMsg');
+    if(!msg) return;
+    var v=inp.value.trim();
+    var L=_DIAG_LITERALS();
+    if(v.length>0 && !RE.test(v)){
+      if(L.carVerBadFmt){ msg.textContent=L.carVerBadFmt; _DIAG_STYLE(msg,'err'); }
+    } else {
+      msg.textContent=''; _DIAG_STYLE(msg,'');
+    }
+  });
 })();
 function saveCarVer(){
   var L=_DIAG_LITERALS();

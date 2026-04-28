@@ -980,7 +980,8 @@ function _DIAG_LITERALS(){return {
   reqFail:'请求失败', netErr:'网络错误',
   copied:'✓ 已复制 ', notSupported:'此固件变体不支持',
   carVerOK:'✓ 已保存', carVerFail:'✗ 保存失败',
-  carVerSaving:'保存中...', carVerNetErr:'✗ 网络错误'
+  carVerSaving:'保存中...', carVerNetErr:'✗ 网络错误',
+  carVerBadFmt:'⚠ 格式应为 2024.32.25 或 2024.32.25.1（年.周.补丁[.子号]），仍可保存'
 };}
 function _DIAG_STYLE(el,kind){
   if(!el) return;

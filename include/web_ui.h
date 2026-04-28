@@ -619,7 +619,7 @@ var T={
     otaCurrent:'当前',otaLatest:'最新',otaChecking:'正在查询 GitHub…',otaDownloading:'正在下载…',otaWriting:'正在写入',otaSuccess:'更新成功,正在重启',otaConfirm:'确认下载并安装新版? 期间请勿断电',otaOnlineTitle:'在线更新 (GitHub)',otaOnlineHint:'需连接路由器 (STA) 才能联网检查/下载',otaCheckBtn:'检查更新',otaPullBtn:'下载并安装',otaNotesBtn:'查看更新内容',otaNotesTitle:'更新内容',otaNotesClose:'关闭',otaPrev:'上一版',otaRollbackBtn:'回滚到上一版',otaRollbackConfirm:'将切换到上一个固件并重启，确定吗？',otaRollbackConfirmBtn:'确认回滚',otaRollbackOK:'已切换，正在重启...',otaRollbackFail:'回滚失败',rebootBtn:'重启设备',rebootConfirm:'确定要重启吗？',rebootConfirmBtn:'确认重启',rebootOK:'正在重启...',rebootFail:'重启失败',resetAllBtn:'恢复出厂设置',resetAllConfirm:'将清除所有配置（包括 WiFi、PIN、所有参数），确定吗？',resetAllConfirmBtn:'确认重置',resetAllOK:'已重置，正在重启...',resetAllFail:'重置失败',
     uptH:'时',uptM:'分',uptS:'秒',langBtn:'EN',
     hwHint:'HW4 硬件 + 固件 2026.8.x 或更旧（FSD V13）→ 请选 HW3',
-    cardCarVer:'车辆信息',lblCarVer:'车机软件版本（建议填写）',carVerHint:'上传诊断包时一起带上方便定位限速/激活问题。在车机 控制 → 软件 里能看到，不填不影响功能。',carVerSave:'保存',carVerOK:'✓ 已保存',carVerFail:'✗ 保存失败',
+    cardCarVer:'车辆信息',lblCarVer:'车机软件版本（建议填写）',carVerHint:'上传诊断包时一起带上方便定位限速/激活问题。在车机 控制 → 软件 里能看到，不填不影响功能。',carVerSave:'保存',carVerOK:'✓ 已保存',carVerFail:'✗ 保存失败',carVerBadFmt:'⚠ 格式应为 2024.32.25 或 2024.32.25.1（年.周.补丁[.子号]），仍可保存',
     cardWifi:'WiFi 设置',lblSSID:'热点名称（SSID）',lblPass:'新密码（留空保持不变）',
     lblHW3Auto:'HW3 自动限速突破',lblBMS:'电池',
     wifiSave:'保存并重启',wifiOK:'已保存，正在重启...',wifiFail:'保存失败: ',
@@ -656,7 +656,7 @@ var T={
     otaCurrent:'Current',otaLatest:'Latest',otaChecking:'Querying GitHub…',otaDownloading:'Downloading…',otaWriting:'Writing',otaSuccess:'Update OK, rebooting',otaConfirm:'Download and install now? Do not power off.',otaOnlineTitle:'Online Update (GitHub)',otaOnlineHint:'STA (router) connection required to fetch releases',otaCheckBtn:'Check for Update',otaPullBtn:'Download & Install',otaNotesBtn:'View Release Notes',otaNotesTitle:'Release Notes',otaNotesClose:'Close',otaPrev:'Previous',otaRollbackBtn:'Roll Back to Previous',otaRollbackConfirm:'Switch to the previous firmware and reboot?',otaRollbackConfirmBtn:'Confirm Rollback',otaRollbackOK:'Switched, rebooting...',otaRollbackFail:'Rollback failed',rebootBtn:'Restart Device',rebootConfirm:'Restart the device?',rebootConfirmBtn:'Confirm Restart',rebootOK:'Rebooting...',rebootFail:'Reboot failed',resetAllBtn:'Factory Reset',resetAllConfirm:'This will erase all settings (WiFi, PIN, all config). Continue?',resetAllConfirmBtn:'Confirm Reset',resetAllOK:'Reset done, rebooting...',resetAllFail:'Reset failed',
     uptH:'h',uptM:'m',uptS:'s',langBtn:'中文',
     hwHint:'HW4 hardware + firmware 2026.8.x or older (FSD V13) → select HW3',
-    cardCarVer:'Vehicle Info',lblCarVer:'Tesla MCU Software Version (recommended)',carVerHint:'Helps triage speed-limit / FSD-activation issues when you upload a diagnostic bundle. Find it in your car: Controls → Software. Not required.',carVerSave:'Save',carVerOK:'\u2713 Saved',carVerFail:'\u2717 Save failed',
+    cardCarVer:'Vehicle Info',lblCarVer:'Tesla MCU Software Version (recommended)',carVerHint:'Helps triage speed-limit / FSD-activation issues when you upload a diagnostic bundle. Find it in your car: Controls → Software. Not required.',carVerSave:'Save',carVerOK:'\u2713 Saved',carVerFail:'\u2717 Save failed',carVerBadFmt:'\u26a0 Expected 2024.32.25 or 2024.32.25.1 (year.week.patch[.sub]); will still save',
     cardWifi:'WiFi Settings',lblSSID:'AP Name (SSID)',lblPass:'New Password (blank = keep current)',
     wifiSave:'Save & Restart',wifiOK:'Saved, rebooting...',wifiFail:'Save failed: ',
     wifiPassErr:'Password must be ≥ 8 chars',wifiSSIDErr:'SSID cannot be empty',
@@ -1614,7 +1614,7 @@ function _DIAG_LITERALS(){var t=T[lang];return {
   reqFail:t.diagUpReqFail, netErr:t.diagUpNetErr, copied:t.diagUpCopied,
   notSupported:'此固件变体不支持',
   carVerOK:t.carVerOK, carVerFail:t.carVerFail, carVerSaving:'',
-  carVerNetErr:t.carVerFail
+  carVerNetErr:t.carVerFail, carVerBadFmt:t.carVerBadFmt
 };}
 function _DIAG_STYLE(el,kind){
   if(!el) return;
