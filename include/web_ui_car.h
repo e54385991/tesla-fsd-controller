@@ -495,6 +495,7 @@ button{font-family:inherit;cursor:pointer}
         <div class="tip" id="tipTlssc" style="display:none">🛈 默认关。仅在 FSD 蓝方向盘点不亮的固件/地区试着开；未在每个固件验证。能正常激活的不要开，开了不一定有效甚至可能反向失败。</div>
         <div class="row" id="rowOvr" style="display:none"><div class="rlbl">忽略限速</div><div class="tog" id="tgOvr" data-k="overrideSL"></div><div class="rval">忽略路牌限速（Legacy 专用）</div></div>
         <div class="row" id="rowRvsl" style="display:none"><div class="rlbl">关闭视觉限速</div><div class="tog" id="tgRvsl" data-k="removeVSL"></div><div class="rval">屏蔽摄像头识别的限速（Legacy 专用）</div></div>
+        <div class="row" id="rowLegNag" style="display:none"><div class="rlbl">NAG Killer</div><div class="tog" id="tgLegNag" data-k="legacyNagKiller"></div><div class="rval">Legacy 0x370 EPAS hands-on echo</div></div>
         <div class="row" id="rowLegOff" style="display:none"><div class="rlbl">Legacy 偏移</div>
           <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="legacyStep(-1)">−</button><div class="ts-step-val"><span class="ts-step-pfx">+</span><span id="cLegOff">--</span><span class="ts-step-unit">kph/mph</span></div><button class="ts-step-btn" onclick="legacyStep(1)">+</button></div>
           <div class="rval">0~33（遵循车辆单位）</div></div>
@@ -1215,9 +1216,10 @@ function render(d){
   setTog('tgTlssc', d.tlsscBypass);
   setTog('tgOvr', d.overrideSL);
   setTog('tgRvsl', d.removeVSL==null?true:!!d.removeVSL);
+  setTog('tgLegNag', !!d.legacyNagKiller);
   setTog('tgLegB7En', d.legacyByte7Enable==null?true:!!d.legacyByte7Enable);
   (function(){var e=document.getElementById('cLegOff'); if(e && !legacyDirty) e.textContent=(d.legacyOffset!=null?Number(d.legacyOffset):LEGACY_DEF);})();
-  (function(){var e=document.getElementById('cLegB7'); if(e && !legB7Dirty) e.textContent=(d.legacyByte7Value!=null?Number(d.legacyByte7Value):LEGB7_DEF);})();
+  (function(){var e=document.getElementById('cLegB7'); if(e && !legB7Dirty) e.textContent=(d.fsdMaxSpeedOffsetPercentage!=null?Number(d.fsdMaxSpeedOffsetPercentage):LEGB7_DEF);})();
   setTog('tgTrack', d.trackMode);
   (function(){
     var r=document.getElementById('rowGps2F8'); if(!r) return;
@@ -1257,6 +1259,7 @@ function render(d){
   document.getElementById('rowEmerg').style.display = isHW4 ? '' : 'none';
   document.getElementById('rowOvr').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowRvsl').style.display = isLegacy ? '' : 'none';
+  document.getElementById('rowLegNag').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowLegOff').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowLegB7En').style.display = isLegacy ? '' : 'none';
   document.getElementById('rowLegB7Val').style.display = isLegacy ? '' : 'none';
@@ -1735,7 +1738,7 @@ var _hw4OffImpl=makeStepper({
 function hw4Step(delta){ _hw4OffImpl(0, delta); }
 var _legB7Impl=makeStepper({
   idOf:function(){return 'cLegB7';},
-  paramOf:function(){return 'legacyByte7Value';},
+  paramOf:function(){return 'fsdMaxSpeedOffsetPercentage';},
   range:function(){return [0,15];},
   def:function(){return LEGB7_DEF;},
   dirty:'legb7'

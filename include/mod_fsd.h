@@ -5,6 +5,7 @@
 //
 // Handled IDs (inbound + modified retransmit):
 //   Legacy  — 0x045 (69)   stalk position  [read-only]
+//             0x370 (880)  EPAS status      [NAG killer echo]
 //             0x3EE (1006) FSD frame        [mux 0/1 modified]
 //   HW3     — 0x3F8 (1016) stalk           [read-only]
 //             0x3FD (1021) FSD frame        [mux 0/1/2 modified]
@@ -65,6 +66,9 @@ static inline int computeHW3CustomTargetSpeedKph(int fusedLimitKph) {
 // Two wire-encoding variants observed in the field. cfg.hw3WireEncoding picks.
 enum Hw3WireEnc : uint8_t { HW3_ENC_KPH5 = 0, HW3_ENC_PCT4 = 1, HW3_ENC_MAX = HW3_ENC_PCT4 };
 
+static constexpr uint32_t CAN_ID_LEGACY_EPAS_STATUS = 880;  // 0x370 EPAS3P_sysStatus
+static constexpr uint32_t CAN_ID_LEGACY_FSD_FRAME   = 1006; // 0x3EE DAS_autopilot
+
 // KPH5 encoding caps at 40 kph offset (raw 200). Observed correct on
 // 2024 Model Y HW3 (v1.4.28 reporter).
 static constexpr int kHw3EncKph5MaxKph = 40;
@@ -108,7 +112,7 @@ static inline uint8_t encodeHW3OffsetFromPct(int pct, int fusedLimitKph) {
 }
 
 // ── CAN ID filter tables (used by handleMessage) ──────────────────────────
-static constexpr uint32_t LEGACY_IDS[] = {69, 760, 1006, 1080};
+static constexpr uint32_t LEGACY_IDS[] = {69, 760, CAN_ID_LEGACY_EPAS_STATUS, CAN_ID_LEGACY_FSD_FRAME, 1080};
 static constexpr uint32_t HW3_IDS[]    = {1016, 1021};
 static constexpr uint32_t HW4_IDS[]    = {921, 1016, 1021};
 
@@ -121,9 +125,9 @@ inline const uint32_t* getFilterIds() {
 }
 inline uint8_t getFilterIdCount() {
     switch (cfg.hwMode) {
-        case 0:  return 4;
-        case 1:  return 2;
-        default: return 3;
+        case 0:  return sizeof(LEGACY_IDS) / sizeof(LEGACY_IDS[0]);
+        case 1:  return sizeof(HW3_IDS) / sizeof(HW3_IDS[0]);
+        default: return sizeof(HW4_IDS) / sizeof(HW4_IDS[0]);
     }
 }
 inline bool isFilteredId(uint32_t id) {
@@ -136,7 +140,75 @@ inline bool isFilteredId(uint32_t id) {
 }
 
 // ── Handler: Legacy (0x3EE / 0x045 / 0x2F8 / 0x438) ─────────────────────
+// Legacy NAG killer: echo 0x370 with handsOnLevel=1, counter+1, and a small
+// torque random walk. This mirrors the reference implementation's wire shape
+// while keeping the feature behind cfg.legacyNagKiller.
+static uint32_t legacyNagPrngState       = 0xDEADBEEFu;
+static int16_t  legacyNagTorqueWalk      = 2230;
+static uint8_t  legacyNagExcFrames       = 0;
+static uint16_t legacyNagFramesUntilExc  = 175;
+
+static inline uint32_t legacyNagRand() {
+    uint32_t x = legacyNagPrngState;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    legacyNagPrngState = x;
+    return x;
+}
+
+static inline int16_t legacyNagTorqueRaw() {
+    if (legacyNagExcFrames > 0) {
+        legacyNagExcFrames--;
+        return 2350 + (int16_t)((int)(legacyNagRand() % 41u) - 20);
+    }
+
+    legacyNagTorqueWalk += (int16_t)((int)(legacyNagRand() % 31u) - 15);
+    if (legacyNagTorqueWalk < 2150) legacyNagTorqueWalk = 2150;
+    if (legacyNagTorqueWalk > 2290) legacyNagTorqueWalk = 2290;
+
+    if (legacyNagFramesUntilExc > 0) {
+        legacyNagFramesUntilExc--;
+    } else {
+        legacyNagExcFrames      = (uint8_t)(3u + (legacyNagRand() % 3u));
+        legacyNagFramesUntilExc = (uint16_t)(125u + (legacyNagRand() % 100u));
+    }
+    return legacyNagTorqueWalk;
+}
+
+static inline bool handleLegacyNagKiller(const CanFrame& frame, CanDriver& driver) {
+    if (!cfg.fsdEnable || !cfg.legacyNagKiller) return false;
+    if (frame.dlc < 8) return false;
+
+    uint8_t handsOn = (frame.data[4] >> 6) & 0x03u;
+    if (handsOn == 1) return false;
+
+    if (cfg.dasStatusSeen && (cfg.nagLevel == 0 || cfg.nagLevel == 8)) return false;
+
+    CanFrame echo = frame;
+    int16_t torque = legacyNagTorqueRaw();
+    echo.data[2] = (frame.data[2] & 0xF0u) | (uint8_t)((torque >> 8) & 0x0Fu);
+    echo.data[3] = (uint8_t)(torque & 0xFFu);
+    echo.data[4] = (frame.data[4] & (uint8_t)~0xC0u) | 0x40u;
+
+    uint8_t cnt = (frame.data[6] & 0x0Fu);
+    echo.data[6] = (frame.data[6] & 0xF0u) | ((cnt + 1u) & 0x0Fu);
+    echo.data[7] = computeVehicleChecksum(echo);
+
+    if (driver.send(echo)) {
+        cfg.legacyNagEchoCount++;
+        cfg.modifiedCount++;
+    } else {
+        cfg.errorCount++;
+    }
+    return true;
+}
+
 static void handleLegacy(CanFrame& frame, CanDriver& driver) {
+    if (frame.id == CAN_ID_LEGACY_EPAS_STATUS) {
+        handleLegacyNagKiller(frame, driver);
+        return;
+    }
     // 0x438 (1080) — UI_driverAssistAnonDebugParams: UI_visionSpeedSlider = 100 (bit56, 7-bit)
     if (frame.id == 1080) {
         if (frame.dlc < 8) return;
@@ -175,7 +247,7 @@ static void handleLegacy(CanFrame& frame, CanDriver& driver) {
         if (index == 0 && cfg.fsdTriggered && cfg.fsdEnable) {
             setBit(frame, 46, true);
             if (cfg.legacyByte7Enable) {
-                frame.data[7] = (frame.data[7] & 0xF0) | (cfg.legacyByte7Value & 0x0F);
+                frame.data[7] = (frame.data[7] & 0xF0) | (cfg.fsdMaxSpeedOffsetPercentage & 0x0F);
             }
             setSpeedProfileV12V13(frame, cfg.speedProfile);
             btMark(bt_firstFsdMod);

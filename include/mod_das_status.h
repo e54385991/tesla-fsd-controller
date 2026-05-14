@@ -35,6 +35,7 @@ inline void handleDASStatus(const CanFrame& frame) {
     cfg.sideCollision    = frame.data[4] & 0x03;                                       // bit32|2
     cfg.laneDeptWarning  = (frame.data[4] >> 5) & 0x07;                               // bit37|3
     cfg.nagLevel         = (frame.data[5] >> 2) & 0x0F;                               // bit42|4
+    cfg.dasStatusSeen    = true;
     cfg.laneChangeState  = ((frame.data[5] >> 6) & 0x03) | ((frame.data[6] & 0x07) << 2); // bit46|5
     // Bring-up diag: log the first 923 frame carrying a valid fused limit so we
     // can cross-check with 921 which ID the car actually broadcasts.
