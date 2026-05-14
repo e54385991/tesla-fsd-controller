@@ -850,6 +850,7 @@ function poll(){
     var rvslEl=document.getElementById('removeVSL');
     if(rvslEl) rvslEl.checked=(d.removeVSL==null?true:!!d.removeVSL);
     var legNagEl=document.getElementById('legacyNagKiller');
+    if(legNagEl) legNagEl.checked=!!d.legacyNagKiller;
     var legOffEl=document.getElementById('legacyOffset');
     if(legOffEl && document.activeElement!==legOffEl) legOffEl.value=(d.legacyOffset!=null?d.legacyOffset:0);
     var legB7EnEl=document.getElementById('legacyByte7Enable');
