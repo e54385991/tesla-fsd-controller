@@ -65,7 +65,6 @@ static constexpr uint32_t DIAG_SPEED_IDS[] = {
     1006,  // 0x3EE FSD activation frame          (Legacy mux 0/1, modified)
     1080,  // 0x438 UI_driverAssistAnonDebugParams (Legacy overrideSpeedLimit)
     69,    // 0x045 SCCM_leftStalk                (Legacy stalk → speedProfile)
-    880,   // 0x370 EPAS3P_sysStatus              (Legacy NAG killer input)
 };
 static constexpr uint8_t DIAG_SPEED_ID_COUNT =
     sizeof(DIAG_SPEED_IDS) / sizeof(DIAG_SPEED_IDS[0]);

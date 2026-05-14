@@ -132,9 +132,6 @@ static bool checkToken(AsyncWebServerRequest* req) {
 #define NV_TLSSC_BP  "e0"   // bool: tlsscBypass (v1.4.32, default false — 0x3FD mux 0 bit 38 alongside FSD activation)
 #define NV_PERF_MOD  "e1"   // string: perfModel (v1.4.33, free text on perf share card, ≤32 bytes)
 #define NV_CAR_VER   "e2"   // string: carSwVer (v1.4.34, user-entered Tesla MCU software version, ≤32 bytes)
-#define NV_LEG_NAG   "e3"   // bool: legacyNagKiller (Legacy 0x370 EPAS hands-on echo)
-#define NV_LEG_B7_EN "e4"   // bool: legacyByte7Enable
-#define NV_FSD_MAX_OFF_PCT "e5"   // u8: fsdMaxSpeedOffsetPercentage 0..15
 
 // ═══════════════════════════════════════════
 //  Config persistence (NVS)
@@ -228,13 +225,6 @@ void loadConfig() {
         cfg.legacyOffset = v;
     }
     cfg.removeVisionSpeedLimit = prefs.getBool(NV_LEG_RVSL, true);
-    cfg.legacyNagKiller = prefs.getBool(NV_LEG_NAG, false);
-    cfg.legacyByte7Enable = prefs.getBool(NV_LEG_B7_EN, true);
-    {
-        uint8_t v = prefs.getUChar(NV_FSD_MAX_OFF_PCT, 0x0F);
-        if (v > 0x0F) v = 0x0F;
-        cfg.fsdMaxSpeedOffsetPercentage = v;
-    }
     {
         uint8_t enc = prefs.getUChar(NV_HW3_ENC, HW3_ENC_PCT4);
         if (enc > HW3_ENC_MAX) enc = HW3_ENC_PCT4;  // NVS corruption fallback
@@ -305,9 +295,6 @@ void saveConfig() {
                    sizeof(cfg.hw3CustomTarget));
     prefs.putUChar(NV_LEG_OFF,  cfg.legacyOffset);
     prefs.putBool(NV_LEG_RVSL,  cfg.removeVisionSpeedLimit);
-    prefs.putBool(NV_LEG_NAG,   cfg.legacyNagKiller);
-    prefs.putBool(NV_LEG_B7_EN, cfg.legacyByte7Enable);
-    prefs.putUChar(NV_FSD_MAX_OFF_PCT, cfg.fsdMaxSpeedOffsetPercentage);
     prefs.putUChar(NV_HW3_ENC,  cfg.hw3WireEncoding);
     prefs.putBool(NV_IP_BLK,    cfg.ipBlockerEnabled);
     prefs.putBool(NV_ISA_OVR,   cfg.isaOverride);
@@ -595,7 +582,7 @@ void setupWebServer() {
         // Allocate the status JSON buffer on the heap, not the async_tcp task
         // stack (4-8 KB total). This handler runs at 1 Hz and a 2.9 KB stack
         // frame leaves uncomfortably little headroom for downstream calls.
-        constexpr size_t kStatusBufCap = 3200;
+        constexpr size_t kStatusBufCap = 2900;
         char* buf = (char*)malloc(kStatusBufCap);
         if (!buf) { req->send(503, "application/json", "{\"error\":\"oom\"}"); return; }
         snprintf(buf, kStatusBufCap,
@@ -609,8 +596,7 @@ void setupWebServer() {
             "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3OffsetTarget\":%u,\"hw3OffsetLast\":%u,\"hw3SlewCount\":%u,"
             "\"hw3HighSpeedEnable\":%d,\"hw3HighSpeedPct\":[%u,%u,%u,%u,%u],\"hw3WireEncoding\":%u,\"ipBlockerEnabled\":%d,\"isaOverride\":%d,\"tlsscBypass\":%d,"
             "\"gps2F8Seen\":%s,\"gps2F8Count\":%u,\"gps2F8Period\":%u,\"gps2F8UserOffRaw\":%u,\"gps2F8MppLimRaw\":%u,"
-            "\"legacyOffset\":%u,\"removeVSL\":%d,\"legacyNagKiller\":%d,\"legacyNagEcho\":%u,"
-            "\"legacyByte7Enable\":%d,\"fsdMaxSpeedOffsetPercentage\":%u,"
+            "\"legacyOffset\":%u,\"removeVSL\":%d,"
             "\"fusedLimit\":%u,"
             "\"tempSeen\":%s,\"tempInRaw\":%u,\"tempOutRaw\":%u,"
             "\"bmsSeen\":%s,\"bmsV\":%u,\"bmsA\":%d,\"bmsSoc\":%u,"
@@ -668,10 +654,6 @@ void setupWebServer() {
             (unsigned)cfg.gpsMppLimitRaw,
             (unsigned)cfg.legacyOffset,
             (int)cfg.removeVisionSpeedLimit,
-            (int)cfg.legacyNagKiller,
-            (unsigned)cfg.legacyNagEchoCount,
-            (int)cfg.legacyByte7Enable,
-            (unsigned)cfg.fsdMaxSpeedOffsetPercentage,
             (unsigned)cfg.fusedSpeedLimit,
             cfg.tempSeen ? "true" : "false",
             (unsigned)cfg.tempInsideRaw,    // × 0.25 = °C  (done in JS)
@@ -818,10 +800,6 @@ void setupWebServer() {
             hw3HSNew[i] = (uint8_t)p;
             hw3HSHas[i] = true;
         }
-        if (req->hasParam("fsdMaxSpeedOffsetPercentage")) {
-            int v = req->getParam("fsdMaxSpeedOffsetPercentage")->value().toInt();
-            if (v < 0 || v > 15) { req->send(400, "text/plain", "bad fsdMaxSpeedOffsetPercentage"); return; }
-        }
 
         bool changed = false;
 
@@ -873,18 +851,6 @@ void setupWebServer() {
         if (req->hasParam("removeVSL")) {
             bool v = req->getParam("removeVSL")->value().toInt() != 0;
             if (v != cfg.removeVisionSpeedLimit) { cfg.removeVisionSpeedLimit = v; changed = true; }
-        }
-        if (req->hasParam("legacyNagKiller")) {
-            bool v = req->getParam("legacyNagKiller")->value().toInt() != 0;
-            if (v != cfg.legacyNagKiller) { cfg.legacyNagKiller = v; changed = true; }
-        }
-        if (req->hasParam("legacyByte7Enable")) {
-            bool v = req->getParam("legacyByte7Enable")->value().toInt() != 0;
-            if (v != cfg.legacyByte7Enable) { cfg.legacyByte7Enable = v; changed = true; }
-        }
-        if (req->hasParam("fsdMaxSpeedOffsetPercentage")) {
-            uint8_t v = (uint8_t)req->getParam("fsdMaxSpeedOffsetPercentage")->value().toInt();
-            if (v != cfg.fsdMaxSpeedOffsetPercentage) { cfg.fsdMaxSpeedOffsetPercentage = v; changed = true; }
         }
         if (req->hasParam("hw3AutoSpeed")) {
             bool v = req->getParam("hw3AutoSpeed")->value().toInt() != 0;

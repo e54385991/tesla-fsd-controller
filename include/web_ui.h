@@ -236,10 +236,6 @@ select:focus{outline:none;border-color:#38bdf8}
     <span class="row-label" data-zh="关闭视觉限速识别" data-en="Disable Vision Speed Limit">关闭视觉限速识别</span>
     <label class="toggle"><input type="checkbox" id="removeVSL" onchange="setVal('removeVSL',this.checked?1:0)"><span class="slider"></span></label>
   </div>
-  <div class="row" id="rowLegacyNagKiller" style="display:none">
-    <span class="row-label" data-zh="Legacy NAG Killer" data-en="Legacy NAG Killer">Legacy NAG Killer</span>
-    <label class="toggle"><input type="checkbox" id="legacyNagKiller" onchange="setVal('legacyNagKiller',this.checked?1:0)"><span class="slider"></span></label>
-  </div>
   <div class="row" id="rowLegOff" style="display:none">
     <span class="row-label" data-zh="Legacy 速度偏移 (kph/mph)" data-en="Legacy Speed Offset (kph/mph)">Legacy 速度偏移 (kph/mph)</span>
     <input type="number" id="legacyOffset" min="0" max="33" step="1" style="width:70px;padding:4px 6px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px" onchange="setVal('legacyOffset',this.value)">
@@ -254,9 +250,9 @@ select:focus{outline:none;border-color:#38bdf8}
   <div class="row" id="rowLegB7Val" style="display:none">
     <span class="row-label" data-zh="FSD 最大速度偏移 (0-15)" data-en="FSD Max Speed Offset (0-15)">FSD 最大速度偏移 (0-15)</span>
     <div style="display:flex;align-items:center;gap:8px">
-      <input type="range" id="fsdMaxSpeedOffsetPercentage" min="0" max="15" step="1" value="15"
+      <input type="range" id="legacyByte7Value" min="0" max="15" step="1" value="15"
              oninput="document.getElementById('legB7ValLbl').textContent=this.value"
-             onchange="setVal('fsdMaxSpeedOffsetPercentage',this.value)"
+             onchange="setVal('legacyByte7Value',this.value)"
              style="width:140px">
       <span id="legB7ValLbl" style="font-family:monospace;min-width:22px;text-align:right">15</span>
     </div>
@@ -842,21 +838,19 @@ function poll(){
     document.getElementById('overrideSL').checked=!!d.overrideSL;
     document.getElementById('rowOverrideSL').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowRemoveVSL').style.display=(d.hwMode===0)?'':'none';
-    document.getElementById('rowLegacyNagKiller').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegOff').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegB7En').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegB7Hint').style.display=(d.hwMode===0)?'':'none';
     document.getElementById('rowLegB7Val').style.display=(d.hwMode===0)?'':'none';
     var rvslEl=document.getElementById('removeVSL');
     if(rvslEl) rvslEl.checked=(d.removeVSL==null?true:!!d.removeVSL);
-    var legNagEl=document.getElementById('legacyNagKiller');
     var legOffEl=document.getElementById('legacyOffset');
     if(legOffEl && document.activeElement!==legOffEl) legOffEl.value=(d.legacyOffset!=null?d.legacyOffset:0);
     var legB7EnEl=document.getElementById('legacyByte7Enable');
     if(legB7EnEl) legB7EnEl.checked=(d.legacyByte7Enable==null?true:!!d.legacyByte7Enable);
-    var legB7ValEl=document.getElementById('fsdMaxSpeedOffsetPercentage');
+    var legB7ValEl=document.getElementById('legacyByte7Value');
     if(legB7ValEl && document.activeElement!==legB7ValEl){
-      var lv=(d.fsdMaxSpeedOffsetPercentage!=null?d.fsdMaxSpeedOffsetPercentage:15);
+      var lv=(d.legacyByte7Value!=null?d.legacyByte7Value:15);
       legB7ValEl.value=String(lv);
       var lvLbl=document.getElementById('legB7ValLbl');
       if(lvLbl) lvLbl.textContent=String(lv);
