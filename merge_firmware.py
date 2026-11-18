@@ -27,9 +27,9 @@ def merge_firmware(source, target, env):
     )
     esptool = os.path.join(piohome, "packages", "tool-esptoolpy", "esptool.py")
 
-    # Read version from version.h
+    # Read version from fsd_version.h
     version = "unknown"
-    version_h = os.path.join(project_dir, "include", "version.h")
+    version_h = os.path.join(project_dir, "include", "fsd_version.h")
     if os.path.exists(version_h):
         with open(version_h) as f:
             for line in f:

@@ -284,7 +284,7 @@ Connect the ESP32 to your computer with a USB cable.
 
 | Setting | Description |
 |---------|-------------|
-| **FSD Enable** | Master switch — when off, no CAN frames are modified |
+| **FSD Enable** | Stops FSD and Legacy speed-limit/offset rewrites at the next input-frame boundary when off; high-beam control is independent |
 | **Hardware** | Match to your vehicle hardware (can be changed at runtime) |
 | **Speed Profile** | Controls how aggressively FSD drives — see table below |
 | **Profile Source** | Auto (Stalk) = follow-distance stalk controls the profile; Manual = fixed to the dropdown selection |
@@ -314,6 +314,14 @@ The status card updates in real time:
 - **Uptime** — time since last boot
 - **CAN Bus** — OK means successfully connected to the vehicle CAN bus
 - **FSD Triggered** — Yes means FSD has been activated
+
+### 5.5 Wi-Fi Bridge DNS Rules
+
+Both allowlists and blocklists accept `*.qq.com`: it matches `music.qq.com` and `a.b.qq.com` at any depth, but excludes `qq.com` itself and unrelated names such as `fakeqq.com`. A bare `qq.com` continues to match both the apex and all subdomains. Separate rules with spaces, newlines, commas, or semicolons.
+
+The longest matching domain suffix wins, excluding the `*.` prefix from its length; equal lengths favor the allowlist. For example, an allowlist entry `*.qq.com` does not override a blocklist entry `a.qq.com`. A nonempty allowlist denies unmatched domains by default.
+
+Wildcard rules are not hostnames and are skipped during IP-cache pre-resolution. A concrete subdomain can still enter the optional IP block cache when its DNS query is blocked.
 
 ---
 

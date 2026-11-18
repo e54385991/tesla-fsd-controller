@@ -58,11 +58,11 @@ inline void handleDASStatus(const CanFrame& frame) {
 // dlc>=8 required because we rewrite byte 7 checksum. Same re-send pattern
 // as 0x399 ISA chime in mod_fsd.h — DAS-originated frame; our echo reaches
 // the car bus after the original, and the car uses the newer arrival.
-inline void handleDASStatusISAOverride(const CanFrame& frame, CanDriver& driver) {
+inline void handleDASStatusISAOverride(const CanFrame& frame, CanDriver& driver, const FSDSettings& settings) {
     if (frame.dlc < 8) return;
-    if (!cfg.isaOverride) return;
-    if (!cfg.fsdTriggered || !cfg.fsdEnable) return;
-    if (cfg.hwMode != 2) return;  // HW4 only
+    if (!settings.isaOverride) return;
+    if (!cfg.fsdTriggered || !settings.fsdEnable) return;
+    if (settings.hwMode != 2) return;  // HW4 only
     CanFrame echo = frame;
     echo.data[1] |= 0x1F;  // fusedSpeedLimit = 31 (NONE)
     echo.data[2] |= 0x1F;  // visionOnlySpeedLimit = 31 (NONE)

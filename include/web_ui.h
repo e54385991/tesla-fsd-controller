@@ -1,6 +1,6 @@
 #pragma once
 
-#include "version.h"
+#include "fsd_version.h"
 #include "web_ui_diag_js.h"  // DIAG_SHARED_JS macro embedded mid-string below
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
@@ -258,7 +258,7 @@ select:focus{outline:none;border-color:#38bdf8}
     </div>
   </div>
   <div id="rowGps2F8" style="display:none;padding:10px 12px;background:#0b1220;border-radius:8px;margin-top:4px;font-family:monospace;font-size:12px;color:#cbd5e1">
-    <div style="color:#94a3b8;margin-bottom:6px" data-zh="0x2F8 (760) Legacy 限速帧嗅探" data-en="0x2F8 (760) Legacy speed-frame sniffer">0x2F8 (760) Legacy 限速帧嗅探</div>
+    <div style="color:#94a3b8;margin-bottom:6px" data-zh="0x2F8 (760) Legacy 原车限速帧" data-en="0x2F8 (760) Legacy OEM speed frame">0x2F8 (760) Legacy 原车限速帧</div>
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px">
       <div><span data-zh="可见：" data-en="seen:">可见：</span><span id="sGps2F8Seen">--</span></div>
       <div><span data-zh="帧数：" data-en="count:">帧数：</span><span id="sGps2F8Count">0</span></div>
@@ -372,6 +372,7 @@ select:focus{outline:none;border-color:#38bdf8}
 
 <div class="card">
   <div class="card-title" id="iCardCarVer">车辆信息</div>
+  <a id="serviceModeLink" href="/service" style="display:block;margin-bottom:14px;color:#38bdf8" data-zh="维护模式 · Model X Raven（自动进入尚未开放）" data-en="Service Mode · Model X Raven (automatic entry unavailable)">维护模式 · Model X Raven（自动进入尚未开放）</a>
   <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
     <span class="row-label" id="iLblCarVer">车机软件版本（建议填写）</span>
     <input type="text" id="carVerInput" class="text-input" maxlength="32" placeholder="例如 2024.44.25.1" autocomplete="off">
@@ -464,7 +465,8 @@ select:focus{outline:none;border-color:#38bdf8}
     <div class="row"><span class="row-label">启用</span>
       <label class="switch"><input type="checkbox" id="brDnsEn" onchange="brSet()"><span class="slider"></span></label></div>
     <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:8px;margin:6px 0 8px 0;font-size:11px;color:#94a3b8;line-height:1.6">
-      <div>• 白名单 = 放行；黑名单 = 屏蔽；<span style="color:#cbd5e1">更长的规则优先</span>（tesla.cn 屏蔽 + 子域白名单 → 子域放行、其他拦）</div>
+      <div>• 白名单 = 放行；黑名单 = 屏蔽；<span style="color:#cbd5e1">更具体的域名优先</span>（不计 *.；相同长度白名单优先）</div>
+      <div>• <span style="color:#cbd5e1">qq.com</span> 匹配主域及所有子域；<span style="color:#cbd5e1">*.qq.com</span> 仅匹配所有层级子域，不含 qq.com 本身；黑白名单均支持</div>
       <div>• 空格或换行分隔；<span style="color:#cbd5e1">点下方预设一键填入</span>，也可手动增删</div>
       <div>• 手机若开启「私人 DNS (DoT)」或 DoH 会<span style="color:#f87171">绕过</span>本过滤，需在系统设置关闭</div>
     </div>
@@ -477,7 +479,7 @@ select:focus{outline:none;border-color:#38bdf8}
     <div id="dnsPresetStat" style="font-size:11px;color:#94a3b8;margin:-4px 0 8px 0">当前：—</div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
       <span class="row-label" style="font-size:11px;color:#34d399">📥 白名单（放行，空格/换行分隔）</span>
-      <textarea id="brDnsAllow" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn"></textarea>
+      <textarea id="brDnsAllow" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn *.qq.com"></textarea>
     </div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
       <span class="row-label" style="font-size:11px;color:#f87171">🚫 黑名单（屏蔽，空格/换行分隔）</span>
@@ -699,6 +701,7 @@ var T={
 };
 function applyLang(){
   var t=T[lang];
+  var serviceLink=document.getElementById('serviceModeLink');serviceLink.textContent=serviceLink.dataset[lang];
   document.documentElement.lang=lang;
   document.getElementById('iTitle').textContent=t.title;
   document.getElementById('iLangBtn').textContent=t.langBtn;
@@ -864,9 +867,9 @@ function poll(){
       document.getElementById('sGps2F8Count').textContent=d.gps2F8Count||0;
       document.getElementById('sGps2F8Period').textContent=(d.gps2F8Period||0)+' ms';
       var uo=(d.gps2F8UserOffRaw!=null?d.gps2F8UserOffRaw:0);
-      document.getElementById('sGps2F8UserOff').textContent=uo+' (='+(uo-30)+' kph)';
+      document.getElementById('sGps2F8UserOff').textContent=uo+' (='+(uo-30)+' '+(d.gps2F8UserUnits===1?'mph':'kph')+')';
       var ml=(d.gps2F8MppLimRaw!=null?d.gps2F8MppLimRaw:0);
-      document.getElementById('sGps2F8MppLim').textContent=ml+' (='+(ml*5)+' kph)';
+      document.getElementById('sGps2F8MppLim').textContent=ml+' (='+(ml*5)+' '+(d.gps2F8MapUnits===1?'mph':'kph')+')';
     })();
     if(d.tempSeen){
       document.getElementById('rowTemp').style.display='';

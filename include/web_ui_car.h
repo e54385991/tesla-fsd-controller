@@ -13,7 +13,7 @@
 #define PROGMEM
 #endif
 
-#include "version.h"
+#include "fsd_version.h"
 #include "web_ui_diag_js.h"  // DIAG_SHARED_JS macro embedded mid-string below
 
 const char CAR_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
@@ -503,7 +503,7 @@ button{font-family:inherit;cursor:pointer}
           <div class="ts-step" style="flex:0 0 180px"><button class="ts-step-btn" onclick="legB7Step(-1)">−</button><div class="ts-step-val"><span id="cLegB7">--</span><span class="ts-step-unit">/ 15</span></div><button class="ts-step-btn" onclick="legB7Step(1)">+</button></div>
           <div class="rval">UI_fsdMaxSpeedOffsetPercentage（0=最低 / 15=最高，原固件默认 15）</div></div>
         <div id="rowGps2F8" style="display:none;padding:10px 12px;background:rgba(0,0,0,.25);border-radius:10px;margin-top:6px;font-family:monospace;font-size:12px">
-          <div style="color:#a0a0a0;margin-bottom:6px">0x2F8 (760) Legacy 限速帧嗅探（只读，用来确认是否可改写）</div>
+          <div style="color:#a0a0a0;margin-bottom:6px">0x2F8 (760) Legacy 原车限速帧（改写前采样）</div>
           <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#e5e5e5">
             <div>可见：<span id="cGps2F8Seen">--</span></div>
             <div>帧数：<span id="cGps2F8Count">0</span></div>
@@ -597,6 +597,7 @@ button{font-family:inherit;cursor:pointer}
           <button class="pill" id="pstClr"   style="flex:0 0 72px" onclick="dnsPreset('clear')">清空所有规则</button>
         </div>
         <div class="tip" style="margin-top:14px">🛈 自定义域名列表请点下方「📱 打开手机版」编辑。点上方预设会覆盖自定义规则。</div>
+        <div class="tip" style="margin-top:8px">黑白名单均支持 *.qq.com：匹配任意层级子域，不含 qq.com 本身；qq.com 则包含主域及所有子域。</div>
       </div>
       <div class="panel" id="panelDnsBlk">
         <div class="ptitle">最近拦截 <span style="color:#8a8a8a;font-size:13px;font-weight:500">总计 <span id="brBlkTot">0</span> 次</span></div>
@@ -817,6 +818,7 @@ button{font-family:inherit;cursor:pointer}
         <div class="actions" style="margin-top:0">
           <button class="abtn blue" onclick="showRebootConfirm()">🔄 重启模块</button>
           <button class="abtn gray" onclick="openPhone()">📱 打开手机版</button>
+          <button class="abtn gray" onclick="location.href='/service?from=car'">维护模式 · Raven（自动进入尚未开放）</button>
         </div>
         <div id="rebootConfirmBox" style="display:none;background:#0a0a0a;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-top:14px;color:#fcd34d">
           <div style="font-size:18px;font-weight:700;margin-bottom:12px">确认重启模块？</div>
@@ -1228,9 +1230,9 @@ function render(d){
     document.getElementById('cGps2F8Count').textContent=d.gps2F8Count||0;
     document.getElementById('cGps2F8Period').textContent=(d.gps2F8Period||0)+' ms';
     var uo=(d.gps2F8UserOffRaw!=null?d.gps2F8UserOffRaw:0);
-    document.getElementById('cGps2F8UserOff').textContent=uo+' (='+(uo-30)+' kph)';
+    document.getElementById('cGps2F8UserOff').textContent=uo+' (='+(uo-30)+' '+(d.gps2F8UserUnits===1?'mph':'kph')+')';
     var ml=(d.gps2F8MppLimRaw!=null?d.gps2F8MppLimRaw:0);
-    document.getElementById('cGps2F8MppLim').textContent=ml+' (='+(ml*5)+' kph)';
+    document.getElementById('cGps2F8MppLim').textContent=ml+' (='+(ml*5)+' '+(d.gps2F8MapUnits===1?'mph':'kph')+')';
   })();
   // HW 选中
   document.querySelectorAll('#grpHw .pill').forEach(function(b){

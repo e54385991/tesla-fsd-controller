@@ -19,15 +19,16 @@ HTML_SOURCES = [
     ("include/web_perf.h",    "PERF_HTML",  "rawliteral"),
     ("include/web_perf_share.h", "PERF_SHARE_HTML", "rawliteral"),
     ("include/web_ui_car.h",  "CAR_HTML",   "rawliteral"),
+    ("include/web_ui_service.h", "SERVICE_HTML", "rawliteral"),
 ]
 
 OUTPUT_HEADER = "include/web_ui_gz.h"
 
 
 def _read_firmware_version():
-    """Read FIRMWARE_VERSION from include/version.h."""
+    """Read FIRMWARE_VERSION from include/fsd_version.h."""
     try:
-        with open("include/version.h", "r", encoding="utf-8") as f:
+        with open("include/fsd_version.h", "r", encoding="utf-8") as f:
             m = re.search(r'#define\s+FIRMWARE_VERSION\s+"([^"]+)"', f.read())
             if m:
                 return m.group(1)

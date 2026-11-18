@@ -5,7 +5,9 @@
 //
 // Handled IDs (inbound + modified retransmit):
 //   Legacy  — 0x045 (69)   stalk position  [read-only]
+//             0x2F8 (760)  user speed offset
 //             0x3EE (1006) FSD frame        [mux 0/1 modified]
+//             0x438 (1080) vision speed slider
 //   HW3     — 0x3F8 (1016) stalk           [read-only]
 //             0x3FD (1021) FSD frame        [mux 0/1/2 modified]
 //   HW4     — 0x399 (921)  ISA chime       [modified]
@@ -16,7 +18,7 @@
 #include "can_frame_types.h"
 #include "drivers/can_driver.h"
 #include "can_helpers.h"
-#include "fsd_config.h"
+#include "can_control.h"
 
 extern FSDConfig cfg;  // defined in handlers.h
 
@@ -35,7 +37,7 @@ static constexpr int kHw3SpeedOffsetMaxPct = 50;  // wire raw cap = 200
 // When the posted speed limit drops (e.g. 80 → 40 kph), the computed raw
 // offset byte also drops. Sending the new lower byte immediately makes the
 // car brake hard. Instead, ramp the outgoing byte down at ≤ rate pct/sec of
-// posted limit (user-tunable via cfg.hw3SlewRatePctPerSec). Upward steps pass.
+// posted limit (user-tunable via settings.hw3SlewRatePctPerSec). Upward steps pass.
 //
 // Unit: pct/sec (percent of posted limit, per second). Limit-invariant, so
 // the same number gives a consistent "feel" across 40 / 60 / 80 kph roads.
@@ -55,14 +57,14 @@ static inline int computeHW3MinimumTargetSpeedKph(int fusedLimitKph) {
 // Custom mode: user-defined target-speed lookup bucketed by
 // kHw3CustomBucketStepKph starting at kHw3CustomBucketBaseKph.
 // Returns 0 when input is outside the table range — caller falls back to passthrough.
-static inline int computeHW3CustomTargetSpeedKph(int fusedLimitKph) {
+static inline int computeHW3CustomTargetSpeedKph(int fusedLimitKph, const FSDSettings& settings) {
     if (fusedLimitKph <  kHw3CustomBucketBaseKph ||
         fusedLimitKph >= kHw3StockOffsetCutoverKph) return 0;
     int idx = (fusedLimitKph - kHw3CustomBucketBaseKph) / kHw3CustomBucketStepKph;
-    return (int)cfg.hw3CustomTarget[idx];
+    return (int)settings.hw3CustomTarget[idx];
 }
 
-// Two wire-encoding variants observed in the field. cfg.hw3WireEncoding picks.
+// Two wire-encoding variants observed in the field. settings.hw3WireEncoding picks.
 enum Hw3WireEnc : uint8_t { HW3_ENC_KPH5 = 0, HW3_ENC_PCT4 = 1, HW3_ENC_MAX = HW3_ENC_PCT4 };
 
 // KPH5 encoding caps at 40 kph offset (raw 200). Observed correct on
@@ -84,11 +86,11 @@ static inline uint8_t encodeHW3OffsetKph5(int offsetKph) {
 }
 
 // Single entry point for HW3 0x3FD mux-2 offset writes when caller has km/h.
-// Dispatches by cfg.hw3WireEncoding; caller supplies both km/h offset and
+// Dispatches by settings.hw3WireEncoding; caller supplies both km/h offset and
 // posted limit so either path has what it needs without a second lookup.
-static inline uint8_t encodeHW3Offset(int offsetKph, int fusedLimitKph) {
+static inline uint8_t encodeHW3Offset(int offsetKph, int fusedLimitKph, const FSDSettings& settings) {
     if (offsetKph <= 0 || fusedLimitKph <= 0) return 0;
-    if (cfg.hw3WireEncoding == HW3_ENC_KPH5) {
+    if (settings.hw3WireEncoding == HW3_ENC_KPH5) {
         return encodeHW3OffsetKph5(offsetKph);
     }
     int pct = (offsetKph * 100 + fusedLimitKph / 2) / fusedLimitKph;
@@ -98,9 +100,9 @@ static inline uint8_t encodeHW3Offset(int offsetKph, int fusedLimitKph) {
 // High-speed branch stores pct per bucket; dispatch based on wire encoding.
 // PCT4 encodes pct directly (avoids kph round-trip precision loss);
 // KPH5 converts pct → kph once, then to raw.
-static inline uint8_t encodeHW3OffsetFromPct(int pct, int fusedLimitKph) {
+static inline uint8_t encodeHW3OffsetFromPct(int pct, int fusedLimitKph, const FSDSettings& settings) {
     if (pct <= 0 || fusedLimitKph <= 0) return 0;
-    if (cfg.hw3WireEncoding == HW3_ENC_PCT4) {
+    if (settings.hw3WireEncoding == HW3_ENC_PCT4) {
         return encodeHW3OffsetPct4(pct);
     }
     int offsetKph = (fusedLimitKph * pct + 50) / 100;
@@ -112,94 +114,131 @@ static constexpr uint32_t LEGACY_IDS[] = {69, 760, 1006, 1080};
 static constexpr uint32_t HW3_IDS[]    = {1016, 1021};
 static constexpr uint32_t HW4_IDS[]    = {921, 1016, 1021};
 
-inline const uint32_t* getFilterIds() {
-    switch (cfg.hwMode) {
-        case 0:  return LEGACY_IDS;
-        case 1:  return HW3_IDS;
-        default: return HW4_IDS;
+struct CanFilterView {
+    const uint32_t* ids;
+    size_t count;
+};
+inline CanFilterView getFilterIds(uint8_t hwMode) {
+    switch (hwMode) {
+        case 0: return {LEGACY_IDS, sizeof(LEGACY_IDS) / sizeof(LEGACY_IDS[0])};
+        case 1: return {HW3_IDS, sizeof(HW3_IDS) / sizeof(HW3_IDS[0])};
+        case 2: return {HW4_IDS, sizeof(HW4_IDS) / sizeof(HW4_IDS[0])};
+        default: return {nullptr, 0};
     }
 }
-inline uint8_t getFilterIdCount() {
-    switch (cfg.hwMode) {
-        case 0:  return 4;
-        case 1:  return 2;
-        default: return 3;
-    }
-}
-inline bool isFilteredId(uint32_t id) {
-    auto* ids = getFilterIds();
-    auto  cnt = getFilterIdCount();
-    for (uint8_t i = 0; i < cnt; i++) {
-        if (ids[i] == id) return true;
+inline bool isFilteredId(uint32_t id, uint8_t hwMode) {
+    const auto filter = getFilterIds(hwMode);
+    for (size_t i = 0; i < filter.count; i++) {
+        if (filter.ids[i] == id) return true;
     }
     return false;
 }
 
+// Only the CAN task owns this latch. cfg.fsdTriggered is its UI/diag mirror.
+struct FsdRuntimeState {
+    bool initialized = false;
+    bool selected = false;
+    uint32_t configGeneration = 0;
+    uint32_t driverGeneration = 0;
+};
+static FsdRuntimeState gFsdRuntime;
+
+inline CanControlSnapshot prepareFsdControl(const CanDriver& driver) {
+    const auto control = captureCanControl();
+    const uint32_t driverGeneration = driver.recoveryGeneration();
+    if (!gFsdRuntime.initialized || gFsdRuntime.configGeneration != control.generation ||
+        gFsdRuntime.driverGeneration != driverGeneration) {
+        gFsdRuntime.initialized = true;
+        gFsdRuntime.selected = false;
+        gFsdRuntime.configGeneration = control.generation;
+        gFsdRuntime.driverGeneration = driverGeneration;
+        cfg.fsdTriggered = false;
+        cfg.hw3SpeedOffset = 0;
+        cfg.hw3OffsetLastSentMs = 0;
+        cfg.hw3OffsetLastRaw = 0;
+        cfg.hw3OffsetTargetRaw = 0;
+    }
+    return control;
+}
+
+inline void latchFsdSelection(const CanFrame& mux0, const FSDSettings& settings) {
+    gFsdRuntime.selected = settings.fsdEnable &&
+                          (settings.forceActivate || isFSDSelectedInUI(mux0));
+    cfg.fsdTriggered = gFsdRuntime.selected;
+}
+
+inline void sendFsdActivation(const CanFrame& frame, CanDriver& driver) {
+    if (driver.send(frame)) {
+        ++cfg.modifiedCount;
+        btMark(bt_firstFsdMod);  // successful queueing, not an on-bus delivery ACK
+    } else {
+        ++cfg.errorCount;
+    }
+}
+
 // ── Handler: Legacy (0x3EE / 0x045 / 0x2F8 / 0x438) ─────────────────────
-static void handleLegacy(CanFrame& frame, CanDriver& driver) {
+static void handleLegacy(CanFrame& frame, CanDriver& driver, const CanControlSnapshot& control) {
+    const auto& settings = control.settings;
+    if (frame.dlc != 8) return;
     // 0x438 (1080) — UI_driverAssistAnonDebugParams: UI_visionSpeedSlider = 100 (bit56, 7-bit)
     if (frame.id == 1080) {
-        if (frame.dlc < 8) return;
-        if (!cfg.overrideSpeedLimit) return;
+        if (!settings.fsdEnable || !settings.overrideSpeedLimit) return;
         frame.data[7] = (frame.data[7] & 0x80) | 100;  // bits[6:0] = 100%, preserve bit7
         if (driver.send(frame)) cfg.modifiedCount++;
         else                    cfg.errorCount++;
         return;
     }
-    // 0x2F8 (760) — UI_gpsVehicleSpeed: write UI_userSpeedOffset (bit40|6, raw = kph+30).
-    // Byte 5 layout: bits 0-5 = offset (0-63), bit 6 reserved, bit 7 = UI_userSpeedOffsetUnits
-    // (0=MPH, 1=KPH). We preserve bits 6-7 so the offset unit follows the car's setting.
+    // 0x2F8: UI_userSpeedOffset (bit40|6), raw = offset+30 in vehicle units.
+    // Preserve byte5 bit6 (map-limit units) and bit7 (user-offset units).
+    // Both unit flags use 0=kph, 1=mph; no unit conversion is performed.
     if (frame.id == 760) {
-        if (cfg.legacyOffset == 0) return;
-        if (frame.dlc < 6) return;
-        uint8_t raw = (uint8_t)(cfg.legacyOffset + 30);
+        if (!settings.fsdEnable || settings.legacyOffset == 0 || settings.legacyOffset > 33) return;
+        uint8_t raw = (uint8_t)(settings.legacyOffset + 30);
         frame.data[5] = (frame.data[5] & 0xC0) | (raw & 0x3F);
         if (driver.send(frame)) cfg.modifiedCount++;
         else                    cfg.errorCount++;
         return;
     }
     // 0x045 (69) — stalk position → speed profile (auto mode only)
-    if (frame.id == 69 && cfg.profileModeAuto) {
-        if (frame.dlc < 2) return;
+    if (frame.id == 69 && settings.profileModeAuto) {
+        if (frame.data[1] > 200) return;  // DTR_Dist_Rq valid range: 0..200
         uint8_t pos = frame.data[1] >> 5;
-        if      (pos <= 1) cfg.speedProfile = 2;
-        else if (pos == 2) cfg.speedProfile = 1;
-        else               cfg.speedProfile = 0;
+        if      (pos <= 1) publishStalkProfile(2, control);
+        else if (pos == 2) publishStalkProfile(1, control);
+        else               publishStalkProfile(0, control);
         return;
     }
     // 0x3EE (1006) — FSD activation frame (mux 0/1)
     if (frame.id == 1006) {
-        if (frame.dlc < 8) return;
         auto index = readMuxID(frame);
-        if (index == 0) cfg.fsdTriggered = cfg.forceActivate || isFSDSelectedInUI(frame);
-        if (index == 0 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 0) latchFsdSelection(frame, settings);
+        if (index == 0 && gFsdRuntime.selected && settings.fsdEnable) {
             setBit(frame, 46, true);
-            if (cfg.legacyByte7Enable) {
-                frame.data[7] = (frame.data[7] & 0xF0) | (cfg.legacyByte7Value & 0x0F);
+            if (settings.legacyByte7Enable) {
+                frame.data[7] = (frame.data[7] & 0xF0) | (settings.legacyByte7Value & 0x0F);
             }
-            setSpeedProfileV12V13(frame, cfg.speedProfile);
-            btMark(bt_firstFsdMod);
-            if (driver.send(frame)) cfg.modifiedCount++;
-            else                    cfg.errorCount++;
+            setSpeedProfileV12V13(frame, settings.speedProfile);
+            sendFsdActivation(frame, driver);
         }
-        if (index == 1 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 1 && gFsdRuntime.selected && settings.fsdEnable) {
             setBit(frame, 19, false);
-            if (cfg.removeVisionSpeedLimit) setBit(frame, 48, false);  // UI_enableVisionSpeedControl = off
-            driver.send(frame);  // nag suppression only, not counted as FSD modification
+            if (settings.removeVisionSpeedLimit) setBit(frame, 48, false);  // UI_enableVisionSpeedControl = off
+            if (!driver.send(frame)) cfg.errorCount++;  // nag-only successes are not FSD modifications
         }
     }
 }
 
 // ── Handler: HW3 (0x3FD / 0x3F8) ────────────────────────────────────────
-static void handleHW3(CanFrame& frame, CanDriver& driver) {
+static void handleHW3(CanFrame& frame, CanDriver& driver, const CanControlSnapshot& control) {
+    const auto& settings = control.settings;
     // 0x3F8 (1016) — stalk position → speed profile (auto mode only)
-    if (frame.id == 1016 && cfg.profileModeAuto) {
+    if (frame.id == 1016 && settings.profileModeAuto) {
         if (frame.dlc < 6) return;
         uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
         switch (fd) {
-            case 1: cfg.speedProfile = 2; break;
-            case 2: cfg.speedProfile = 1; break;
-            case 3: cfg.speedProfile = 0; break;
+            case 1: publishStalkProfile(2, control); break;
+            case 2: publishStalkProfile(1, control); break;
+            case 3: publishStalkProfile(0, control); break;
         }
         return;
     }
@@ -210,24 +249,22 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
     if (frame.id == 1021) {
         if (frame.dlc < 8) return;
         auto index = readMuxID(frame);
-        if (index == 0) cfg.fsdTriggered = cfg.forceActivate || isFSDSelectedInUI(frame);
-        if (index == 0 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 0) latchFsdSelection(frame, settings);
+        if (index == 0 && gFsdRuntime.selected && settings.fsdEnable) {
             // byte 3 bits 1-6 hold Tesla's own stock offset preference encoded
             // as (kph + 30) / 5? No — opendbc says it's offset_kph-ish; here we
             // follow tesla-open-can-mod verbatim: ((d3>>1)&0x3F - 30)*5 clamped [0,100].
             cfg.hw3SpeedOffset = std::max(std::min(((int)((frame.data[3] >> 1) & 0x3F) - 30) * 5, 100), 0);
             setBit(frame, 46, true);
-            if (cfg.tlsscBypass) setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw3
-            setSpeedProfileV12V13(frame, cfg.speedProfile);
-            btMark(bt_firstFsdMod);
-            if (driver.send(frame)) cfg.modifiedCount++;
-            else                    cfg.errorCount++;
+            if (settings.tlsscBypass) setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw3
+            setSpeedProfileV12V13(frame, settings.speedProfile);
+            sendFsdActivation(frame, driver);
         }
-        if (index == 1 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 1 && gFsdRuntime.selected && settings.fsdEnable) {
             setBit(frame, 19, false);
-            driver.send(frame);  // nag suppression only, not counted as FSD modification
+            if (!driver.send(frame)) cfg.errorCount++;  // nag-only successes are not FSD modifications
         }
-        if (index == 2 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 2 && gFsdRuntime.selected && settings.fsdEnable) {
             // Start from stock offset raw (what Tesla would send — hw3SpeedOffset
             // stored as pct*5 in the [0,100] range, matching open-can-mod).
             uint8_t activeRaw = (uint8_t)std::max(std::min((int)cfg.hw3SpeedOffset, 255), 0);
@@ -241,24 +278,24 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
                 if (fl > 0) {
                     int fusedLimitKph = (int)fl * 5;
                     if (fusedLimitKph < kHw3StockOffsetCutoverKph) {
-                        if (cfg.hw3CustomSpeed || cfg.hw3AutoSpeed) {
-                            int targetSpeedKph = cfg.hw3CustomSpeed
-                                ? computeHW3CustomTargetSpeedKph(fusedLimitKph)
+                        if (settings.hw3CustomSpeed || settings.hw3AutoSpeed) {
+                            int targetSpeedKph = settings.hw3CustomSpeed
+                                ? computeHW3CustomTargetSpeedKph(fusedLimitKph, settings)
                                 : computeHW3MinimumTargetSpeedKph(fusedLimitKph);
                             if (targetSpeedKph > 0) {
                                 int desiredOffsetKph = std::max(targetSpeedKph - fusedLimitKph, 0);
-                                activeRaw = encodeHW3Offset(desiredOffsetKph, fusedLimitKph);
+                                activeRaw = encodeHW3Offset(desiredOffsetKph, fusedLimitKph, settings);
                             }
                         }
                     } else {
-                        if (cfg.hw3HighSpeedEnable) {
+                        if (settings.hw3HighSpeedEnable) {
                             int idx = (fusedLimitKph - kHw3HighSpeedBucketBaseKph)
                                       / kHw3HighSpeedBucketStepKph;
                             if (idx < 0) idx = 0;
                             if (idx >= kHw3HighSpeedBucketCount) idx = kHw3HighSpeedBucketCount - 1;
-                            uint8_t pct = cfg.hw3HighSpeedTargetPct[idx];
+                            uint8_t pct = settings.hw3HighSpeedTargetPct[idx];
                             if (pct > 0) {
-                                activeRaw = encodeHW3OffsetFromPct((int)pct, fusedLimitKph);
+                                activeRaw = encodeHW3OffsetFromPct((int)pct, fusedLimitKph, settings);
                             }
                         }
                     }
@@ -280,7 +317,7 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
             // high-speed toggle / pct, not from limit drops that matter for
             // passenger comfort. User asked for ≥80 to be instant.
             uint8_t curFl = (cfg.fusedSpeedLimit > 0 && cfg.fusedSpeedLimit < 31) ? cfg.fusedSpeedLimit : 0;
-            bool slewApplies = cfg.hw3OffsetSlew &&
+            bool slewApplies = settings.hw3OffsetSlew &&
                                curFl > 0 &&
                                ((int)curFl * 5 < kHw3StockOffsetCutoverKph);
             if (slewApplies) {
@@ -289,7 +326,7 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
                 // Clamp runtime-configurable rate to [min, max]; a stale/bad NVS
                 // byte (0, 255) falls back to the compile-time default. Unit is
                 // pct/sec of posted limit, converted to raw/sec by ×4.
-                uint8_t  ratePctPerSec = cfg.hw3SlewRatePctPerSec;
+                uint8_t  ratePctPerSec = settings.hw3SlewRatePctPerSec;
                 if (ratePctPerSec < kHw3SlewRateMin || ratePctPerSec > kHw3SlewRateMax) {
                     ratePctPerSec = kHw3SlewRateDefault;
                 }
@@ -324,12 +361,13 @@ static void handleHW3(CanFrame& frame, CanDriver& driver) {
 }
 
 // ── Handler: HW4 (0x3FD / 0x3F8 / 0x399) ────────────────────────────────
-static void handleHW4(CanFrame& frame, CanDriver& driver) {
+static void handleHW4(CanFrame& frame, CanDriver& driver, const CanControlSnapshot& control) {
+    const auto& settings = control.settings;
     // 0x399 (921) — ISA speed-limit chime suppression only
     // Speed limits are read from 0x39B (923) by handleDASStatus — do NOT read here
     if (frame.id == 921) {
         if (frame.dlc < 8) return;
-        if (!cfg.isaChimeSuppress) return;
+        if (!settings.isaChimeSuppress) return;
         frame.data[1] |= 0x20;
         frame.data[7] = computeVehicleChecksum(frame);
         if (driver.send(frame)) cfg.modifiedCount++;
@@ -337,15 +375,15 @@ static void handleHW4(CanFrame& frame, CanDriver& driver) {
         return;
     }
     // 0x3F8 (1016) — stalk position → speed profile (auto mode only)
-    if (frame.id == 1016 && cfg.profileModeAuto) {
+    if (frame.id == 1016 && settings.profileModeAuto) {
         if (frame.dlc < 6) return;
         auto fd = (frame.data[5] & 0b11100000) >> 5;
         switch (fd) {
-            case 1: cfg.speedProfile = 3; break;
-            case 2: cfg.speedProfile = 2; break;
-            case 3: cfg.speedProfile = 1; break;
-            case 4: cfg.speedProfile = 0; break;
-            case 5: cfg.speedProfile = 4; break;
+            case 1: publishStalkProfile(3, control); break;
+            case 2: publishStalkProfile(2, control); break;
+            case 3: publishStalkProfile(1, control); break;
+            case 4: publishStalkProfile(0, control); break;
+            case 5: publishStalkProfile(4, control); break;
         }
         return;
     }
@@ -354,22 +392,20 @@ static void handleHW4(CanFrame& frame, CanDriver& driver) {
         if (frame.dlc < 8) return;
         auto index = readMuxID(frame);
         if (index == 0) {
-            cfg.fsdTriggered = cfg.forceActivate || isFSDSelectedInUI(frame);
+            latchFsdSelection(frame, settings);
 #ifdef DEBUG_MODE
             for (int i = 0; i < 8; i++) cfg.dbgFrame[i] = frame.data[i];
             cfg.dbgFrameCaptured = true;
 #endif
         }
-        if (index == 0 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 0 && gFsdRuntime.selected && settings.fsdEnable) {
             setBit(frame, 46, true);
             setBit(frame, 60, true);
-            if (cfg.emergencyDetection) setBit(frame, 59, true);
-            if (cfg.tlsscBypass)        setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw4
-            btMark(bt_firstFsdMod);
-            if (driver.send(frame)) cfg.modifiedCount++;
-            else                    cfg.errorCount++;
+            if (settings.emergencyDetection) setBit(frame, 59, true);
+            if (settings.tlsscBypass)        setBit(frame, 38, true);  // ev-open-can-tools-plugins bypass-tlssc-hw4
+            sendFsdActivation(frame, driver);
         }
-        if (index == 1 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 1 && gFsdRuntime.selected && settings.fsdEnable) {
             // bit19=false: nag suppression (same as HW3)
             // bit47=true:  HW4-specific FSD ready signal; counted as modification (unlike HW3 nag-only)
             setBit(frame, 19, false);
@@ -377,13 +413,24 @@ static void handleHW4(CanFrame& frame, CanDriver& driver) {
             if (driver.send(frame)) cfg.modifiedCount++;
             else                    cfg.errorCount++;
         }
-        if (index == 2 && cfg.fsdTriggered && cfg.fsdEnable) {
+        if (index == 2 && gFsdRuntime.selected && settings.fsdEnable) {
             frame.data[7] &= ~(0x07 << 4);
-            frame.data[7] |= (cfg.speedProfile & 0x07) << 4;
-            if (cfg.hw4OffsetRaw > 0)
-                frame.data[1] = (frame.data[1] & 0xC0) | (cfg.hw4OffsetRaw & 0x3F);
+            frame.data[7] |= (settings.speedProfile & 0x07) << 4;
+            if (settings.hw4OffsetRaw > 0)
+                frame.data[1] = (frame.data[1] & 0xC0) | (settings.hw4OffsetRaw & 0x3F);
             if (driver.send(frame)) cfg.modifiedCount++;
             else                    cfg.errorCount++;
         }
+    }
+}
+
+// Filter and dispatch use exactly the same captured mode, including when a web
+// request switches modes while this input frame is being processed.
+inline void dispatchFsdMessage(CanFrame& frame, CanDriver& driver, const CanControlSnapshot& control) {
+    if (!isFilteredId(frame.id, control.settings.hwMode)) return;
+    switch (control.settings.hwMode) {
+        case 0: handleLegacy(frame, driver, control); break;
+        case 1: handleHW3(frame, driver, control); break;
+        case 2: handleHW4(frame, driver, control); break;
     }
 }

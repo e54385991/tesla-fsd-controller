@@ -16,7 +16,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPIFFS.h>
-#include "version.h"
+#include "fsd_version.h"
 #include "fsd_config.h"
 #include "mod_ota.h"             // FIRMWARE_ENV_TAG, TLS bundle
 #include "mod_telemetry_ping.h"  // ping_impl::computeDeviceId / deviceId
@@ -86,6 +86,7 @@ static inline bool dappend(char* buf, size_t cap, size_t* pos, const char* fmt, 
 // Build the diagnostic JSON payload into a heap buffer. Caller frees.
 // Returns nullptr on alloc / format failure.
 static char* buildPayload(size_t* outLen) {
+    const auto settings = captureCanControl().settings;
     constexpr size_t CAP = kDiagPayloadCap;
     char* buf = (char*)malloc(CAP);
     if (!buf) return nullptr;
@@ -111,26 +112,27 @@ static char* buildPayload(size_t* outLen) {
     dappend(buf, CAP, &pos,
         "\"hwMode\":%d,\"hwDetected\":%d,\"gwAutopilot\":%d,\"speedProfile\":%d,"
         "\"profileModeAuto\":%d,",
-        (int)cfg.hwMode, (int)cfg.hwDetected, (int)cfg.gatewayAutopilot, (int)cfg.speedProfile,
-        (int)cfg.profileModeAuto);
+        (int)settings.hwMode, (int)cfg.hwDetected, (int)cfg.gatewayAutopilot, (int)settings.speedProfile,
+        (int)settings.profileModeAuto);
 
     dappend(buf, CAP, &pos,
         "\"fsdEnable\":%d,\"forceActivate\":%d,\"tlsscBypass\":%d,\"isaChime\":%d,"
         "\"emergencyDet\":%d,\"overrideSL\":%d,\"removeVSL\":%d,\"isaOverride\":%d,"
         "\"ipBlockerEnabled\":%d,",
-        (int)cfg.fsdEnable, (int)cfg.forceActivate, (int)cfg.tlsscBypass,
-        (int)cfg.isaChimeSuppress, (int)cfg.emergencyDetection,
-        (int)cfg.overrideSpeedLimit, (int)cfg.removeVisionSpeedLimit,
-        (int)cfg.isaOverride, (int)cfg.ipBlockerEnabled);
+        (int)settings.fsdEnable, (int)settings.forceActivate, (int)settings.tlsscBypass,
+        (int)settings.isaChimeSuppress, (int)settings.emergencyDetection,
+        (int)settings.overrideSpeedLimit, (int)settings.removeVisionSpeedLimit,
+        (int)settings.isaOverride, (int)settings.ipBlockerEnabled);
 
     dappend(buf, CAP, &pos,
         "\"hw3AutoSpeed\":%d,\"hw3CustomSpeed\":%d,\"hw3WireEncoding\":%u,"
         "\"hw3OffsetSlew\":%d,\"hw3SlewRate\":%u,\"hw3HighSpeedEnable\":%d,"
-        "\"hw4Offset\":%u,\"legacyOffset\":%u,",
-        (int)cfg.hw3AutoSpeed, (int)cfg.hw3CustomSpeed,
-        (unsigned)cfg.hw3WireEncoding, (int)cfg.hw3OffsetSlew,
-        (unsigned)cfg.hw3SlewRatePctPerSec, (int)cfg.hw3HighSpeedEnable,
-        (unsigned)cfg.hw4OffsetRaw, (unsigned)cfg.legacyOffset);
+        "\"hw4Offset\":%u,\"legacyOffset\":%u,\"legacyByte7Enable\":%d,\"legacyByte7Value\":%u,",
+        (int)settings.hw3AutoSpeed, (int)settings.hw3CustomSpeed,
+        (unsigned)settings.hw3WireEncoding, (int)settings.hw3OffsetSlew,
+        (unsigned)settings.hw3SlewRatePctPerSec, (int)settings.hw3HighSpeedEnable,
+        (unsigned)settings.hw4OffsetRaw, (unsigned)settings.legacyOffset,
+        (int)settings.legacyByte7Enable, (unsigned)settings.legacyByte7Value);
 
     // Live HW3 offset state — what the encoder *targeted* vs what we *sent*
     // last, plus how often slew clamped a drop. Critical for diagnosing
@@ -145,22 +147,23 @@ static char* buildPayload(size_t* outLen) {
     // HW3 custom-target & high-speed tables. Without these we can't reproduce
     // a user's configured curve from a diag bundle. Compact JSON arrays.
     dappend(buf, CAP, &pos, "\"hw3CustomTarget\":[");
-    for (size_t i = 0; i < sizeof(cfg.hw3CustomTarget) / sizeof(cfg.hw3CustomTarget[0]); i++) {
-        dappend(buf, CAP, &pos, "%s%u", i ? "," : "", (unsigned)cfg.hw3CustomTarget[i]);
+    for (size_t i = 0; i < sizeof(settings.hw3CustomTarget) / sizeof(settings.hw3CustomTarget[0]); i++) {
+        dappend(buf, CAP, &pos, "%s%u", i ? "," : "", (unsigned)settings.hw3CustomTarget[i]);
     }
     dappend(buf, CAP, &pos, "],\"hw3HighSpeedTargetPct\":[");
     for (int i = 0; i < kHw3HighSpeedBucketCount; i++) {
-        dappend(buf, CAP, &pos, "%s%u", i ? "," : "", (unsigned)cfg.hw3HighSpeedTargetPct[i]);
+        dappend(buf, CAP, &pos, "%s%u", i ? "," : "", (unsigned)settings.hw3HighSpeedTargetPct[i]);
     }
     dappend(buf, CAP, &pos, "],");
 
     // Legacy speed-limit sniff (0x2F8 UI_gpsVehicleSpeed). gpsSpeedSeen=false
-    // → Legacy isn't the active path; kept anyway for cross-variant triage.
+    // only means no valid sample has been observed; it does not detect the mode.
     dappend(buf, CAP, &pos,
-        "\"gpsSeen\":%s,\"gpsUserOff\":%u,\"gpsMppLim\":%u,\"gpsCount\":%u,\"gpsPeriodMs\":%u,",
+        "\"gpsSeen\":%s,\"gpsUserOff\":%u,\"gpsMppLim\":%u,\"gpsCount\":%u,\"gpsPeriodMs\":%u,\"gpsUserUnits\":%u,\"gpsMapUnits\":%u,",
         cfg.gpsSpeedSeen ? "true" : "false",
         (unsigned)cfg.gpsUserOffsetRaw, (unsigned)cfg.gpsMppLimitRaw,
-        (unsigned)cfg.gpsSpeedCount, (unsigned)cfg.gpsSpeedPeriodMs);
+        (unsigned)cfg.gpsSpeedCount, (unsigned)cfg.gpsSpeedPeriodMs,
+        (unsigned)cfg.gpsUserOffsetUnits, (unsigned)cfg.gpsMapLimitUnits);
 
     // DAS state bits parsed from 0x293 / 0x39B — whether FSD is engaged at
     // upload time. Speed-limit injection only fires when FSD is active.

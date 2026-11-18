@@ -86,6 +86,8 @@ static inline void btMark(volatile uint32_t& slot) {
 // Called for every received CAN frame. Routes to the appropriate module.
 // cfg.rxCount is incremented in canTask before dispatching.
 static void handleMessage(CanFrame& frame, CanDriver& driver) {
+    // Invalidate old mux latches even for frames handled by an early return.
+    const auto control = prepareFsdControl(driver);
     // Passive snapshot for diagnostic upload — fingerprints car / firmware
     // independently of the injection path. Cheap (one bit + memcpy).
     diagOnFrame(frame.id, frame.data, frame.dlc);
@@ -130,7 +132,7 @@ static void handleMessage(CanFrame& frame, CanDriver& driver) {
     if (frame.id == 659) { handleDASSettings(frame);          return; }  // 0x293 DAS_settings
     if (frame.id == 923) {                                                // 0x39B DAS_status
         handleDASStatus(frame);
-        handleDASStatusISAOverride(frame, driver);  // v1.4.28 ISA override
+        handleDASStatusISAOverride(frame, driver, control.settings);  // HW4 only
         return;
     }
     if (frame.id == 905) { handleDASStatus2(frame);           return; }  // 0x389 DAS_status2
@@ -144,10 +146,5 @@ static void handleMessage(CanFrame& frame, CanDriver& driver) {
     if (frame.id == 921) handleDASStatusISA(frame);
 
     // FSD injection — route to hardware-specific handler
-    if (!isFilteredId(frame.id)) return;
-    switch (cfg.hwMode) {
-        case 0:  handleLegacy(frame, driver); break;
-        case 1:  handleHW3(frame, driver);    break;
-        default: handleHW4(frame, driver);    break;
-    }
+    dispatchFsdMessage(frame, driver, control);
 }

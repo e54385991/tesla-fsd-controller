@@ -143,13 +143,24 @@ void writeU32(uint8_t* ptr, uint32_t value) {
     ptr[3] = static_cast<uint8_t>(value & 0xFF);
 }
 
+bool isWildcardDomainRule(const String& rule) {
+    return rule.startsWith("*.");
+}
+
 bool domainMatchesRule(const String& domain, const String& rule) {
     if (rule.isEmpty()) return false;
-    if (domain == rule) return true;
-    if (domain.length() <= rule.length()) return false;
 
-    size_t offset = domain.length() - rule.length();
-    return domain.endsWith(rule) && domain[offset - 1] == '.';
+    // Bare domains include the apex; "*.example.com" includes only subdomains
+    // at any depth. Both forms require a label boundary before the suffix.
+    const bool wildcard = isWildcardDomainRule(rule);
+    const size_t prefixLength = wildcard ? 2 : 0;
+    const size_t suffixLength = rule.length() - prefixLength;
+    if (!wildcard && domain == rule) return true;
+    if (suffixLength == 0 || domain.length() <= suffixLength) return false;
+
+    const size_t offset = domain.length() - suffixLength;
+    return domain[offset - 1] == '.' &&
+        strcmp(domain.c_str() + offset, rule.c_str() + prefixLength) == 0;
 }
 
 // ── IP blocker state (shared with lwIP hook) ─────────────────────────────────
@@ -321,7 +332,9 @@ void rememberResolvedIp(const String& domain, uint32_t ipHostOrder) {
 }
 
 void resolveAndRememberDomain(const String& domain) {
-    if (domain.isEmpty()) return;
+    // A wildcard is a DNS policy, not a hostname to resolve. Concrete blocked
+    // queries are still remembered by dnsIpBlockerRememberDomain().
+    if (domain.isEmpty() || isWildcardDomainRule(domain)) return;
 
     IPAddress resolved;
     if (WiFi.hostByName(domain.c_str(), resolved) == 1) {
@@ -339,7 +352,7 @@ size_t buildStaging(const char* blocklistRules, uint32_t nowSeconds) {
     size_t stagingCount = 0;
     for (size_t i = 0; i < ruleCount && stagingCount < kStagingCapacity; ++i) {
         String rule;
-        if (!getRuleByIndex(blocklistRules, i, rule) || rule.isEmpty()) continue;
+        if (!getRuleByIndex(blocklistRules, i, rule) || rule.isEmpty() || isWildcardDomainRule(rule)) continue;
         IPAddress resolved;
         if (WiFi.hostByName(rule.c_str(), resolved) != 1) continue;
         uint32_t ipHostOrder = ipAddressToHostOrder(resolved);
@@ -470,8 +483,8 @@ bool DNSWhitelistServer::listContainsDomain(const char* rules, const String& dom
     return false;
 }
 
-// Longest matching rule length (0 = no match). Used for dnsmasq-style
-// "more specific rule wins" semantics between allow and block lists.
+// Longest matching domain suffix (0 = no match). The "*." prefix does not
+// increase specificity: a concrete child rule must beat its parent wildcard.
 static size_t longestRuleMatchLen(const char* rules, const String& domain) {
     if (rules == nullptr || domain.isEmpty()) return 0;
     size_t best = 0;
@@ -479,7 +492,8 @@ static size_t longestRuleMatchLen(const char* rules, const String& domain) {
     String rule;
     while (getRuleByIndex(rules, idx, rule)) {
         if (!rule.isEmpty() && domainMatchesRule(domain, rule)) {
-            if (rule.length() > best) best = rule.length();
+            const size_t suffixLength = rule.length() - (isWildcardDomainRule(rule) ? 2 : 0);
+            if (suffixLength > best) best = suffixLength;
         }
         ++idx;
     }

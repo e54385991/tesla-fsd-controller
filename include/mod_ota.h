@@ -18,7 +18,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include "version.h"
+#include "fsd_version.h"
 
 #ifndef OTA_RELEASE_OWNER
 #define OTA_RELEASE_OWNER "wjsall"

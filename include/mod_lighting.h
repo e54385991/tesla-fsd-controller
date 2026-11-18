@@ -3,7 +3,7 @@
 // Reads DAS_settings (0x293/659) to detect whether adaptive (auto) headlights
 // are enabled in the car's settings. handleSCCMStalk() intercepts every 0x249
 // frame and supports two modes:
-//   1. Gesture control: 2 quick PULL taps → force ON; 1 tap → force OFF
+//   1. Gesture control: 3 quick PULL taps → force ON; 1 tap → force OFF
 //   2. Web UI toggle: /api/highbeam endpoint sets cfg.highBeamForce directly
 // When force is active, bits[5:4] are overwritten with PUSH (2) so the car
 // sees a sustained PUSH level. Mask 0xCF preserves washWipe and counter bits.
@@ -27,6 +27,8 @@
 
 extern FSDConfig cfg;  // defined in handlers.h
 
+inline void resetStalkGestureState();
+
 // ── DAS_settings (0x293 / 659) parser ────────────────────────────────────────
 // Full readback: adaptive headlights, autosteer, AEB, FCW.
 //
@@ -39,7 +41,10 @@ inline void handleDASSettings(const CanFrame& frame) {
     if (frame.dlc < 5) return;
     bool adaptive = ((frame.data[2] >> 6) & 0x01) != 0;
     cfg.adaptiveLighting = adaptive;
-    if (!adaptive) cfg.highBeamForce = false;   // safety guard
+    if (!adaptive) {
+        cfg.highBeamForce = false;
+        resetStalkGestureState();
+    }
     cfg.aebOn        = ((frame.data[2] >> 2) & 0x01) != 0;  // bit18
     cfg.fcwOn        = ((frame.data[4] >> 2) & 0x01) != 0;  // bit34
     cfg.autosteerOn  = ((frame.data[4] >> 6) & 0x01) != 0;  // bit38
@@ -47,7 +52,7 @@ inline void handleDASSettings(const CanFrame& frame) {
 
 // ── SCCM_leftStalk (0x249 / 585) interceptor ─────────────────────────────────
 // Intercepts each physical SCCM frame, optionally modifies stalk state, then
-// retransmits. Always forwards so the car's SCCM watchdog stays happy.
+// retransmits only while an override is active; the OEM frame already reaches the bus.
 //
 // Gesture control (requires adaptiveLighting):
 //   Force OFF → 3 quick PULL taps within 1000 ms → Force ON
@@ -72,7 +77,12 @@ inline void resetStalkGestureState() {
 }
 
 inline void handleSCCMStalk(CanFrame& frame, CanDriver& driver) {
-    if (frame.dlc >= 3) {
+    if (!cfg.adaptiveLighting) {
+        cfg.highBeamForce = false;
+        resetStalkGestureState();
+        return;
+    }
+    if (frame.dlc == 3) {
         uint8_t physHB = (frame.data[1] >> 4) & 0x03;
         bool isPull = (physHB == 1);
 
@@ -97,7 +107,7 @@ inline void handleSCCMStalk(CanFrame& frame, CanDriver& driver) {
                 hbTapCount = 0;
                 addDiagLog(up, "HB force: stalk OFF");
             } else if (hbTapCount >= HB_GESTURE_TAPS_ON) {
-                // Double tap while inactive → enable
+                // Three taps while inactive → enable
                 cfg.highBeamForce = true;
                 hbTapCount = 0;
                 addDiagLog(up, "HB force: stalk ON");

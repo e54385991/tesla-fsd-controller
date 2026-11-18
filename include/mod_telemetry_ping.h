@@ -15,7 +15,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Preferences.h>
-#include "version.h"
+#include "fsd_version.h"
 #include "fsd_config.h"
 #include "mod_ota.h"  // reuses FIRMWARE_ENV_TAG + OTA_CRT_BUNDLE_ATTACH
 
