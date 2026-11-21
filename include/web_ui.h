@@ -517,7 +517,7 @@ select:focus{outline:none;border-color:#38bdf8}
       TLS 握手：<span id="fsdTlsP">—</span> · 成功 <span id="fsdTlsOkP">0</span> / 失败 <span id="fsdTlsFailP">0</span>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      <button type="button" onclick="fsdPresetP('default')" style="height:28px;padding:0 10px;background:#065f46;color:#d1fae5;border:none;border-radius:6px;font-size:11px;cursor:pointer">默认 22 字段 654B</button>
+      <button type="button" onclick="fsdPresetP('default')" style="height:28px;padding:0 10px;background:#065f46;color:#d1fae5;border:none;border-radius:6px;font-size:11px;cursor:pointer">默认 22 字段 653B</button>
       <button type="button" onclick="fsdPresetP('windows')" style="height:28px;padding:0 10px;background:#334155;color:#e2e8f0;border:none;border-radius:6px;font-size:11px;cursor:pointer">Windows 602B</button>
       <button type="button" onclick="fsdPresetP('16f')" style="height:28px;padding:0 10px;background:#1e3a8a;color:#dbeafe;border:none;border-radius:6px;font-size:11px;cursor:pointer">16 字段 476B</button>
       <button type="button" onclick="fsdPresetP('282b')" style="height:28px;padding:0 10px;background:#7c2d12;color:#fed7aa;border:none;border-radius:6px;font-size:11px;cursor:pointer">官方 282B</button>

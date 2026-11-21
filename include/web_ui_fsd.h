@@ -100,7 +100,7 @@ textarea{height:300px;resize:vertical}
       <button class="btn" id="addBtn">＋ 添加参数</button>
       <button class="btn green" id="saveBtn">保存并下发</button>
       <button class="btn" id="defaultBtn">恢复默认（22 字段）</button>
-      <button class="btn" data-preset="default">默认 654B</button>
+      <button class="btn" data-preset="default">默认 653B</button>
       <button class="btn" data-preset="windows">Windows 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
@@ -128,7 +128,7 @@ textarea{height:300px;resize:vertical}
 var token = '';
 try { token = sessionStorage.getItem('fsd_tok') || ''; } catch(e) {}
 var editing = false, rawVisible = false, editorLoaded = false, busy = false;
-var DEFAULT_OBJ = {"audio_log_alsa_device_delay_verbose":false,"audio_log_awe_stats":false,"delivered":true,"disable_eng_voice_recording_uploads":true,"drive_on_nav_maps":true,"enable_autocomplete_telemetry":false,"enable_failure_log_upload":false,"enable_fsd_auto_nav":true,"ethtrace_auto_capture":false,"ethtrace_auto_upload":false,"fsd_navigation_supported":true,"fsd_stops_maps":true,"full_self_driving":true,"latched_delivered":true,"log_upload_without_wifi":false,"tcpdump_enabled":false,"suspend_full_self_driving":false,"enable_seat_adjustment_from_ui":true,"disable_cabin_camera":false,"wifi_disabled_mode":true,"enable_eu_fsd_behavior":false,"autoshift_dr":true};
+var DEFAULT_OBJ = {"audio_log_alsa_device_delay_verbose":false,"audio_log_awe_stats":false,"delivered":true,"disable_eng_voice_recording_uploads":true,"drive_on_nav_maps":true,"enable_autocomplete_telemetry":false,"enable_failure_log_upload":false,"enable_fsd_auto_nav":true,"ethtrace_auto_capture":false,"ethtrace_auto_upload":false,"fsd_navigation_supported":true,"fsd_stops_maps":true,"full_self_driving":true,"latched_delivered":true,"log_upload_without_wifi":false,"tcpdump_enabled":false,"suspend_full_self_driving":false,"enable_seat_adjustment_from_ui":true,"disable_cabin_camera":true,"wifi_disabled_mode":true,"enable_eu_fsd_behavior":false,"autoshift_dr":true};
 var NOTES = {
   audio_log_alsa_device_delay_verbose:'音频 ALSA 设备延迟详细日志',
   audio_log_awe_stats:'音频 AWE 统计日志',
