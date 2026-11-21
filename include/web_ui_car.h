@@ -328,7 +328,7 @@ button{font-family:inherit;cursor:pointer}
     <!-- 默认 AP 密码未修改时的全局警告横幅 -->
     <div id="passWarn" style="display:none;background:linear-gradient(135deg,#7f1d1d,#991b1b);border:2px solid #ef4444;border-radius:12px;padding:14px 18px;margin-bottom:16px;color:#fee2e2">
       <div style="font-weight:700;font-size:17px;margin-bottom:6px">⚠️ 请立即修改 WiFi 密码</div>
-      <div style="font-size:14px;color:#fecaca;margin-bottom:10px">当前使用默认密码 <code style="color:#fff;background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px">12345678</code>，公共停车时任何人可连入修改您的车辆设置。请在手机版修改密码。</div>
+      <div style="font-size:14px;color:#fecaca;margin-bottom:10px">当前使用默认密码 <code style="color:#fff;background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px">88888888</code>，公共停车时任何人可连入修改您的车辆设置。请在手机版修改密码。</div>
       <button onclick="openPhone()" style="background:#fecaca;color:#7f1d1d;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer">打开手机版 →</button>
     </div>
 
@@ -598,6 +598,8 @@ button{font-family:inherit;cursor:pointer}
         </div>
         <div class="tip" style="margin-top:14px">🛈 自定义域名列表请点下方「📱 打开手机版」编辑。点上方预设会覆盖自定义规则。</div>
         <div class="tip" style="margin-top:8px">黑白名单均支持 *.qq.com：匹配任意层级子域，不含 qq.com 本身；qq.com 则包含主域及所有子域。</div>
+        <div class="tip" style="margin-top:8px;color:#fbbf24">⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行：加入白名单可启用远程车控，但可能被封，谨慎使用。</div>
+        <div class="tip" style="margin-top:8px;color:#fbbf24">⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。</div>
       </div>
       <div class="panel" id="panelDnsBlk">
         <div class="ptitle">最近拦截 <span style="color:#8a8a8a;font-size:13px;font-weight:500">总计 <span id="brBlkTot">0</span> 次</span></div>
@@ -1881,8 +1883,8 @@ function hint(msg){ toast(msg, '', 3500); }
 // ───── DNS 预设 ─────
 var DNS_PRESETS = {
   tesla_min: {
-    allow: 'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
-    block: 'tesla.cn tesla.com teslamotors.com tesla.services'
+    allow: 'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn',
+    block: 'api-prd.vn.cloud.tesla.cn'
   },
   tesla_lean: {
     allow: 'connman.vn.cloud.tesla.cn www.tesla.cn nav-prd-maps.tesla.cn maps-cn-prd.go.tesla.services hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn hermes-stream-prd.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn',

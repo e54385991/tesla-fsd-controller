@@ -136,7 +136,7 @@ select:focus{outline:none;border-color:#38bdf8}
 <!-- 默认 AP 密码未修改时的警告横幅 -->
 <div id="passWarn" style="display:none;background:linear-gradient(135deg,#7f1d1d,#991b1b);border:1px solid #fca5a5;border-radius:12px;padding:12px 14px;margin-bottom:12px;color:#fee2e2">
   <div style="font-weight:700;font-size:14px;margin-bottom:4px">⚠️ <span id="iPassWarnTitle">请立即修改 WiFi 密码</span></div>
-  <div style="font-size:12px;color:#fecaca;margin-bottom:10px" id="iPassWarnDesc">您当前使用默认密码 <code style="color:#fff;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px">12345678</code>，公共停车场/商场停车时任何人都可能连接并修改您的车辆设置。</div>
+  <div style="font-size:12px;color:#fecaca;margin-bottom:10px" id="iPassWarnDesc">您当前使用默认密码 <code style="color:#fff;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px">88888888</code>，公共停车场/商场停车时任何人都可能连接并修改您的车辆设置。</div>
   <button onclick="document.getElementById('cardWifi').scrollIntoView({behavior:'smooth',block:'start'});setTimeout(function(){var e=document.getElementById('wifiPass');if(e)e.focus();},600);" style="background:#fecaca;color:#7f1d1d;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer" id="iPassWarnBtn">现在修改 →</button>
 </div>
 
@@ -386,7 +386,7 @@ select:focus{outline:none;border-color:#38bdf8}
   <div class="card-title" id="iCardWifi">WiFi 设置</div>
   <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
     <span class="row-label" id="iLblSSID">热点名称（SSID）</span>
-    <input type="text" id="wifiSSID" class="text-input" maxlength="32" placeholder="FSD-Controller">
+    <input type="text" id="wifiSSID" class="text-input" maxlength="32" placeholder="fsd-esp32">
   </div>
   <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
     <span class="row-label" id="iLblPass">新密码（留空保持不变）</span>
@@ -477,6 +477,10 @@ select:focus{outline:none;border-color:#38bdf8}
       <button type="button" id="pstClr" onclick="brApplyPreset('clear')" style="height:28px;padding:0 10px;background:#334155;color:#cbd5e1;border:none;border-radius:6px;font-size:11px;cursor:pointer">清空所有规则</button>
     </div>
     <div id="dnsPresetStat" style="font-size:11px;color:#94a3b8;margin:-4px 0 8px 0">当前：—</div>
+    <div style="background:#451a03;border:1px solid #b45309;border-radius:6px;padding:8px 10px;margin:0 0 10px 0;font-size:11px;color:#fde68a;line-height:1.65">
+      <div>⚠️ <b>hermes-prd.vn.cloud.tesla.cn</b> 默认不放行：手动加入白名单可启用远程车控，但可能触发 Tesla 风控甚至封禁，谨慎使用。</div>
+      <div style="margin-top:4px">⛔ <b>api-prd.vn.cloud.tesla.cn</b> 默认在黑名单。车机恢复出厂后，如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先把它加入白名单（同长度时白名单优先）；放行后 Tesla 云端可能改写 FSD 配置，风险自担。音乐软件恢复后请立刻移回黑名单，或直接断开 Wi-Fi。</div>
+    </div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
       <span class="row-label" style="font-size:11px;color:#34d399">📥 白名单（放行，空格/换行分隔）</span>
       <textarea id="brDnsAllow" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn *.qq.com"></textarea>
@@ -1347,8 +1351,8 @@ function brSet(){
 var DNS_PRESETS={
   tesla_min:{
     name:'⭐ Tesla 推荐（实测）',btnId:'pstTesla',
-    allow:'connman.vn.cloud.tesla.cn www.tesla.cn nav-prd-maps.tesla.cn maps-cn-prd.go.tesla.services hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com',
-    block:'tesla.cn tesla.com teslamotors.com tesla.services'
+    allow:'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn',
+    block:'api-prd.vn.cloud.tesla.cn'
   },
   tesla_lean:{
     name:'🔹 精简官方',btnId:'pstLean',

@@ -53,6 +53,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="card"><div class="k">上游</div><div class="v s"><span id="upSsid">--</span><br><span class="dim" id="upIp">--</span></div></div>
     <div class="card"><div class="k">FSD 载荷</div><div class="v s" id="fsdPayload">--</div></div>
     <div class="card"><div class="k">FSD 命中 / DNS 重定向</div><div class="v" id="fsdHits">--</div></div>
+    <div class="card"><div class="k">DNS 拦截</div><div class="v s" id="dnsBlkCard">--</div></div>
     <div class="card"><div class="k">Heap / Min</div><div class="v s" id="heapCard">--</div></div>
     <div class="card"><div class="k">Reset reason</div><div class="v s" id="resetCard">--</div></div>
   </div>
@@ -60,7 +61,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <section><h2>Wi-Fi 热点（AP）</h2><div class="body">
     <label>AP 名称（SSID）</label><input type="text" id="apSsidIn" maxlength="32">
     <label>新密码（留空不改，至少 8 位）</label><input type="password" id="apPassIn" maxlength="63">
-    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 12345678，建议立即修改。</div>
+    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 88888888，建议立即修改。</div>
     <button class="primary" id="apSave">保存并重启</button><div class="msg" id="apMsg"></div>
   </div></section>
 
@@ -84,6 +85,23 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <button class="primary" id="dnsSave">保存</button>
     <button id="dnsTesla">Tesla 推荐白名单</button>
     <button id="dnsClear">清空规则</button>
+    <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
+      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行：加入白名单可远程车控，但可能被封，谨慎使用。<br>
+      ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。
+    </div>
+    <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">默认关闭。关闭可省去每包 lwIP 钩子开销；开启后才会拦截已拿到 IP、绕过 DNS 继续直连的黑名单流量（最多缓存 256 个 IP）。</div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">
+        <div class="dim" style="font-size:12px">DNS 拦截 <b id="dnsBlkTotal" style="color:#f85149">0</b> 次 · IP 拦截 <b id="ipDrops" style="color:#f85149">0</b> 次 · IP 缓存 <span id="ipCache">0</span>（峰值 <span id="ipPeak">0</span>）</div>
+        <div><button id="dnsBlkClear">清空拦截记录</button><button id="dnsBlkDl">下载 CSV</button></div>
+      </div>
+      <table style="margin-top:8px">
+        <thead><tr><th>屏蔽域名</th><th style="width:64px;text-align:right">次数</th><th style="width:96px;text-align:right">最近</th></tr></thead>
+        <tbody id="blkRows"><tr><td colspan="3" class="dim">暂无拦截</td></tr></tbody>
+      </table>
+      <div class="dim" id="blkNote" style="font-size:11px;margin-top:4px;display:none">仅显示拦截次数最多的前 50 个域名，总数仍会继续累计。</div>
+    </div>
     <div class="msg" id="dnsMsg"></div>
   </div></section>
 
@@ -122,7 +140,8 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 'use strict';
 var token=''; try{token=sessionStorage.getItem('fsd_tok')||'';}catch(e){}
 var busy=false;
-var TESLA_ALLOW='connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com api-prd.vn.cloud.tesla.cn';
+var TESLA_ALLOW='connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn';
+var TESLA_BLOCK='api-prd.vn.cloud.tesla.cn';
 function q(u){return u+(token?(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token):'');}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function showPin(){document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
@@ -138,9 +157,9 @@ async function refresh(){
     document.getElementById('bFsd').textContent='FSD：'+(f.enabled?'开':'关')+' / '+(f.mode||'--');
     document.getElementById('bFsd').className='badge '+(f.enabled?'ok':'bad');
     document.getElementById('bHeap').textContent=(d.heap||0)+' B free';
-    document.getElementById('apSsid').textContent=d.apSSID||'FSD-Controller';
+    document.getElementById('apSsid').textContent=d.apSSID||'fsd-esp32';
     if(!document.getElementById('apSsidIn').matches(':focus'))
-      document.getElementById('apSsidIn').value=d.apSSID||'FSD-Controller';
+      document.getElementById('apSsidIn').value=d.apSSID||'fsd-esp32';
     document.getElementById('apIp').textContent=d.apIP||'9.9.9.9';
     document.getElementById('apCh').textContent=d.channel==null?'--':d.channel;
     document.getElementById('apSta').textContent=d.apStations==null?'0':d.apStations;
@@ -162,6 +181,24 @@ async function refresh(){
     if(!document.getElementById('dnsAllow').matches(':focus')) document.getElementById('dnsAllow').value=d.dnsAllow||'';
     if(!document.getElementById('dnsBlock').matches(':focus')) document.getElementById('dnsBlock').value=d.dnsBlock||'';
     document.getElementById('dnsEn').checked=!!d.dnsEnable;
+    document.getElementById('ipBlkEn').checked=!!d.ipBlockerEnabled;
+    var blk=d.dnsBlockedRecent||[], blkTotal=d.dnsBlockedTotal||0;
+    document.getElementById('dnsBlkCard').textContent=blkTotal+' 次 / '+blk.length+' 域名';
+    document.getElementById('dnsBlkTotal').textContent=blkTotal;
+    document.getElementById('ipDrops').textContent=d.ipBlockDrops||0;
+    document.getElementById('ipCache').textContent=d.ipCacheCount||0;
+    document.getElementById('ipPeak').textContent=d.ipCachePeak||0;
+    var rows=document.getElementById('blkRows');
+    if(!blk.length){
+      rows.innerHTML='<tr><td colspan="3" class="dim">暂无拦截</td></tr>';
+    }else{
+      rows.innerHTML=blk.map(function(e){
+        var ago=Math.max(0,(d.uptime||0)-(e.lastBlockedAt||0));
+        var when=ago<60?(ago+' 秒前'):(ago<3600?(Math.floor(ago/60)+' 分钟前'):(Math.floor(ago/3600)+' 小时前'));
+        return '<tr><td style="word-break:break-all">'+esc(e.domain)+'</td><td style="text-align:right;font-variant-numeric:tabular-nums">'+(e.count||0)+'</td><td style="text-align:right;color:#8b949e">'+when+'</td></tr>';
+      }).join('');
+    }
+    document.getElementById('blkNote').style.display=blk.length>=50?'':'none';
   }catch(e){}
   busy=false;
 }
@@ -174,9 +211,30 @@ async function saveAp(){
 async function saveBridge(){
   var qs='upstreamEnable='+(document.getElementById('upEn').checked?1:0)+
     '&dnsEnable='+(document.getElementById('dnsEn').checked?1:0)+
+    '&ipBlockerEnabled='+(document.getElementById('ipBlkEn').checked?1:0)+
     '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
     '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
   var r=await fetch(q('/api/wifi-bridge/set?'+qs)); setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok); if(r.status===403)showPin(); refresh();
+}
+async function saveIpBlk(){
+  var v=document.getElementById('ipBlkEn').checked?1:0;
+  var r=await fetch(q('/api/wifi-bridge/set?ipBlockerEnabled='+v));
+  setMsg('dnsMsg',r.ok?(v?'IP 层拦截已开启':'IP 层拦截已关闭'):'保存失败',r.ok);
+  if(r.status===403)showPin();
+  if(!r.ok)refresh();
+}
+async function dnsBlkClear(){
+  if(!confirm('清空 DNS / IP 拦截统计？'))return;
+  var r=await fetch(q('/api/wifi-bridge/blocked-clear'));
+  setMsg('dnsMsg',r.ok?'拦截记录已清空':'清空失败',r.ok);
+  if(r.status===403)showPin();
+  refresh();
+}
+function dnsBlkDl(){
+  var a=document.createElement('a');
+  a.href=q('/api/wifi-bridge/blocked-download');
+  a.download='dns_blocked.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
 }
 async function addNet(){
   var ssid=document.getElementById('netSsid').value.trim(), pass=document.getElementById('netPass').value;
@@ -217,11 +275,14 @@ document.getElementById('apSave').onclick=saveAp;
 document.getElementById('netAdd').onclick=addNet;
 document.getElementById('netScan').onclick=scan;
 document.getElementById('dnsSave').onclick=saveBridge;
-document.getElementById('dnsTesla').onclick=function(){document.getElementById('dnsAllow').value=TESLA_ALLOW;document.getElementById('dnsBlock').value='tesla.cn tesla.com teslamotors.com tesla.services';};
+document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
+document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
+document.getElementById('dnsTesla').onclick=function(){document.getElementById('dnsAllow').value=TESLA_ALLOW;document.getElementById('dnsBlock').value=TESLA_BLOCK;};
 document.getElementById('dnsClear').onclick=function(){document.getElementById('dnsAllow').value='';document.getElementById('dnsBlock').value='';};
 document.getElementById('fsdSave').onclick=saveFsd;
 document.getElementById('upEn').onchange=saveBridge;
 document.getElementById('dnsEn').onchange=saveBridge;
+document.getElementById('ipBlkEn').onchange=saveIpBlk;
 document.getElementById('otaBtn').onclick=otaUpload;
 document.getElementById('otaCheck').onclick=otaCheck;
 document.getElementById('otaPull').onclick=otaPull;

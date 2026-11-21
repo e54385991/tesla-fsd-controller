@@ -1068,7 +1068,9 @@ extern "C" void dnsIpBlockerClear(void) {
 // Wi-Fi/FSD-mock build that struct no longer exists, so keep a local flag
 // there (default OFF) and defer to cfg in full CAN builds.
 #ifdef FSD_MOCK_ONLY
-static bool gDnsIpBlockerEnabled = false;
+// The FSD-mock build has no FSDConfig struct. Keep the flag here instead;
+// Wi-Fi bridge config load/save persists it as NVS key "ub_ipBlk".
+static volatile bool gDnsIpBlockerEnabled = false;
 static inline bool dnsIpBlockerEnabled() { return gDnsIpBlockerEnabled; }
 static inline void dnsIpBlockerSetEnabled(bool enabled) { gDnsIpBlockerEnabled = enabled; }
 #else

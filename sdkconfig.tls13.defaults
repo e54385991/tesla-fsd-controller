@@ -1,0 +1,38 @@
+# ESP-IDF 5.5 defaults for the Waveshare ESP32-S3 Wi-Fi bridge (TLS 1.3).
+# The other Wi-Fi envs keep using sdkconfig.defaults on ESP-IDF 4.4.
+CONFIG_AUTOSTART_ARDUINO=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="min_spiffs.csv"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# ── Wi-Fi / TCP throughput tuning ─────────────────────────────────────────────
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_TCP_WND_DEFAULT=5760
+CONFIG_TCP_SND_BUF_DEFAULT=5760
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
+CONFIG_LWIP_IRAM_OPTIMIZATION=y
+CONFIG_ESP_WIFI_TX_BA_WIN=16
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+
+# ── Wi-Fi bridge: IP forwarding + NAPT ────────────────────────────────────────
+CONFIG_LWIP_L2_TO_L3_COPY=y
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y
+
+# ── TLS: negotiate TLS 1.2 or TLS 1.3 (TeslaDG matches this: min TLS1_2,
+#    max unbounded). mbedTLS 3.6 has no TLS 1.0/1.1 options; 1.2 is the floor.
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=6144
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
+
+# Upstream is intentionally insecure, matching TeslaDG start_hotspot.ps1
+# (mitmdump --set ssl_insecure=true). Tesla's api-prd certificate is issued
+# by a private CA that is not in the public bundle.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

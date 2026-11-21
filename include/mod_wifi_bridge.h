@@ -17,7 +17,12 @@
 #include <cstring>
 
 extern "C" {
+#include <esp_idf_version.h>
+#if ESP_IDF_VERSION_MAJOR >= 5
+#include "esp_netif.h"
+#else
 #include "lwip/lwip_napt.h"
+#endif
 #include "esp_wifi.h"
 }
 
@@ -353,6 +358,17 @@ static inline void syncNATState() {
     bool shouldEnable = WiFi.status() == WL_CONNECTED;
     if (gNatEnabled == shouldEnable) return;
 
+#if ESP_IDF_VERSION_MAJOR >= 5
+    // IDF 5.x exposes NAPT through esp_netif; no raw address/NBO handling.
+    esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (apNetif) {
+        if (shouldEnable) {
+            esp_netif_napt_enable(apNetif);
+        } else {
+            esp_netif_napt_disable(apNetif);
+        }
+    }
+#else
     // Must pass address in network byte order — lwip compares netif->ip_addr.addr
     // directly (u32_t in NBO). Manual big-endian shifting mismatches lwip's netif
     // on little-endian ESP32, causing ip_napt_enable to fall through to
@@ -360,6 +376,7 @@ static inline void syncNATState() {
     // uint32_t conversion already returns NBO on little-endian targets.
     uint32_t apAddrNbo = static_cast<uint32_t>(WiFi.softAPIP());
     ip_napt_enable(static_cast<u32_t>(apAddrNbo), shouldEnable ? 1 : 0);
+#endif
     gNatEnabled = shouldEnable;
 }
 
@@ -367,12 +384,24 @@ static inline void syncNATState() {
 // Uses the "fsd" namespace (shared with main.cpp) and its own key prefixes
 // (ub_*) to avoid collision.
 
-// Tesla 推荐方案 — 当前 (v3): v2 基础 + api-prd.vn.cloud.tesla.cn
-// api-prd 是 Tesla 手机 App 控车 API 端点（启动空调/远程解锁/查状态等），
-// 所有用户都需要，与 Intel/AMD 车机或是否使用内置地图无关。v2 遗漏了它，
-// 用户首次启动后用 App 控车会命令失败，v3 补上。
-// ⚠️ 本常量必须与前端 BR_PRESETS.tesla_min.allow (web_ui.h) 和
+// Tesla 推荐方案 — 当前 (v4): 基础服务 + 百度地图 + QQ/网易云/Apple Music。
+// 默认额外放行车机常用流媒体，避免音乐/导航因白名单过窄而不可用。
+//
+// ⚠️ 关于两个特殊域名（默认都不按“可远程车控”处理）：
+//   • hermes-prd.vn.cloud.tesla.cn：默认不加入白名单。手动加入后可以远程
+//     车控，但可能触发 Tesla 风控甚至封禁，谨慎使用。
+//   • api-prd.vn.cloud.tesla.cn：默认放入黑名单。车机恢复出厂设置后，如
+//     QQ 音乐无法显示扫码登录 / 网易云音乐异常，可能需要先把它加入白名单
+//     （同长度时白名单优先，因此可同时保留黑名单条目）。放行后 Tesla 云端
+//     可能改写 FSD 配置，需自行承担该风险；音乐软件恢复后应立刻移回黑名单
+//     或断开 Wi-Fi。
+//
+// ⚠️ 本常量必须与前端 DNS_PRESETS.tesla_min.allow (web_ui.h) 和
 //    DNS_PRESETS.tesla_min.allow (web_ui_car.h) 的内容保持完全一致。
+static const char* kTeslaMinAllowV4 =
+    "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn";
+
+// v3 默认 allowlist（含 hermes-prd / signaling / api-prd）— 用于一次性迁移识别
 static const char* kTeslaMinAllowV3 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com";
 
@@ -384,7 +413,13 @@ static const char* kTeslaMinAllowV2 =
 static const char* kTeslaMinAllowV1 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com";
 
-static const char* kTeslaMinBlock =
+// v4 默认黑名单：api-prd 是 Tesla 手机 App 控车 / 车辆配置端点。
+// 恢复出厂后的车机可能需要它完成初始化，届时应临时加入白名单放行。
+static const char* kTeslaMinBlockV4 =
+    "api-prd.vn.cloud.tesla.cn";
+
+// 旧版默认黑名单 — 仅用于识别未自定义过的配置并迁移
+static const char* kTeslaMinBlockV3 =
     "tesla.cn tesla.com teslamotors.com tesla.services";
 
 static inline void wifiBridgeLoadConfig() {
@@ -406,6 +441,9 @@ static inline void wifiBridgeLoadConfig() {
     gDnsFilterCfg.enabled = p.getBool("ub_dnsEn", false);
     wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), p.getString("ub_allow", ""));
     wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), p.getString("ub_block", ""));
+#ifdef FSD_MOCK_ONLY
+    dnsIpBlockerSetEnabled(p.getBool("ub_ipBlk", false));
+#endif
     // Last-known-good network index (-1 = no preference yet). Used to bias
     // the first connect attempt after boot toward the network that succeeded
     // last time, instead of always starting round-robin from index 0.
@@ -423,8 +461,8 @@ static inline void wifiBridgeLoadConfig() {
     // the ub_init flag persists so we never overwrite their choices.
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV3);
-        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlock);
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
+        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV4);
         Preferences p2;
         p2.begin("fsd", false);
         p2.putBool("ub_dnsEn", true);
@@ -435,15 +473,24 @@ static inline void wifiBridgeLoadConfig() {
         return;
     }
 
-    // Migration: 老用户如果 allowlist 完全等于 v1 / v2 默认值（未自定义过），
-    // 自动升级到 v3 (v1→v2 补 14 个百度地图域名，v2→v3 补 api-prd App 控车端点)。
-    // 用户改过则不动，尊重用户选择。
+    // Migration: 老用户如果 allowlist 完全等于 v1 / v2 / v3 默认值（未自定义过），
+    // 自动升级到 v4（去掉 hermes-prd / signaling / api-prd，补充音乐与视频域名，
+    // 黑名单改为只保留 api-prd）。用户改过则不动，尊重用户选择；黑名单也仅在
+    // 仍等于旧默认值时才一起迁移，避免覆盖用户自定义规则。
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
-        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV2) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV3);
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV2) == 0 ||
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV3) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
+        bool migrateBlock = strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0;
+        if (migrateBlock) {
+            wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV4);
+        }
         Preferences p3;
         p3.begin("fsd", false);
         p3.putString("ub_allow", gDnsFilterCfg.allowlist);
+        if (migrateBlock) {
+            p3.putString("ub_block", gDnsFilterCfg.blocklist);
+        }
         p3.end();
     }
 }
@@ -482,6 +529,9 @@ static inline void wifiBridgeSaveConfig() {
     p.putBool("ub_dnsEn", gDnsFilterCfg.enabled);
     p.putString("ub_allow", gDnsFilterCfg.allowlist);
     p.putString("ub_block", gDnsFilterCfg.blocklist);
+#ifdef FSD_MOCK_ONLY
+    p.putBool("ub_ipBlk", dnsIpBlockerEnabled());
+#endif
 #ifndef FSD_MOCK_ONLY
     pingSaveEnabled(p);
 #endif

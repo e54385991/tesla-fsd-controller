@@ -6,11 +6,13 @@ Produces two files per environment after each successful build:
   firmware_<env>_ota.bin  — app-only binary (OTA via web panel)
 """
 
-import subprocess
+import re
 import shutil
+import subprocess
 import sys
 import os
 Import("env")
+
 
 def merge_firmware(source, target, env):
     build_dir   = env.subst("$BUILD_DIR")
@@ -25,7 +27,6 @@ def merge_firmware(source, target, env):
         piohome, "packages", "framework-arduinoespressif32",
         "tools", "partitions", "boot_app0.bin"
     )
-    esptool = os.path.join(piohome, "packages", "tool-esptoolpy", "esptool.py")
 
     # Read version from fsd_version.h
     version = "unknown"
@@ -34,7 +35,6 @@ def merge_firmware(source, target, env):
         with open(version_h) as f:
             for line in f:
                 if "FIRMWARE_VERSION" in line:
-                    import re
                     m = re.search(r'"([^"]+)"', line)
                     if m:
                         version = m.group(1)
@@ -57,26 +57,38 @@ def merge_firmware(source, target, env):
     if "esp32s3" in mcu:
         chip, boot_addr, flash_freq, flash_size = "esp32s3", "0x0000", "80m", "8MB"
     else:
-        chip, boot_addr, flash_freq, flash_size = "esp32",   "0x1000", "40m", "4MB"
+        chip, boot_addr, flash_freq, flash_size = "esp32", "0x1000", "40m", "4MB"
 
-    cmd = [
-        sys.executable, esptool,
-        "--chip", chip,
-        "merge_bin",
-        "-o", merged_out,
-        "--flash_mode", "dio",
-        "--flash_freq", flash_freq,
-        "--flash_size", flash_size,
-        boot_addr, bootloader,
-        "0x8000",  partitions,
-        "0xE000",  boot_app0,
-        "0x10000", app_bin,
-    ]
+    # PlatformIO 8.x ships the standalone esptool 5 binary (`tool-esptool`);
+    # older platforms ship the Python module in `tool-esptoolpy`.
+    esptool_v5 = os.path.join(piohome, "packages", "tool-esptool", "esptool")
+    esptool_v4 = os.path.join(piohome, "packages", "tool-esptoolpy", "esptool.py")
+    if os.path.isfile(esptool_v5):
+        cmd = [
+            esptool_v5, "--chip", chip, "merge-bin",
+            "-o", merged_out,
+            "--flash-mode", "dio", "--flash-freq", flash_freq, "--flash-size", flash_size,
+            boot_addr, bootloader,
+            "0x8000",  partitions,
+            "0xE000",  boot_app0,
+            "0x10000", app_bin,
+        ]
+    else:
+        cmd = [
+            sys.executable, esptool_v4, "--chip", chip, "merge_bin",
+            "-o", merged_out,
+            "--flash_mode", "dio", "--flash_freq", flash_freq, "--flash_size", flash_size,
+            boot_addr, bootloader,
+            "0x8000",  partitions,
+            "0xE000",  boot_app0,
+            "0x10000", app_bin,
+        ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stderr)
         raise Exception("esptool merge_bin failed — see output above")
     print(f"[merge] Merged binary : {os.path.basename(merged_out)}  (flash at 0x0)")
+
 
 env.AddPostAction("$BUILD_DIR/firmware.bin", merge_firmware)

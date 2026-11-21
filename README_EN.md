@@ -1,4 +1,4 @@
-# Tesla FSD Controller — ESP32 Web Edition
+# Tesla FSD Controller — ESP32 / ESP32-S3 Wi-Fi Bridge Edition
 
 <p align="right">English | <a href="README.md">中文</a></p>
 
@@ -58,17 +58,17 @@ Closed-source FSD activation modules sell for around ¥500. Here's the full comp
 ### Step 1: Download the firmware for your board
 
 > Two firmware files are provided per board — use the right one for the right purpose:
-> - **`xxx_v1.4.25.bin`** (merged binary) → first-time flash via ESP Web Flasher at address `0x0`
-> - **`xxx_v1.4.25_ota.bin`** (OTA binary) → wireless updates via the web panel "OTA Update" card, or let the device pull from GitHub automatically
+> - **`<env>_v1.4.35.bin`** (merged binary) → first-time flash via ESP Web Flasher at address `0x0`
+> - **`<env>_v1.4.35_ota.bin`** (OTA binary) → wireless updates via the web panel "OTA Update" card, or let the device pull from GitHub automatically
 >
-> For the newest assets, see the [**releases page**](https://github.com/wjsall/tesla-fsd-controller/releases/latest). Direct links below are for **v1.4.25**:
+> For the newest assets, see the [**releases page**](../../releases/latest).
 
-| Board | First-time flash | OTA update | Notes |
+| Board | Merged firmware | OTA firmware | Notes |
 |-------|----------|----------|-------|
-| Standard ESP32 + SN65HVD230 | [esp32_v1.4.25.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32_v1.4.25.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32_v1.4.25_ota.bin) | Entry-level, 5V USB |
-| **Waveshare ESP32-S3-RS485-CAN** | [esp32s3_waveshare_v1.4.25.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_v1.4.25.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_v1.4.25_ota.bin) | In-car permanent install, **7–36V direct** |
-| ESP32 Wi-Fi bridge | [esp32_wifi_v1.4.25.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32_wifi_v1.4.25.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32_wifi_v1.4.25_ota.bin) | Wi-Fi uplink for MCU + DNS filter |
-| Waveshare ESP32-S3 Wi-Fi bridge | [esp32s3_waveshare_wifi_v1.4.25.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_wifi_v1.4.25.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_wifi_v1.4.25_ota.bin) | In-car install + Wi-Fi bridge |
+| Standard ESP32 + SN65HVD230 | `esp32_v1.4.35.bin` | `esp32_v1.4.35_ota.bin` | CAN only, 5V USB |
+| **Waveshare ESP32-S3-RS485-CAN** | `esp32s3_waveshare_v1.4.35.bin` | `esp32s3_waveshare_v1.4.35_ota.bin` | CAN only, **7–36V direct** |
+| ESP32 CAN + Wi-Fi bridge | `esp32_wifi_v1.4.35.bin` | `esp32_wifi_v1.4.35_ota.bin` | CAN + bridge, full web UI |
+| **Waveshare ESP32-S3 Wi-Fi bridge** | `esp32s3_waveshare_wifi_v1.4.35.bin` | `esp32s3_waveshare_wifi_v1.4.35_ota.bin` | **Current main build: bridge + FSD delivery, no CAN** |
 
 ### Step 2: Flash the firmware
 
@@ -76,7 +76,7 @@ Closed-source FSD activation modules sell for around ¥500. Here's the full comp
 2. Connect the board via **Type-C** → click **Connect** and select the serial port
 3. Click **Add File**, select the downloaded firmware, set address to `0x0`
 4. Click **Program** and wait for completion
-5. Connect to the `FSD-Controller` WiFi hotspot (password: `12345678`), then open `9.9.9.9`
+5. Connect to the `fsd-esp32` WiFi hotspot (password: `88888888`), then open `9.9.9.9`
 
 > ⚠️ Safari does not support WebUSB. Use Chrome or Edge.
 >
@@ -219,7 +219,7 @@ Vehicle CAN-L (X179 Pin 14)    →  Board right terminal CAN L
 
 **Recommended (change via web panel after flashing):**
 
-1. After flashing, connect to the default hotspot `FSD-Controller` (password `12345678`).
+1. After flashing, connect to the default hotspot `fsd-esp32` (password `88888888`).
 2. Open `9.9.9.9` in your browser. Go to the **WiFi Settings** card, enter a new name and password.
 3. Click **Save & Restart**. Reconnect using the new credentials.
 
@@ -228,8 +228,8 @@ Vehicle CAN-L (X179 Pin 14)    →  Board right terminal CAN L
 Open `src/main.cpp` and find lines 20–21:
 
 ```cpp
-static char apSSID[33] = "FSD-Controller";
-static char apPass[64] = "12345678";
+static char apSSID[33] = "fsd-esp32";
+static char apPass[64] = "88888888";
 ```
 
 Change the quoted values to your preferred name and password (minimum 8 characters).
@@ -277,7 +277,7 @@ Connect the ESP32 to your computer with a USB cable.
 ### 5.1 Connect to WiFi
 
 1. Power the ESP32 (USB power bank or any USB power source).
-2. On your phone, find `FSD-Controller` (or your custom name) in WiFi settings and connect.
+2. On your phone, find `fsd-esp32` (or your custom name) in WiFi settings and connect.
 3. Open `9.9.9.9` in your phone's browser.
 
 For the Waveshare ESP32-S3 Wi-Fi bridge firmware built from the current source, open the control panel at `http://9.9.9.9:10010/` or `http://fsd.local:10010/`. The previous home page address redirects to the new port.
@@ -331,6 +331,19 @@ The default payload is byte-for-byte `TeslaDG/app/payload.json` (602 B, md5 `241
 
 **Certificates**: port 443 uses exactly the same certificate material as Windows `--emudhra`, not the self-signed mitmproxy CA. The leaf uses the same validity window as `TeslaDG/app/certs2/mitmproxy-ca-cert.pem` (2026-11-07 22:54:45 GMT → 2036-11-04 22:54:45 GMT). The three intermediate/root certificates in `include/fsd_tls_identity.h` are byte-for-byte identical to mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` (`EM OV TLS CA - G3C` → `emSign Root TLS CA - G3` → `emSign ECC Root CA - G3`, including the AAA Certificate Services cross-sign). The leaf follows mitmproxy's `dummy_cert()`: the compromised `EM OV TLS CA - G3C` key pair, `CN=api-prd.vn.cloud.tesla.cn, O=Tesla Inc.`, Tesla upstream SANs, EKU/AKI, and the app certs2 validity window (2026-11-07 → 2036-11-04). Extra SANs keep `mothership.vn.teslamotors.com`, `fsd.local`, `9.9.9.9`, and `127.0.0.1` for the local panel/client-config endpoint. The car normally trusts the emSign root, so no certificate installation is needed; if it does not, install the exported `EM OV TLS CA - G3C` intermediate. The leaf private key is public in this repository (compromised eMudhra intermediate), lab use only.
 
+**TLS version**: TeslaDG's vehicle-facing listener is mitmproxy 12.3.1, whose defaults are `tls_version_client_min=TLS1_2` (the upstream side uses the same TLS1_2 floor via `tls_version_server_min`) with an unbounded maximum, so it negotiates **TLS 1.3** whenever the car offers it (the "TLS1.3 + HTTP/2" label in `fsd_panel.py` is a fixed HTTP/2-based assumption; read the `tls` field in the handshake log for the real version). The Waveshare ESP32-S3 Wi-Fi build now uses **Arduino 3.3.12 / ESP-IDF 5.5.5 / mbedTLS 3.6**; `sdkconfig.tls13.defaults` enables both `CONFIG_MBEDTLS_SSL_PROTO_TLS1_2` and `CONFIG_MBEDTLS_SSL_PROTO_TLS1_3`. The floor is TLS 1.2, so the car negotiates **TLS 1.3** when it supports it and falls back to TLS 1.2 otherwise, matching TeslaDG's 1.2–1.3 range. The certificate chain and `feature_configuration` reply are unchanged. The standard ESP32 Wi-Fi build (`esp32-wifi`) remains on ESP-IDF 4.4 / mbedTLS 2.28 and supports TLS 1.2 only.
+
+> **TLS 1.1 note**: TLS 1.1 and TLS 1.3 cannot coexist in one mbedTLS build — mbedTLS 3.6 (IDF 5.5) removed TLS 1.0/1.1 and keeps TLS 1.2/1.3, while mbedTLS 2.28 (IDF 4.4) has 1.0/1.1/1.2 but no 1.3. TeslaDG's own floor is TLS 1.2, and modern car firmware negotiates 1.3/1.2 directly, so this firmware targets **TLS 1.2 + 1.3**. A client that truly requires TLS 1.1 must use the older IDF 4.4 build and give up TLS 1.3.
+
+> **TLS 1.3 build note**: the first build of this env downloads the Arduino 3.3.12 / ESP-IDF 5.5.5 toolchain. If PlatformIO's ESP-IDF Python env setup fails (Python 3.15 with an older pydantic-core), run:
+>
+> ```sh
+> PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-5.5.5/bin/pip install \
+>   idf-component-manager -r ~/.platformio/packages/framework-espidf/tools/requirements/requirements.core.txt
+> ```
+>
+> then rerun `pio run -e esp32s3-waveshare-wifi`. The `esp32-wifi` and CAN builds are unaffected.
+
 **Modes**: `reply` returns the ESP32 payload; `observe` records the request and forwards it upstream, matching `mode.json`. Switch it in the DNS tab of the control panel.
 
 **PC-style dashboard**: `http://9.9.9.9:10010/fsd` mirrors `TeslaDG/app/web/fsd_panel.py` (cards, handshake table, delivery timeline, recent requests, API distribution, config history, current payload) and includes a field editor with add/remove, Chinese notes, restore-default (22 fields / 653 B, `enable_eu_fsd_behavior:false`, `autoshift_dr:true` last), presets, and raw JSON.
@@ -351,6 +364,13 @@ Both allowlists and blocklists accept `*.qq.com`: it matches `music.qq.com` and 
 
 The longest matching domain suffix wins, excluding the `*.` prefix from its length; equal lengths favor the allowlist. For example, an allowlist entry `*.qq.com` does not override a blocklist entry `a.qq.com`. A nonempty allowlist denies unmatched domains by default.
 
+The first-boot preset allows navigation, maps, and common music services (QQ Music, NetEase Cloud Music, Apple Music), and blocks only `api-prd.vn.cloud.tesla.cn`. Because a nonempty allowlist already denies unlisted names, the whole `tesla.cn` parent domain no longer needs to be in the blocklist.
+
+**Two special hosts in the default preset**
+
+- `hermes-prd.vn.cloud.tesla.cn` is **not** allowlisted by default. Adding it enables remote vehicle control, but it may trigger Tesla risk controls or even an account/vehicle ban; use it with caution.
+- `api-prd.vn.cloud.tesla.cn` is blocked by default. After a factory reset, QQ Music may fail to show its login QR code or NetEase Cloud Music may misbehave; if so, try adding this host to the allowlist first. Equal-length entries favor the allowlist, so the blocklist entry can stay. Allowing it means Tesla's cloud may rewrite the FSD configuration — accept that risk. Once the music apps work again, put the host back on the blocklist immediately (or disconnect Wi-Fi) instead of leaving it allowed.
+
 Wildcard rules are not hostnames and are skipped during IP-cache pre-resolution. A concrete subdomain can still enter the optional IP block cache when its DNS query is blocked.
 
 ---
@@ -360,7 +380,7 @@ Wildcard rules are not hostnames and are skipped during IP-cache pre-resolution.
 After modifying and rebuilding the firmware, you can update wirelessly — no USB needed:
 
 1. Build in VS Code (click **Build**).
-2. The build script auto-generates a matching **`<env>_v<ver>_ota.bin`** in the project root (e.g. `esp32s3_waveshare_v1.4.25_ota.bin`).
+2. The build script auto-generates a matching **`<env>_v<ver>_ota.bin`** in the project root (e.g. `esp32s3_waveshare_v1.4.35_ota.bin`).
 3. In the web panel, find the **OTA Update** card, click **Choose File**, select the **`_ota.bin`** file.
 4. Click **Upload Firmware** and wait for the progress bar. The device restarts automatically.
 

@@ -1,5 +1,7 @@
 .DS_Store
 .pio/
+managed_components/
+dependencies.lock
 __pycache__/
 *.pyc
 mock_server.py

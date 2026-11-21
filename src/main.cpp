@@ -14,7 +14,10 @@
 #include <Update.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <esp_idf_version.h>
+#include <esp_arduino_version.h>
 #include <esp_netif.h>
+#include <dhcpserver/dhcpserver.h>
 #include <esp_wifi.h>
 #include <SPIFFS.h>
 #include <sys/time.h>
@@ -49,8 +52,8 @@
 #endif
 
 // ── WiFi AP config (NVS-overridable) ──
-static char apSSID[33] = "FSD-Controller";
-static char apPass[64] = "12345678";
+static char apSSID[33] = "fsd-esp32";
+static char apPass[64] = "88888888";
 
 // ── WiFi STA config (connect to router) ──
 static char staSSID[33] = "";
@@ -113,7 +116,8 @@ static char storedPin[17]    = {0};  // loaded from NVS; empty = no auth
 
 static void generateToken() {
     uint32_t r1 = esp_random(), r2 = esp_random();
-    snprintf(sessionToken, sizeof(sessionToken), "%08X%08X", r1, r2);
+    snprintf(sessionToken, sizeof(sessionToken), "%08X%08X",
+             static_cast<unsigned>(r1), static_cast<unsigned>(r2));
 }
 
 // Returns true if request is authorised.
@@ -310,8 +314,8 @@ void loadConfig() {
     };
     for (auto* k : retiredCanKeys) if (prefs.isKey(k)) prefs.remove(k);
 #endif
-    strlcpy(apSSID,  prefs.getString(NV_AP_SSID,  "FSD-Controller").c_str(), sizeof(apSSID));
-    strlcpy(apPass,  prefs.getString(NV_AP_PASS,  "12345678").c_str(),       sizeof(apPass));
+    strlcpy(apSSID,  prefs.getString(NV_AP_SSID,  "fsd-esp32").c_str(), sizeof(apSSID));
+    strlcpy(apPass,  prefs.getString(NV_AP_PASS,  "88888888").c_str(),  sizeof(apPass));
     strlcpy(staSSID, prefs.getString(NV_STA_SSID, "").c_str(),               sizeof(staSSID));
     strlcpy(staPass, prefs.getString(NV_STA_PASS, "").c_str(),               sizeof(staPass));
 
@@ -551,6 +555,11 @@ static void fsdPayloadBody(AsyncWebServerRequest* req, uint8_t* data, size_t len
     }
     auto* upload = static_cast<FsdPayloadUpload*>(req->_tempObject);
     if (upload && !upload->rejected) {
+        if (upload->body.length() + len > 2048) {
+            upload->rejected = true;
+            upload->tooLarge = true;
+            return;
+        }
         upload->body.concat(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len));
     }
 }
@@ -1008,7 +1017,7 @@ void setupWebServer() {
                  (unsigned)esp_get_free_heap_size(),
                  safeModeActive ? "true" : "false",
                  (storedPin[0] != '\0') ? "true" : "false",
-                 (strcmp(apPass, "12345678") == 0) ? "true" : "false",
+                 (strcmp(apPass, "88888888") == 0) ? "true" : "false",
                  timeSynced ? "true" : "false",
                  (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str() : "",
                  (WiFi.status() == WL_CONNECTED) ? "true" : "false",
@@ -1137,7 +1146,7 @@ void setupWebServer() {
             (unsigned)esp_get_free_heap_size(),
             safeModeActive ? "true" : "false",
             (storedPin[0] != '\0') ? "true" : "false",
-            (strcmp(apPass, "12345678") == 0) ? "true" : "false",
+            (strcmp(apPass, "88888888") == 0) ? "true" : "false",
             timeSynced ? "true" : "false",
             (unsigned)telemSpeedRaw(), (unsigned)telemGear(),
             (int)telemTorqueFront(), (int)telemTorqueRear(),
@@ -1585,7 +1594,7 @@ void setupWebServer() {
         esp_wifi_get_channel(&apChannel, &apSecond);
         json += "\"apSSID\":\""; json += wifiBridgeJsonEscape(String(apSSID)); json += "\"";
         json += ",\"apIP\":\""; json += WiFi.softAPIP().toString(); json += "\"";
-        json += ",\"apPassDefault\":"; json += (strcmp(apPass, "12345678") == 0 ? "true" : "false");
+        json += ",\"apPassDefault\":"; json += (strcmp(apPass, "88888888") == 0 ? "true" : "false");
         json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
         json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
         json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());
@@ -1627,6 +1636,7 @@ void setupWebServer() {
         json += ",\"thermalStatus\":\""; json += wifiBridgeJsonEscape(String(thermalStatusText())); json += "\"";
         json += ",\"thermalProtect\":"; json += (thermalProtectActive() ? "true" : "false");
         json += ",\"dnsEnable\":"; json += (gDnsFilterCfg.enabled ? "true" : "false");
+        json += ",\"ipBlockerEnabled\":"; json += (dnsIpBlockerEnabled() ? "true" : "false");
         json += ",\"dnsAllowCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist));
         json += ",\"dnsBlockCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist));
         json += ",\"dnsAllow\":\""; json += wifiBridgeJsonEscape(String(gDnsFilterCfg.allowlist)); json += "\"";
@@ -1714,6 +1724,12 @@ void setupWebServer() {
         }
         if (hasBlock) {
             wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), blockVal);
+            changed = true;
+        }
+#endif
+#ifdef FSD_MOCK_ONLY
+        if (req->hasParam("ipBlockerEnabled")) {
+            dnsIpBlockerSetEnabled(req->getParam("ipBlockerEnabled")->value().toInt() != 0);
             changed = true;
         }
 #endif
@@ -2230,7 +2246,15 @@ void setup() {
     // (RTC_SW_CPU_RST) panics on the Waveshare Wi-Fi bridge in the field.
     // 30 s still catches real infinite loops / deadlocks without killing
     // the device during normal connectivity hiccups.
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdtConfig = {};
+    wdtConfig.timeout_ms = 30000;
+    wdtConfig.idle_core_mask = 1 << 0;  // subscribe the core-0 idle task only
+    wdtConfig.trigger_panic = true;
+    esp_task_wdt_init(&wdtConfig);  // 30s timeout, panic on trigger
+#else
     esp_task_wdt_init(30, true);  // 30s timeout, panic on trigger
+#endif
 
     // Migrate NVS keys from verbose names to obfuscated names (one-time, on update)
     migrateNvsKeys();
@@ -2321,7 +2345,11 @@ void setup() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(true);
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    WiFi.onEvent([](arduino_event_id_t) { dnsStrictClearAddresses(); }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+#else
     WiFi.onEvent([](WiFiEvent_t) { dnsStrictClearAddresses(); }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+#endif
 #endif
     WiFi.mode(WIFI_AP_STA);
 

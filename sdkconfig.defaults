@@ -30,6 +30,16 @@ CONFIG_ESP32_WIFI_RX_BA_WIN=16
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=6144
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Match TeslaDG mitmproxy tls_version_{client,server}_min=TLS1_2. With
+# mbedTLS 2.28 (ESP-IDF 4.4) TLS 1.2 is also the maximum:
+# CONFIG_MBEDTLS_SSL_PROTO_TLS1_3 does not exist here, so the car-facing 443
+# listener and the upstream client can never negotiate TLS 1.3 (mitmproxy's
+# default maximum is unbounded).
+# Compiling out TLS 1.0/1.1 makes mbedTLS's default minimum TLS 1.2 instead
+# of TLS 1.0, so a legacy client cannot downgrade below the TeslaDG floor.
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+# CONFIG_MBEDTLS_SSL_PROTO_TLS1 is not set
+# CONFIG_MBEDTLS_SSL_PROTO_TLS1_1 is not set
 # Upstream is intentionally insecure, matching TeslaDG start_hotspot.ps1
 # (mitmdump --set ssl_insecure=true). Tesla's api-prd certificate is issued
 # by a private CA that is not in the public bundle.

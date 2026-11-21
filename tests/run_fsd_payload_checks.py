@@ -122,6 +122,42 @@ def check_port_policy() -> None:
     assert "max_open_sockets = 1" in server
 
 
+def check_tls_policy() -> None:
+    """Waveshare-S3 Wi-Fi runs mbedTLS 3.6 (TLS 1.2 + 1.3); IDF 4.4 envs are 1.2-only."""
+    tls12_only = [
+        ROOT / "sdkconfig.defaults",
+        ROOT / "sdkconfig.esp32-wifi",
+        ROOT / "sdkconfig.esp32-wifi-debug",
+    ]
+    tls13 = [
+        ROOT / "sdkconfig.tls13.defaults",
+        ROOT / "sdkconfig.esp32s3-waveshare-wifi",
+        ROOT / "sdkconfig.esp32s3-waveshare-wifi-debug",
+    ]
+    for path in tls12_only + tls13:
+        text = path.read_text()
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y" in text, f"{path.name}: TLS 1.2 must stay enabled"
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1=y" not in text, f"{path.name}: TLS 1.0 must stay disabled"
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_1=y" not in text, f"{path.name}: TLS 1.1 must stay disabled"
+    for path in tls12_only:
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" not in path.read_text(), (
+            f"{path.name}: IDF 4.4 has no TLS 1.3 option"
+        )
+    for path in tls13:
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" in path.read_text(), (
+            f"{path.name}: TLS 1.3 must stay enabled"
+        )
+
+    platformio = (ROOT / "platformio.ini").read_text()
+    assert platformio.count("platform = platformio/espressif32@8.0.0") >= 2
+    assert 'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.tls13.defaults"' in platformio
+
+    server = (ROOT / "src/client_config.cpp").read_text()
+    mock = (ROOT / "src/fsd_mock.cpp").read_text()
+    assert "config.user_cb = tlsUserCallback;" in server
+    assert "mbedtls_ssl_get_version" in mock
+
+
 def payloads() -> list[str]:
     return PATTERN.findall(HEADER)
 
@@ -183,6 +219,7 @@ def main() -> None:
     for uri in false_cases:
         assert not matches(uri), uri
     check_tls_identity()
+    check_tls_policy()
     check_response_contract()
     check_port_policy()
     print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "

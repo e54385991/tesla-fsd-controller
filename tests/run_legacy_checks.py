@@ -88,7 +88,7 @@ struct Preferences {
     }
 };
 static Preferences prefs;
-static char apSSID[33] = "FSD-Controller", apPass[64] = "12345678", staSSID[33] = "", staPass[64] = "", storedPin[17] = "";
+static char apSSID[33] = "fsd-esp32", apPass[64] = "88888888", staSSID[33] = "", staPass[64] = "", storedPin[17] = "";
 static bool safeModeActive = false, timeSynced = false;
 static const int WL_CONNECTED = 3;
 struct FakeIP { String toString() { return "255.255.255.255"; } };

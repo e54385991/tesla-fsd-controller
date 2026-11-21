@@ -14,6 +14,7 @@
 #include <esp_log.h>
 #include <esp_rom_md5.h>
 #include <esp_tls.h>
+#include <esp_idf_version.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <lwip/sockets.h>
@@ -202,11 +203,36 @@ const char* trimCopy(const char* value, char* out, size_t capacity) {
 bool validHostList(const char* host) {
     if (!host || !*host) return false;
     if (strlen(host) >= kHostCapacity) return false;
-    for (const char* p = host; *p; ++p) {
-        const unsigned char c = static_cast<unsigned char>(*p);
-        if (!(isalnum(c) || c == '.' || c == '-' || c == '_' || isspace(c) || c == ',' || c == ';')) {
-            return false;
+    // One or more DNS names separated by spaces (setHost normalizes , and ;
+    // to spaces). Reject underscores, empty labels, leading/trailing dots or
+    // hyphens, and over-long labels so a typo cannot silently disable FSD.
+    const char* p = host;
+    while (*p) {
+        while (*p == ' ') ++p;
+        if (!*p) break;
+        const char* start = p;
+        while (*p && *p != ' ') ++p;
+        const size_t len = static_cast<size_t>(p - start);
+        if (len == 0 || len > 253) return false;
+        if (start[0] == '.' || start[len - 1] == '.') return false;
+        if (start[0] == '-' || start[len - 1] == '-') return false;
+        bool hasDot = false;
+        size_t label = 0;
+        for (size_t i = 0; i < len; ++i) {
+            const unsigned char c = static_cast<unsigned char>(start[i]);
+            if (c == '.') {
+                if (label == 0 || label > 63) return false;
+                label = 0;
+                hasDot = true;
+                continue;
+            }
+            if (!(isalnum(c) || c == '-')) return false;
+            if (label == 0 && c == '-') return false;
+            if (c == '-' && i + 1 < len && start[i + 1] == '.') return false;
+            ++label;
         }
+        if (label == 0 || label > 63) return false;
+        if (!hasDot) return false;
     }
     return true;
 }
@@ -894,14 +920,27 @@ void noteHandshake(const esp_tls_t* tls) {
     char ts[32] = {};
     formatTimestamp(ts);
     if (tls) {
+#if ESP_IDF_VERSION_MAJOR >= 5
+        // esp_tls_t is opaque in IDF 5.x; use the public accessors.
+        int socket = -1;
+        if (esp_tls_get_conn_sockfd(const_cast<esp_tls_t*>(tls), &socket) == ESP_OK) {
+            socketAddress(socket, client, sizeof(client));
+        }
+        auto* ssl = static_cast<mbedtls_ssl_context*>(
+            esp_tls_get_ssl_context(const_cast<esp_tls_t*>(tls)));
+#else
         socketAddress(tls->sockfd, client, sizeof(client));
+        auto* ssl = &const_cast<esp_tls_t*>(tls)->ssl;
+#endif
 #if defined(CONFIG_ESP_TLS_USING_MBEDTLS)
-        const char* value = mbedtls_ssl_get_version(&tls->ssl);
-        if (value) strlcpy(version, value, sizeof(version));
-        value = mbedtls_ssl_get_ciphersuite(&tls->ssl);
-        if (value) strlcpy(cipher, value, sizeof(cipher));
-        value = mbedtls_ssl_get_alpn_protocol(&tls->ssl);
-        if (value) strlcpy(alpn, value, sizeof(alpn));
+        if (ssl) {
+            const char* value = mbedtls_ssl_get_version(ssl);
+            if (value) strlcpy(version, value, sizeof(version));
+            value = mbedtls_ssl_get_ciphersuite(ssl);
+            if (value) strlcpy(cipher, value, sizeof(cipher));
+            value = mbedtls_ssl_get_alpn_protocol(ssl);
+            if (value) strlcpy(alpn, value, sizeof(alpn));
+        }
 #endif
     }
 

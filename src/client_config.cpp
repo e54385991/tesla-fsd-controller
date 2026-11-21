@@ -1,6 +1,7 @@
 #include "mod_client_config.h"
 
 #include <sdkconfig.h>
+#include <esp_idf_version.h>
 
 #if defined(WIFI_BRIDGE_ENABLED) && defined(CONFIG_IDF_TARGET_ESP32S3) && defined(CONFIG_ESP_HTTPS_SERVER_ENABLE)
 
@@ -242,8 +243,14 @@ bool start() {
     // HTTPS server/TLS socket is allocated here.
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = kFsdPort;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    // IDF 5.x renamed the server-cert fields; cacert_pem is now client CA only.
+    config.servercert = reinterpret_cast<const uint8_t*>(kFsdTlsCertificate);
+    config.servercert_len = strlen(kFsdTlsCertificate) + 1;
+#else
     config.cacert_pem = reinterpret_cast<const uint8_t*>(kFsdTlsCertificate);
     config.cacert_len = strlen(kFsdTlsCertificate) + 1;
+#endif
     config.prvtkey_pem = reinterpret_cast<const uint8_t*>(kFsdTlsPrivateKey);
     config.prvtkey_len = strlen(kFsdTlsPrivateKey) + 1;
     config.user_cb = tlsUserCallback;
