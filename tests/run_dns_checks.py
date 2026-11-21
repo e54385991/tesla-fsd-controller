@@ -53,14 +53,7 @@ struct String : std::string {
         std::memcpy(dest, c_str(), n); dest[n] = '\0';
     }
 };
-struct DNSFilterConfig {
-    bool enabled;
-    char allowlist[3072] = {}, blocklist[3072] = {};
-    DNSFilterConfig(bool enabled, const char* allow, const char* block) : enabled(enabled) {
-        if (allow) std::snprintf(allowlist, sizeof(allowlist), "%s", allow);
-        if (block) std::snprintf(blocklist, sizeof(blocklist), "%s", block);
-    }
-};
+struct DNSFilterConfig { bool enabled = true; const char* allowlist; const char* blocklist; };
 class DNSWhitelistServer {
   public:
     bool hasDomainRules(const char* rules) const;
@@ -81,30 +74,10 @@ struct CachedIpEntry { uint32_t ipHostOrder; char domain[128]; uint32_t lastSeen
 CachedIpEntry gStagingIps[kStagingCapacity];
 '''
 
-STRICT_PREAMBLE = r'''
-constexpr uint32_t kDnsTtlSeconds = 60;
-struct AllowedAddress { uint32_t ip; uint32_t issuedAt; };
-AllowedAddress gAllowedAddresses[128] = {};
-uint32_t gDnsRulesEpoch = 0;
-uint8_t gApNetifIndex = 0;
-uint8_t gIngressNetifIndex = 0;
-uint32_t gIpForwardDropCount = 0;
-uint32_t nowMs = 0;
-uint32_t millis() { return nowMs; }
-#define portENTER_CRITICAL(mux) do {} while (0)
-#define portEXIT_CRITICAL(mux) do {} while (0)
-#define strlcpy(dest, src, size) std::snprintf(dest, size, "%s", src)
-'''
-
 TESTS = r'''
 int main() {
     DNSWhitelistServer dns;
     unsigned checks = 0;
-#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-    constexpr bool allowUnlisted = false;
-#else
-    constexpr bool allowUnlisted = true;
-#endif
     auto expect = [&](const char* allow, const char* block, const char* domain, bool allowed) {
         DNSFilterConfig config{true, allow, block};
         bool actual = dns.isAllowedDomain(config, normalizeDomainCstr(domain));
@@ -130,10 +103,10 @@ int main() {
     expect("qq.com *.qq.com", "", "qq.com", true);
     expect("qq.com *.qq.com", "", "a.b.qq.com", true);
     // Wildcard blacklists exclude the apex and allow unrelated domains.
-    expect("", "*.qq.com", "qq.com", allowUnlisted);
+    expect("", "*.qq.com", "qq.com", true);
     expect("", "*.qq.com", "music.qq.com", false);
     expect("", "*.qq.com", "a.b.qq.com", false);
-    expect("", "*.qq.com", "fakeqq.com", allowUnlisted);
+    expect("", "*.qq.com", "fakeqq.com", true);
     // The wildcard's two syntax characters must not inflate specificity.
     expect("*.qq.com", "a.qq.com", "a.qq.com", false);
     expect("*.qq.com", "a.qq.com", "child.a.qq.com", false);
@@ -149,46 +122,9 @@ int main() {
     expect("*", "", "music.qq.com", false);
     expect("*.", "", "music.qq.com", false);
     expect("*.qq.com", "", "example.com", false);
-    assert(!dns.isAllowedDomain({true, nullptr, nullptr}, ""));
-#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-    expect("", "", "example.com", false);
-    assert(!dns.isAllowedDomain({false, "example.com", ""}, "example.com"));
-    constexpr uint32_t approved = 0xcb00712a;
-    constexpr uint32_t unknown = 0xc633642a;
-    dnsIpPolicyRecordIngress(2);
-    assert(dnsHookIp4CanForward(unknown) == 0);
-    assert(!rememberAllowedAddress(approved, gDnsRulesEpoch));
-    dnsStrictSetApInterface(2);
-    assert(dnsHookIp4CanForward(approved) == 0);
-    assert(rememberAllowedAddress(approved, gDnsRulesEpoch));
-    assert(dnsHookIp4CanForward(approved) == -1);
-    assert(dnsHookIp4CanForward(unknown) == 0);
-    assert(dnsHookIp4CanForward(0x2a7100cb) == 0);
-    dnsIpPolicyRecordIngress(3);
-    assert(dnsHookIp4CanForward(unknown) == -1);
-    dnsIpPolicyRecordIngress(2);
-    nowMs = 59999;
-    assert(dnsHookIp4CanForward(approved) == -1);
-    nowMs = 60000;
-    assert(dnsHookIp4CanForward(approved) == 0);
-    assert(rememberAllowedAddress(approved, gDnsRulesEpoch));
-    uint32_t staleEpoch = gDnsRulesEpoch;
-    DNSFilterConfig rules{true, "example.com", ""};
-    dnsStrictUpdateRules(rules, true, "example.com", "");
-    assert(gDnsRulesEpoch == staleEpoch);
-    dnsStrictUpdateRules(rules, true, "other.example", nullptr);
-    assert(std::strcmp(rules.allowlist, "other.example") == 0);
-    assert(!rememberAllowedAddress(approved, staleEpoch));
-    assert(dnsHookIp4CanForward(approved) == 0);
-    staleEpoch = gDnsRulesEpoch;
-    dnsStrictClearAddresses();
-    assert(!rememberAllowedAddress(approved, staleEpoch));
-    assert(dnsHookIp4CanForward(approved) == 0);
-    std::puts("Strict IPv4 policy: ingress, unknown IP, TTL and invalidation checks passed");
-#else
     expect("", "", "example.com", true);
+    assert(!dns.isAllowedDomain({true, nullptr, nullptr}, ""));
     assert(dns.isAllowedDomain({false, "*.qq.com", "qq.com"}, "music.qq.com"));
-#endif
     // Neither the full nor incremental IP refresh resolves a wildcard/apex
     // substitute; only literal rules and concrete blocked hosts are resolved.
     assert(buildStaging("*.qq.com qq.com *.tesla.cn api.example.com", 42) == 2);
@@ -217,25 +153,15 @@ def main():
         "bool DNSWhitelistServer::isAllowedDomain(",
         "void resolveAndRememberDomain(", "size_t buildStaging(",
     ]
-    base_functions = "\n".join(function(s) for s in signatures)
-    strict_functions = "\n".join(function(signature) for signature in (
-        "void clearAllowedAddressesLocked(", "bool destinationAllowed(", "bool rememberAllowedAddress(",
-        'extern "C" void dnsIpPolicyRecordIngress(', '\nvoid dnsStrictSetApInterface(int netifIndex) {',
-        '\nvoid dnsStrictClearAddresses() {',
-        '\nvoid dnsStrictUpdateRules(DNSFilterConfig& cfg, bool enabled, const char* allowlist, const char* blocklist) {',
-        'extern "C" int dnsHookIp4CanForward(',
-    ))
+    code = PREAMBLE + "\n".join(function(s) for s in signatures) + TESTS
     with tempfile.TemporaryDirectory(prefix="dns-checks-") as directory:
         source = Path(directory) / "dns.cpp"
         binary = Path(directory) / "dns"
-        for strict in (False, True):
-            extra = STRICT_PREAMBLE + strict_functions if strict else ""
-            flags = ["-DWIFI_BRIDGE_STRICT_ALLOWLIST"] if strict else []
-            source.write_text(PREAMBLE + base_functions + extra + TESTS)
-            subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                            "-fsanitize=address,undefined", "-fno-omit-frame-pointer", *flags, str(source),
-                            "-o", str(binary)], check=True)
-            subprocess.run([str(binary)], check=True)
+        source.write_text(code)
+        subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                        "-fsanitize=address,undefined", "-fno-omit-frame-pointer", str(source),
+                        "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
 
 
 if __name__ == "__main__":

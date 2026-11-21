@@ -323,13 +323,6 @@ static inline void serviceUpstreamWiFi(const char* apSsid) {
     if (thermalThrottleActive() && retryDelay < UPSTREAM_RETRY_THROTTLED_MS) {
         retryDelay = UPSTREAM_RETRY_THROTTLED_MS;
     }
-    // In APSTA mode every WiFi.begin() can briefly disturb the AP (channel
-    // switch/scan), which users see as "connected, then DHCP/IP lost". When a
-    // client is already on the AP and the upstream has failed, retry slowly.
-    if (WiFi.softAPgetStationNum() > 0 && gWifiBridgeCfg.consecutiveFailures > 0 &&
-        retryDelay < UPSTREAM_RETRY_THROTTLED_MS) {
-        retryDelay = UPSTREAM_RETRY_THROTTLED_MS;
-    }
 
     bool shouldRetry = (gWifiBridgeCfg.lastAttemptMillis == 0)
                     || (now - gWifiBridgeCfg.lastAttemptMillis >= retryDelay);
