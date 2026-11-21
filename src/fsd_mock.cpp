@@ -96,7 +96,7 @@ uint32_t gHandshakeOk = 0;
 uint32_t gHandshakeFail = 0;
 uint32_t gLastHandshakeOkMs = 0;
 uint32_t gLastHandshakeFailMs = 0;
-char gLastHandshakeClient[16] = {};
+char gLastHandshakeClient[46] = {};
 char gLastHandshakeTls[16] = {};
 char gLastHandshakeCipher[64] = {};
 char gLastHandshakeAlpn[16] = {};
@@ -146,6 +146,24 @@ void jsonEscape(String& out, const char* value) {
                 // /api/wifi-bridge/status parseable as UTF-8 JSON.
                 if (c < 0x20 || c >= 0x7f) out += '.';
                 else out += static_cast<char>(c);
+                break;
+        }
+    }
+}
+
+void jsonEscape(Print& out, const char* value) {
+    if (!value) return;
+    for (const char* p = value; *p; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        switch (c) {
+            case '\\': out.print("\\\\"); break;
+            case '"': out.print("\\\""); break;
+            case '\n': out.print("\\n"); break;
+            case '\r': out.print("\\r"); break;
+            case '\t': out.print("\\t"); break;
+            default:
+                if (c < 0x20 || c >= 0x7f) out.print('.');
+                else out.write(c);
                 break;
         }
     }
@@ -253,12 +271,26 @@ void copyText(const char* source, size_t sourceLength, char* out, size_t capacit
 
 void socketAddress(int fd, char* out, size_t capacity) {
     out[0] = '\0';
-    if (fd < 0) return;
-    struct sockaddr_in address = {};
-    socklen_t length = sizeof(address);
-    if (getpeername(fd, reinterpret_cast<struct sockaddr*>(&address), &length) != 0) return;
-    const char* text = inet_ntoa(address.sin_addr);
-    if (text) strlcpy(out, text, capacity);
+    if (fd < 0 || capacity == 0) return;
+    // ESP-IDF's httpd listens on a dual-stack IPv6 socket when IPv6 is
+    // enabled; a plain sockaddr_in would read only zeros for v4 clients.
+    struct sockaddr_storage storage = {};
+    socklen_t length = sizeof(storage);
+    if (getpeername(fd, reinterpret_cast<struct sockaddr*>(&storage), &length) != 0) return;
+    if (storage.ss_family == AF_INET) {
+        auto* address = reinterpret_cast<struct sockaddr_in*>(&storage);
+        if (inet_ntop(AF_INET, &address->sin_addr, out, capacity)) return;
+    } else if (storage.ss_family == AF_INET6) {
+        auto* address = reinterpret_cast<struct sockaddr_in6*>(&storage);
+        const uint8_t* bytes = address->sin6_addr.s6_addr;
+        static const uint8_t v4mapped[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
+        if (memcmp(bytes, v4mapped, sizeof(v4mapped)) == 0) {
+            snprintf(out, capacity, "%u.%u.%u.%u", bytes[12], bytes[13], bytes[14], bytes[15]);
+            return;
+        }
+        if (inet_ntop(AF_INET6, &address->sin6_addr, out, capacity)) return;
+    }
+    out[0] = '\0';
 }
 
 void clientAddress(httpd_req_t* request, char* out, size_t capacity) {
@@ -789,7 +821,7 @@ void noteHandshakeFailure(const char* error) {
 }
 
 void noteHandshake(const esp_tls_t* tls) {
-    char client[16] = {};
+    char client[46] = {};
     char version[16] = {};
     char cipher[64] = {};
     char alpn[16] = {};
@@ -1264,7 +1296,7 @@ void appendStatusJson(String& out) {
     const uint32_t hsFail = gHandshakeFail;
     const uint32_t hsOkMs = gLastHandshakeOkMs;
     const uint32_t hsFailMs = gLastHandshakeFailMs;
-    char hsClient[16]; strlcpy(hsClient, gLastHandshakeClient, sizeof(hsClient));
+    char hsClient[46]; strlcpy(hsClient, gLastHandshakeClient, sizeof(hsClient));
     char hsTls[16]; strlcpy(hsTls, gLastHandshakeTls, sizeof(hsTls));
     char hsCipher[64]; strlcpy(hsCipher, gLastHandshakeCipher, sizeof(hsCipher));
     char hsAlpn[16]; strlcpy(hsAlpn, gLastHandshakeAlpn, sizeof(hsAlpn));
@@ -1299,7 +1331,7 @@ void appendStatusJson(String& out) {
     }
     delete last;
 
-    constexpr size_t kStatusRecentLimit = 6;
+    constexpr size_t kStatusRecentLimit = 3;
     out += ",\"recent\":[";
     for (size_t i = 0; i < kStatusRecentLimit; ++i) {
         Hit recent;
@@ -1350,48 +1382,48 @@ static bool readRecentHandshake(size_t index, Handshake& out) {
     return true;
 }
 
-void appendHitsJsonl(String& out) {
+void appendHitsJsonl(Print& out) {
     for (size_t i = 0; i < kRecentHitCapacity; ++i) {
         Hit h;
         if (!readRecentHit(i, h)) break;
-        out += "{\"ts\":\""; jsonEscape(out, h.ts); out += "\"";
-        out += ",\"kind\":\""; jsonEscape(out, h.kind); out += "\"";
-        out += ",\"method\":\""; jsonEscape(out, h.method); out += "\"";
-        out += ",\"url\":\""; jsonEscape(out, h.url); out += "\"";
-        out += ",\"client\":\""; jsonEscape(out, h.client); out += "\"";
-        out += ",\"http_version\":\""; jsonEscape(out, h.httpVersion); out += "\"";
-        out += ",\"host_header\":\""; jsonEscape(out, h.host); out += "\"";
-        out += ",\"user_agent\":\""; jsonEscape(out, h.userAgent); out += "\"";
-        out += ",\"req_bytes\":"; out += String(static_cast<unsigned long>(h.reqBytes));
-        out += ",\"req_md5\":\""; jsonEscape(out, h.reqMd5); out += "\"";
-        out += ",\"req_ctype\":\""; jsonEscape(out, h.reqCtype); out += "\"";
-        out += ",\"vin\":\""; jsonEscape(out, h.vin); out += "\"";
-        out += ",\"mode\":\""; jsonEscape(out, h.mode); out += "\"";
-        out += ",\"req_head\":\""; jsonEscape(out, h.reqHead); out += "\"";
-        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(h.bytes));
-        out += ",\"md5\":\""; jsonEscape(out, h.md5); out += "\"";
-        out += ",\"status\":"; out += String(static_cast<unsigned>(h.status));
-        out += ",\"ctype\":\""; jsonEscape(out, h.respCtype); out += "\"";
-        out += ",\"resp_head\":\""; jsonEscape(out, h.respHead); out += "\"";
-        out += "}\n";
+        out.print("{\"ts\":\""); jsonEscape(out, h.ts); out.print("\"");
+        out.print(",\"kind\":\""); jsonEscape(out, h.kind); out.print("\"");
+        out.print(",\"method\":\""); jsonEscape(out, h.method); out.print("\"");
+        out.print(",\"url\":\""); jsonEscape(out, h.url); out.print("\"");
+        out.print(",\"client\":\""); jsonEscape(out, h.client); out.print("\"");
+        out.print(",\"http_version\":\""); jsonEscape(out, h.httpVersion); out.print("\"");
+        out.print(",\"host_header\":\""); jsonEscape(out, h.host); out.print("\"");
+        out.print(",\"user_agent\":\""); jsonEscape(out, h.userAgent); out.print("\"");
+        out.print(",\"req_bytes\":"); out.print(static_cast<unsigned long>(h.reqBytes));
+        out.print(",\"req_md5\":\""); jsonEscape(out, h.reqMd5); out.print("\"");
+        out.print(",\"req_ctype\":\""); jsonEscape(out, h.reqCtype); out.print("\"");
+        out.print(",\"vin\":\""); jsonEscape(out, h.vin); out.print("\"");
+        out.print(",\"mode\":\""); jsonEscape(out, h.mode); out.print("\"");
+        out.print(",\"req_head\":\""); jsonEscape(out, h.reqHead); out.print("\"");
+        out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(h.bytes));
+        out.print(",\"md5\":\""); jsonEscape(out, h.md5); out.print("\"");
+        out.print(",\"status\":"); out.print(static_cast<unsigned>(h.status));
+        out.print(",\"ctype\":\""); jsonEscape(out, h.respCtype); out.print("\"");
+        out.print(",\"resp_head\":\""); jsonEscape(out, h.respHead); out.print("\"");
+        out.print("}\n");
     }
 }
 
-void appendHandshakesJsonl(String& out) {
+void appendHandshakesJsonl(Print& out) {
     for (size_t i = 0; i < kHandshakeCapacity; ++i) {
         Handshake h;
         if (!readRecentHandshake(i, h)) break;
-        out += "{\"ts\":\""; jsonEscape(out, h.ts); out += "\"";
-        out += ",\"event\":\""; jsonEscape(out, h.event); out += "\"";
-        out += ",\"client\":\""; jsonEscape(out, h.client); out += "\"";
-        out += ",\"sni\":\""; jsonEscape(out, h.sni); out += "\"";
-        out += ",\"alpn\":\""; jsonEscape(out, h.alpn); out += "\"";
-        out += ",\"tls\":\""; jsonEscape(out, h.tls); out += "\"";
-        out += ",\"cipher\":\""; jsonEscape(out, h.cipher); out += "\"";
-        out += ",\"confdir\":\"emudhra\"";
-        out += ",\"error\":\""; jsonEscape(out, h.error); out += "\"";
-        out += ",\"first_request\":\""; jsonEscape(out, h.firstRequest); out += "\"";
-        out += "}\n";
+        out.print("{\"ts\":\""); jsonEscape(out, h.ts); out.print("\"");
+        out.print(",\"event\":\""); jsonEscape(out, h.event); out.print("\"");
+        out.print(",\"client\":\""); jsonEscape(out, h.client); out.print("\"");
+        out.print(",\"sni\":\""); jsonEscape(out, h.sni); out.print("\"");
+        out.print(",\"alpn\":\""); jsonEscape(out, h.alpn); out.print("\"");
+        out.print(",\"tls\":\""); jsonEscape(out, h.tls); out.print("\"");
+        out.print(",\"cipher\":\""); jsonEscape(out, h.cipher); out.print("\"");
+        out.print(",\"confdir\":\"emudhra\"");
+        out.print(",\"error\":\""); jsonEscape(out, h.error); out.print("\"");
+        out.print(",\"first_request\":\""); jsonEscape(out, h.firstRequest); out.print("\"");
+        out.print("}\n");
     }
 }
 

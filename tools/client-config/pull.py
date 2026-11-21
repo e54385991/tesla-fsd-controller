@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import ssl
 import tempfile
 
 
@@ -55,8 +54,8 @@ def lock_output(file):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="9.9.9.9", help="ESP32 address or fsd.local")
-    parser.add_argument("--port", type=int, default=10011, help="client-config HTTPS port (443 is FSD-only)")
-    parser.add_argument("--cert", required=True, help="Public PEM certificate exported over USB")
+    parser.add_argument("--port", type=int, default=10010, help="management port (443 is FSD-only)")
+    parser.add_argument("--cert", help="Ignored; client-config is served over HTTP on the management port")
     parser.add_argument("--output", required=True, type=Path, help="Local configuration file")
     args = parser.parse_args()
     token = os.getenv("ESP32_CLIENT_CONFIG_TOKEN") or getpass.getpass("Client token: ")
@@ -65,12 +64,10 @@ def main():
 
     base = "/api/client-config"
     try:
-        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        tls.load_verify_locations(cafile=args.cert)
         lock_path = args.output.with_name(args.output.name + ".lock")
         with lock_path.open("a+b") as lock:
             lock_output(lock)
-            connection = http.client.HTTPSConnection(args.host, args.port, context=tls, timeout=10)
+            connection = http.client.HTTPConnection(args.host, args.port, timeout=10)
             try:
                 result = request(connection, token, "GET", base)
                 revision, config = result["revision"], result["config"]

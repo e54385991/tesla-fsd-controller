@@ -1953,8 +1953,7 @@ function fsdMsg(text, ok){
   el.style.color = ok === false ? '#fca5a5' : (ok === true ? '#34d399' : '#8a8a8a');
 }
 function fsdSet(qs){
-  if(!tok){ showPin(); return; }
-  fetch('/api/fsd-mock/set?'+qs+'&token='+encodeURIComponent(tok))
+  fetch('/api/fsd-mock/set?'+qs+(tok?'&token='+encodeURIComponent(tok):''))
     .then(function(r){
       if(r.status===200){ toast('已保存','ok'); fsdMsg('已保存，车机下次请求生效', true); brPoll(); if(qs.indexOf('preset=')===0) fsdLoadPayload(); }
       else if(r.status===403){ showPin(); }
@@ -1983,11 +1982,10 @@ function fsdDownloadHits(){
   window.open('/api/fsd-mock/hits'+(tok?'?token='+encodeURIComponent(tok):''), '_blank');
 }
 function fsdSave(){
-  if(!tok){ showPin(); return; }
   var editor = document.getElementById('fsdPayload');
   var text = editor ? editor.value.trim() : '';
   if(!text){ fsdMsg('请输入 JSON 对象', false); return; }
-  fetch('/api/fsd-mock/payload?token='+encodeURIComponent(tok), {
+  fetch('/api/fsd-mock/payload'+(tok?'?token='+encodeURIComponent(tok):''), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: text
@@ -1998,6 +1996,8 @@ function fsdSave(){
         fsdMsg('已保存并下发', true);
         toast('配置已下发','ok');
         brPoll();
+      } else if(r.status===403){
+        showPin();
       } else {
         var reason = '保存失败';
         try { reason = JSON.parse(t).error || reason; } catch(e) {}
@@ -2014,8 +2014,7 @@ function fsdAgo(nowMs, thenMs){
   return Math.floor(sec/3600)+' 小时前';
 }
 function fsdClearHandshakes(){
-  if(!tok){ showPin(); return; }
-  fetch('/api/fsd-mock/handshakes-clear?token='+encodeURIComponent(tok), {method:'POST'})
+  fetch('/api/fsd-mock/handshakes-clear'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
     .then(function(r){
       if(r.status===200){ fsdMsg('握手日志已清空', true); brPoll(); }
       else if(r.status===403){ showPin(); }
@@ -2026,8 +2025,7 @@ function fsdDownloadHandshakes(){
   window.open('/api/fsd-mock/handshakes'+(tok?'?token='+encodeURIComponent(tok):''), '_blank');
 }
 function fsdClearHits(){
-  if(!tok){ showPin(); return; }
-  fetch('/api/fsd-mock/hits-clear?token='+encodeURIComponent(tok), {method:'POST'})
+  fetch('/api/fsd-mock/hits-clear'+(tok?'?token='+encodeURIComponent(tok):''), {method:'POST'})
     .then(function(r){
       if(r.status===200){ fsdMsg('命中记录已清空', true); brPoll(); }
       else if(r.status===403){ showPin(); }

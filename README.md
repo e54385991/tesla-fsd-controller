@@ -301,15 +301,15 @@ LEGACY 的具体发帧条件、配置范围和验证方式见 [LEGACY CAN 发帧
 
 ### 自有客户端 HTTPS 配置发布
 
-ESP32-S3 Wi-Fi 桥接固件提供 `https://9.9.9.9:10011/`（端口 `10011`），用于给显式连接此服务的自有客户端发布 JSON 配置。**`443` 固定留给 FSD 下发**（`/feature_configuration` 回包和其余路径反代），不再提供 client-config 页面或 API；设备管理面板仍在 `http://9.9.9.9:10010/`。10011 与 443 使用同一套 eMudhra 证书链（leaf ← `EM OV TLS CA - G3C` ← `emSign Root TLS CA - G3` ← `emSign ECC Root CA - G3`）；管理令牌和客户端令牌仍由设备首次启动时生成并保存在 NVS。
+ESP32-S3 Wi-Fi 桥接固件在管理端口 `http://9.9.9.9:10010/client-config` 提供自有客户端 JSON 配置页面/API。**`443` 固定留给 FSD 下发**（`/feature_configuration` 回包和其余路径反代），不再注册 client-config；设备管理面板在 `http://9.9.9.9:10010/`。client-config 与 443 共用同一组管理/客户端令牌（首次启动生成并保存在 NVS），但 HTTP API 不再需要单独安装证书。
 
-1. 连接设备的 USB 串口（115200），发送 `client-config` 并附换行。将返回的 PEM 信任包（emSign ECC Root + EM OV TLS CA - G3C + cross-sign）保存为 `device.pem`，并保管管理令牌和客户端令牌。升级到本版本后，旧版每台设备自签的 `device.pem` 不再适用，需要重新导出。
-2. 连接设备热点，将该证书加入浏览器或系统信任，然后访问 `https://9.9.9.9:10011/`，用管理令牌读取、发布或回滚配置。JSON 对象上限为 1024 字节（紧凑编码）。
+1. 连接设备的 USB 串口（115200），发送 `client-config` 并附换行。会返回 443 FSD 使用的 eMudhra 信任包（emSign ECC Root + EM OV TLS CA - G3C + cross-sign）以及管理令牌、客户端令牌。PEM 仅用于信任 443 的 FSD 证书；client-config 页面不再需要它。
+2. 连接设备热点，打开 `http://9.9.9.9:10010/client-config`，用管理令牌读取、发布或回滚配置。JSON 对象上限为 1024 字节（紧凑编码）。
 3. 连到设备热点的客户端可用下面的命令拉取配置并原子写入本地文件。脚本提示输入客户端令牌，写入成功后回报应用版本。管理页点「读取」可查看最新确认。
 
    ```sh
-   python3 tools/client-config/pull.py --cert device.pem --output client-settings.json
-   # 默认连接 9.9.9.9:10011；如需改地址/端口：--host 9.9.9.9 --port 10011
+   python3 tools/client-config/pull.py --output client-settings.json
+   # 默认连接 http://9.9.9.9:10010；如需改地址/端口：--host 9.9.9.9 --port 10010
    ```
 
 客户端凭据可读取及确认配置。管理凭据可读取、发布和回滚。设备保留当前版本和上一份配置，回滚时发布新版本。确认状态记录持有客户端令牌的一方最近一次成功确认的版本。
@@ -340,9 +340,9 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json`（看板认定原版）|
 
-**端口分工**：管理面板固定 `http://9.9.9.9:10010/`；`443` 只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代），不注册 client-config 页面；client-config 自服务在 `https://9.9.9.9:10011/`。
+**端口分工**：管理面板和 client-config 都固定在 `http://9.9.9.9:10010/`（页面 `/client-config`，API `/api/client-config`）；`443` 只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代），不注册 client-config 页面。这样只保留一个 HTTPS 服务器，避免第二个 TLS 任务/套接字占用约 40 KB 堆内存。
 
-**证书**：443 服务使用与 Windows `--emudhra` 相同的 eMudhra 链，而不是 mitmproxy 自签 CA。叶子 `CN=api-prd.vn.cloud.tesla.cn` 由 `EM OV TLS CA - G3C` 签发，链到 `emSign Root TLS CA - G3` / `emSign ECC Root CA - G3`；SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`fsd.local`、`9.9.9.9`、`127.0.0.1`。车机通常已信任 emSign 根，所以**不需要安装证书**；如果车机不信任 emSign，把串口导出的 `EM OV TLS CA - G3C` 中间 CA 装进车机信任库即可。叶子私钥随源码公开（eMudhra 中间 CA 已失陷），仅适用于实验环境。
+**证书**：443 服务使用与 Windows `--emudhra` **完全相同**的证书材料，而不是 mitmproxy 自签 CA。叶子按 mitmproxy 的 199 天有效期生成（当前为 2026-11-19 → 2027-06-06）；到期后需重新生成叶子或更新固件，否则车机可能拒绝握手。`include/fsd_tls_identity.h` 里的 3 张中间/根证书与 mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` **逐字节一致**（`EM OV TLS CA - G3C` → `emSign Root TLS CA - G3` → `emSign ECC Root CA - G3`，并带 AAA Certificate Services 交叉签名）。叶子按 mitmproxy 的 `dummy_cert()` 规则生成：同一把失陷 `EM OV TLS CA - G3C` 私钥/公钥、`CN=api-prd.vn.cloud.tesla.cn, O=Tesla Inc.`、Tesla 上游 SAN、EKU/AKI，199 天有效期（notBefore -2 天）。额外 SAN 保留 `mothership.vn.teslamotors.com`、`fsd.local`、`9.9.9.9`、`127.0.0.1` 供本机面板/client-config 使用。车机通常已信任 emSign 根，所以**不需要安装证书**；如果车机不信任 emSign，把串口导出的 `EM OV TLS CA - G3C` 中间 CA 装进车机信任库即可。叶子私钥随源码公开（eMudhra 中间 CA 已失陷），仅适用于实验环境。
 
 **回复 / 观察模式**：与 Windows `mode.json` 一致。`reply` 直接回包；`observe` 只记录并转发到上游，不返回 ESP32 载荷。可在面板 DNS 页的「FSD 下发」卡片切换。劫持判断排在 DNS 黑白名单之前，因此即使白名单没有 `api-prd`、或 DNS 过滤关闭，只要 FSD 下发开启，该域名仍会被劫持。
 
@@ -353,6 +353,7 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 - 读取载荷：`GET /api/fsd-mock/payload`（返回当前 compact JSON）。
 - 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 8192 字节）。
 - 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`POST /api/fsd-mock/handshakes-clear`、`GET /api/fsd-mock/hits`、`GET /api/fsd-mock/handshakes`（RAM JSONL 导出）。
+- 串口恢复（115200，附换行）：`fsd-payload` 打印当前 compact JSON；`fsd-default` / `fsd-16f` / `fsd-282b` 直接加载对应预设并写入 SPIFFS。`wifi-diag` 会同时打印载荷字节/md5、命中/握手计数和堆/SPIFFS 余量。
 - **FSD 日志不写 SPIFFS**：命中/握手只保留在 RAM 环形缓冲区（命中 16 条、握手 8 条），重启即清空；这样可以避免日志占满闪存导致 payload 无法保存，也符合“后台可看、不落盘”的要求。
 
 > 与 Windows 的差异：ESP32 的 observe/透传转发常用 Tesla 请求头（Authorization、Content-Type、Accept、Accept-Encoding、User-Agent、Cookie、条件请求等）并回传 Content-Encoding/Location/Set-Cookie 等响应头，请求体上限 8 KB；mitmproxy 没有这些限制。日志预览的 `req_head` 保留前 64 字节（Windows 为 256 字节）以控制 RAM。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。

@@ -18,6 +18,7 @@
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <SPIFFS.h>
+#include <sys/time.h>
 
 #include "can_frame_types.h"
 #include "drivers/twai_driver.h"
@@ -541,6 +542,70 @@ static void fsdPayloadRequest(AsyncWebServerRequest* req) {
         return;
     }
     req->send(200, "application/json", "{\"ok\":true}");
+}
+
+// Client-config API lives on the 10010 management server. It uses its own
+// Bearer tokens (admin/client), independent of the panel PIN token.
+struct ClientConfigUpload {
+    String body;
+    bool tooLarge = false;
+};
+
+static void clientConfigBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                             size_t index, size_t total) {
+    if (index == 0) {
+        auto* upload = new (std::nothrow) ClientConfigUpload();
+        req->_tempObject = upload;
+        if (!upload) return;
+        if (total > 2048) {
+            upload->tooLarge = true;
+            return;
+        }
+        upload->body.reserve(static_cast<unsigned int>(total));
+    }
+    auto* upload = static_cast<ClientConfigUpload*>(req->_tempObject);
+    if (upload && !upload->tooLarge) {
+        if (upload->body.length() + len > 2048) {
+            upload->tooLarge = true;
+        } else {
+            upload->body.concat(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len));
+        }
+    }
+}
+
+static void sendClientConfigJson(AsyncWebServerRequest* req, int status, const String& body) {
+    auto* response = req->beginResponse(status, "application/json; charset=utf-8", body);
+    response->addHeader("Cache-Control", "no-store");
+    if (status == 401) response->addHeader("WWW-Authenticate", "Bearer");
+    req->send(response);
+}
+
+static void clientConfigGet(AsyncWebServerRequest* req) {
+    String body;
+    int status = 500;
+    client_config::apiGet(req->header("Authorization").c_str(), body, status);
+    sendClientConfigJson(req, status, body);
+}
+
+static void clientConfigChange(AsyncWebServerRequest* req, client_config::Change change) {
+    auto* upload = static_cast<ClientConfigUpload*>(req->_tempObject);
+    req->_tempObject = nullptr;
+    if (!upload) {
+        sendClientConfigJson(req, 400, "{\"error\":\"missing_body\"}");
+        return;
+    }
+    if (upload->tooLarge) {
+        delete upload;
+        sendClientConfigJson(req, 413, "{\"error\":\"config_too_large\"}");
+        return;
+    }
+    String body;
+    int status = 500;
+    client_config::apiChange(req->header("Authorization").c_str(),
+                             upload->body.c_str(), upload->body.length(),
+                             change, body, status);
+    delete upload;
+    sendClientConfigJson(req, status, body);
 }
 #endif
 
@@ -1118,6 +1183,9 @@ void setupWebServer() {
         timeUnixBase   = ts;
         timeMillisBase = millis();
         timeSynced     = true;
+        struct timeval tv = {};
+        tv.tv_sec = ts;
+        settimeofday(&tv, nullptr);
         req->send(200, "text/plain", "OK");
     });
 
@@ -1319,7 +1387,7 @@ void setupWebServer() {
         size_t recentBlocked = gDnsFilter.copyBlockedDomains(entries, kDnsBlockedDomainCapacity, totalBlocked);
 
         String json;
-        json.reserve(10240);
+        json.reserve(6144);
         json += "{";
         json += "\"upstreamEnable\":"; json += (gWifiBridgeCfg.enabled ? "true" : "false");
         json += ",\"upstreamConnected\":"; json += (upConnected ? "true" : "false");
@@ -1492,6 +1560,27 @@ void setupWebServer() {
     });
 
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
+    // ── Self-service client config (served on the 10010 management port) ──────
+    server.on(AsyncURIMatcher::exact("/client-config"), HTTP_GET, [](AsyncWebServerRequest* req) {
+        String html(client_config::dashboardHtml());
+        auto* response = req->beginResponse(200, "text/html; charset=utf-8", html);
+        response->addHeader("Cache-Control", "no-store");
+        response->addHeader("Content-Security-Policy",
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+        req->send(response);
+    });
+    server.on(AsyncURIMatcher::exact("/api/client-config"), HTTP_GET, clientConfigGet);
+    server.on(AsyncURIMatcher::exact("/api/client-config"), HTTP_PUT,
+        [](AsyncWebServerRequest* req) { clientConfigChange(req, client_config::Change::Publish); },
+        nullptr, clientConfigBody);
+    server.on(AsyncURIMatcher::exact("/api/client-config/rollback"), HTTP_POST,
+        [](AsyncWebServerRequest* req) { clientConfigChange(req, client_config::Change::Rollback); },
+        nullptr, clientConfigBody);
+    server.on(AsyncURIMatcher::exact("/api/client-config/ack"), HTTP_POST,
+        [](AsyncWebServerRequest* req) { clientConfigChange(req, client_config::Change::Acknowledge); },
+        nullptr, clientConfigBody);
+
     // ── FSD payload mock (TeslaDG fsd_mock.py parity) ─────────────────────────
     server.on("/api/fsd-mock/set", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
@@ -1546,11 +1635,9 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/hits", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
-        String body;
-        body.reserve(4096);
-        fsd_mock::appendHitsJsonl(body);
-        auto* response = req->beginResponse(200, "application/x-ndjson", body);
+        auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
+        fsd_mock::appendHitsJsonl(*response);
         req->send(response);
     });
 
@@ -1562,11 +1649,9 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/handshakes", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
-        String body;
-        body.reserve(2048);
-        fsd_mock::appendHandshakesJsonl(body);
-        auto* response = req->beginResponse(200, "application/x-ndjson", body);
+        auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
+        fsd_mock::appendHandshakesJsonl(*response);
         req->send(response);
     });
 #endif
@@ -1890,6 +1975,9 @@ void canTask(void* param) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
+    // Match TesladDG/Python local log timestamps (China Standard Time).
+    setenv("TZ", "CST-8", 1);
+    tzset();
     DLOGLN("\n=== Tesla Controller ===");
 
     // LED
@@ -2119,15 +2207,9 @@ void setup() {
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     const bool fsdHttpsAvailable = !safeModeActive && client_config::start();
-    const bool clientConfigAvailable = fsdHttpsAvailable && client_config::configStarted();
     if (!safeModeActive) {
         addDiagLog(fsdHttpsAvailable ? 0 : 1,
             fsdHttpsAvailable ? "FSD HTTPS on 443 started" : "FSD HTTPS startup failed");
-        if (fsdHttpsAvailable) {
-            addDiagLog(clientConfigAvailable ? 0 : 1,
-                clientConfigAvailable ? "Client config HTTPS on 10011 started"
-                                      : "Client config HTTPS startup failed");
-        }
     }
 #endif
 
@@ -2136,7 +2218,6 @@ void setup() {
         MDNS.addService("http", "tcp", kManagementPort);
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
         if (fsdHttpsAvailable) MDNS.addService("https", "tcp", client_config::kFsdPort);
-        if (clientConfigAvailable) MDNS.addService("client-config", "tcp", client_config::kClientConfigPort);
 #endif
         DLOGLN("mDNS: fsd.local");
         addDiagLog(0, "mDNS: fsd.local");

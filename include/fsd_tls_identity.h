@@ -2,30 +2,35 @@
 
 // TLS identity for the port-443 feature_configuration reply.
 //
-// Matches TeslaDG's `--emudhra` mode, NOT the regular mitmproxy CA:
-//   leaf  CN=api-prd.vn.cloud.tesla.cn, issuer EM OV TLS CA - G3C
+// Byte-for-byte the same chain as mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM`
+// (TeslaDG start_hotspot.ps1 --emudhra), NOT the regular mitmproxy CA:
+//   leaf  CN=api-prd.vn.cloud.tesla.cn, O=Tesla Inc., issuer EM OV TLS CA - G3C
 //   chain EM OV TLS CA - G3C -> emSign Root TLS CA - G3 -> emSign ECC Root CA - G3
+//   plus the AAA Certificate Services cross-sign, in mitmproxy's order.
+// The leaf is generated exactly like mitmproxy's dummy_cert(): it uses the
+// compromised EM OV TLS CA - G3C key pair, mirrors Tesla's subject/SANs,
+// carries only EKU + AKI + SAN, and is valid for 199 days (notBefore -2d).
 // The car trusts the emSign root, so no certificate installation is required.
-// Windows uses the same compromised eMudhra intermediate key to sign its leaf.
-//
-// SANs: api-prd.vn.cloud.tesla.cn, mothership.vn.teslamotors.com, fsd.local,
-//       9.9.9.9, 127.0.0.1.
-// The private key is public in this repository: lab use only.
+// SANs additionally include mothership.vn.teslamotors.com, fsd.local, 9.9.9.9,
+// 127.0.0.1 for the ESP32 panel/client-config endpoint. Lab use only.
 
 static constexpr char kFsdTlsCertificate[] = R"PEM(-----BEGIN CERTIFICATE-----
-MIICaDCCAe+gAwIBAgIUF8YO5XiIhXmSfj4BqHwnFFYs7E8wCgYIKoZIzj0EAwIw
+MIIC6DCCAm6gAwIBAgIUEvmcygzJxfzK9nLSnTaGdKy/hDwwCgYIKoZIzj0EAwIw
 QDELMAkGA1UEBhMCVVMxFDASBgNVBAoMC2VNdWRocmEgSW5jMRswGQYDVQQDDBJF
-TSBPViBUTFMgQ0EgLSBHM0MwHhcNMjYxMTE5MDAwMDAwWhcNMzgxMTE5MDAwMDAw
-WjA2MSIwIAYDVQQDDBlhcGktcHJkLnZuLmNsb3VkLnRlc2xhLmNuMRAwDgYDVQQK
-DAdUZXNsYURHMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEE4JRzVKskpjByKrZdzId
-65fnCb0LTKCspV3IrVHc/J0ViaFZfjpRIOHv1jHGPhg1ysrimGmmLhYx6KKBgatW
-YW3EXZGKvAnzqw5jz3kqpNztc4e+N7ulaVSfHAKycO1no4GzMIGwMAwGA1UdEwEB
-/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMB8GA1Ud
-IwQYMBaAFDTq6gzryQra+dDF4u2beMmHnhtsMFoGA1UdEQRTMFGCGWFwaS1wcmQu
-dm4uY2xvdWQudGVzbGEuY26CHW1vdGhlcnNoaXAudm4udGVzbGFtb3RvcnMuY29t
-gglmc2QubG9jYWyHBAkJCQmHBH8AAAEwCgYIKoZIzj0EAwIDZwAwZAIwa18WwKsq
-3hv7Ny/UDSFhsXDJ9TEwe/BQk+5gxuPGswZrfPWfsLOWEIVORZtoj+BMAjAG2V9i
-BLAGoA91WzmOv9xikOUNC6uabWkMan8ZFU+Hmh9rsV8t52Vrmool55YLDMI=
+TSBPViBUTFMgQ0EgLSBHM0MwHhcNMjYxMTE5MDYwNDAxWhcNMjcwNjA2MDYwNDAx
+WjA5MSIwIAYDVQQDDBlhcGktcHJkLnZuLmNsb3VkLnRlc2xhLmNuMRMwEQYDVQQK
+DApUZXNsYSBJbmMuMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEE4JRzVKskpjByKrZ
+dzId65fnCb0LTKCspV3IrVHc/J0ViaFZfjpRIOHv1jHGPhg1ysrimGmmLhYx6KKB
+gatWYW3EXZGKvAnzqw5jz3kqpNztc4e+N7ulaVSfHAKycO1no4IBLjCCASowEwYD
+VR0lBAwwCgYIKwYBBQUHAwEwHwYDVR0jBBgwFoAUNOrqDOvJCtr50MXi7Zt4yYee
+G2wwgfEGA1UdEQSB6TCB5oIZYXBpLXByZC52bi5jbG91ZC50ZXNsYS5jboIiYXBp
+LWNuLW5vcnRoLXByZC52bi5jbG91ZC50ZXNsYS5jboIjZGV2aWNlLWFwaS5wcmQu
+Y24udm4uY2xvdWQudGVzbGEuY26CJGRldmljZS1hcGkucHJkLmV1LnZuLmNsb3Vk
+LnRlc2xhLmNvbYIkZGV2aWNlLWFwaS5wcmQubmEudm4uY2xvdWQudGVzbGEuY29t
+gh1tb3RoZXJzaGlwLnZuLnRlc2xhbW90b3JzLmNvbYIJZnNkLmxvY2FshwQJCQkJ
+hwR/AAABMAoGCCqGSM49BAMCA2gAMGUCMQDfGUKcd49LxU7G4N2YlL5rfx90OQMN
+CR6NovyjU/i7+8n/ACs7NCA5+HI5fEPGgs8CMGSYi5FRhANbpkQIylf3h9tjipYV
+RXqFyJq1UpnVQAngun/xvrSqwyEsanrs1qStUA==
 -----END CERTIFICATE-----
 -----BEGIN CERTIFICATE-----
 MIIDaDCCAu6gAwIBAgIPKWkmwiejoVJjkrGUgqUEMAoGCCqGSM49BAMDMFYxCzAJ

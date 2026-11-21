@@ -25,7 +25,7 @@ constexpr size_t kPayloadCapacity = 8193;   // Windows /payload limit is 8192 B
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 16;   // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 8;    // RAM ring, not persisted
-constexpr size_t kLastResponseCapacity = 513;
+constexpr size_t kLastResponseCapacity = 1025;  // full 602B payload + headroom
 
 enum class Mode : uint8_t {
     Reply = 0,
@@ -37,12 +37,12 @@ enum class Mode : uint8_t {
 struct Hit {
     char kind[8] = {};          // HIT / OBSERVE / FLOW
     char ts[32] = {};
-    char client[16] = {};
+    char client[46] = {};
     char method[8] = {};
     char url[256] = {};
     char host[96] = {};
     char userAgent[48] = {};
-    char httpVersion[8] = {};
+    char httpVersion[16] = {};
     char vin[18] = {};
     char reqMd5[33] = {};
     char reqCtype[32] = {};
@@ -61,7 +61,7 @@ struct Hit {
 struct Handshake {
     char event[16] = {};
     char ts[32] = {};
-    char client[16] = {};
+    char client[46] = {};
     char sni[96] = {};
     char alpn[16] = {};
     char tls[16] = {};
@@ -106,8 +106,8 @@ uint32_t dnsRedirectCount();
 void appendStatusJson(String& out);
 
 // RAM log export (JSONL) for /api/fsd-mock/hits and /handshakes.
-void appendHitsJsonl(String& out);
-void appendHandshakesJsonl(String& out);
+void appendHitsJsonl(Print& out);
+void appendHandshakesJsonl(Print& out);
 
 size_t recentHits(Hit* out, size_t capacity);
 size_t recentHandshakes(Handshake* out, size_t capacity);

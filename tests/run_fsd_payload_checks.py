@@ -30,6 +30,24 @@ def check_tls_identity() -> None:
     assert "api-prd.vn.cloud.tesla.cn" in TLS_HEADER
     assert "9.9.9.9" in TLS_HEADER
 
+    # The three non-leaf certs must stay byte-identical to mitmproxy 12.3.1
+    # EMUDHRA_CHAIN_PEM (certs.py), in the same order.
+    certs = re.findall(
+        r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", chain, re.S
+    )
+    assert len(certs) == 4
+    import base64
+    import hashlib
+    fingerprints = [
+        hashlib.sha256(base64.b64decode("".join(cert.split()))).hexdigest()
+        for cert in certs[1:]
+    ]
+    assert fingerprints == [
+        "cb6e15165ac802e9b3f993f16c25d41f4e81c21ebde71ae1b012ac00bf9c7c3f",
+        "3094025792039a68af6e553686410bdab7c0d4a36b9084cba64202e35d6ebbdd",
+        "7485b51c0ed192878fa1d2f948fb529ae1842cc5086c4b67f7be5b2039de9489",
+    ], "eMudhra chain no longer matches mitmproxy --emudhra"
+
     openssl = shutil.which("openssl")
     if not openssl:
         return
@@ -50,6 +68,12 @@ def check_tls_identity() -> None:
         ).stdout
         assert "api-prd.vn.cloud.tesla.cn" in san
         assert "9.9.9.9" in san
+        subject = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-subject"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "CN=api-prd.vn.cloud.tesla.cn" in subject
+        assert "O=Tesla Inc." in subject
 
 
 def check_response_contract() -> None:
@@ -79,15 +103,20 @@ def check_response_contract() -> None:
 
 
 def check_port_policy() -> None:
-    """443 is FSD-only; the management UI defaults to 10010."""
+    """443 is FSD-only; management + client-config share port 10010."""
     main = (ROOT / "src/main.cpp").read_text()
     mod = (ROOT / "include/mod_client_config.h").read_text()
+    server = (ROOT / "src/client_config.cpp").read_text()
     assert "kManagementPort = 10010" in main
     assert "constexpr uint16_t kFsdPort = 443;" in mod
-    assert "constexpr uint16_t kClientConfigPort = 10011;" in mod
-    server = (ROOT / "src/client_config.cpp").read_text()
-    assert "startServer(fsdServer, kFsdPort" in server
-    assert "startServer(configServer, kClientConfigPort" in server
+    assert "kClientConfigPort" not in mod
+    assert "kClientConfigPort" not in server
+    assert "config.port_secure = kFsdPort;" in server
+    # Client-config must be registered on the AsyncWebServer (10010), not 443.
+    assert '"/client-config"' in main
+    assert '"/api/client-config"' in main
+    assert "client_config::apiGet" in main
+    assert "client_config::apiChange" in main
 
 
 def payloads() -> list[str]:

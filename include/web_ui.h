@@ -1281,7 +1281,10 @@ function brPoll(){
 }
 function fsdSetP(qs){
   fetch('/api/fsd-mock/set?'+qs+(token?'&token='+token:''))
-    .then(function(r){msg('fsdMsgP',r.ok?'已保存':'保存失败',r.ok);brPoll();});
+    .then(function(r){
+      if(r.status===403){ token=''; try{sessionStorage.removeItem('fsd_tok');}catch(e){} showPinStep(); return; }
+      msg('fsdMsgP',r.ok?'已保存':'保存失败',r.ok);brPoll();
+    });
 }
 function fsdToggleP(){
   fsdSetP('enabled='+(document.getElementById('fsdEn').checked?1:0));
@@ -1309,6 +1312,7 @@ function fsdSaveP(){
   fetch('/api/fsd-mock/payload'+(token?'?token='+token:''),{
     method:'POST',headers:{'Content-Type':'application/json'},body:text
   }).then(function(r){
+    if(r.status===403){ token=''; try{sessionStorage.removeItem('fsd_tok');}catch(e){} showPinStep(); return; }
     r.text().then(function(t){
       var ok=r.status===200;
       if(ok) fsdDirtyP=false;
