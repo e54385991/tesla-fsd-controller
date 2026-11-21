@@ -401,18 +401,23 @@ void recordHit(const Hit& hit, const char* responseBody) {
     else ++gHitTotal;
     portEXIT_CRITICAL(&gHitMux);
 
-    portENTER_CRITICAL(&gLastResponseMux);
-    strlcpy(gLastResponse.kind, hit.kind, sizeof(gLastResponse.kind));
-    gLastResponse.status = hit.status;
-    strlcpy(gLastResponse.ctype, hit.respCtype, sizeof(gLastResponse.ctype));
-    strlcpy(gLastResponse.md5, hit.md5, sizeof(gLastResponse.md5));
-    gLastResponse.bytes = hit.bytes;
-    const size_t length = responseBody ? strlen(responseBody) : 0;
-    const size_t copy = length < sizeof(gLastResponse.body) - 1
-        ? length : sizeof(gLastResponse.body) - 1;
-    if (copy) memcpy(gLastResponse.body, responseBody, copy);
-    gLastResponse.body[copy] = '\0';
-    portEXIT_CRITICAL(&gLastResponseMux);
+    // The panel's "最新回包" is an FSD view. Non-FSD FLOW responses (for
+    // example Tesla's mTLS 400 for a command probe) stay in the log/recent
+    // list but must not overwrite the last HIT/OBSERVE body.
+    if (strcmp(hit.kind, "FLOW") != 0) {
+        portENTER_CRITICAL(&gLastResponseMux);
+        strlcpy(gLastResponse.kind, hit.kind, sizeof(gLastResponse.kind));
+        gLastResponse.status = hit.status;
+        strlcpy(gLastResponse.ctype, hit.respCtype, sizeof(gLastResponse.ctype));
+        strlcpy(gLastResponse.md5, hit.md5, sizeof(gLastResponse.md5));
+        gLastResponse.bytes = hit.bytes;
+        const size_t length = responseBody ? strlen(responseBody) : 0;
+        const size_t copy = length < sizeof(gLastResponse.body) - 1
+            ? length : sizeof(gLastResponse.body) - 1;
+        if (copy) memcpy(gLastResponse.body, responseBody, copy);
+        gLastResponse.body[copy] = '\0';
+        portEXIT_CRITICAL(&gLastResponseMux);
+    }
 
     updateLatestHandshake(hit);
 }
