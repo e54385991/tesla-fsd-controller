@@ -9,15 +9,16 @@
 //   plus the AAA Certificate Services cross-sign, in mitmproxy's order.
 // The leaf is generated exactly like mitmproxy's dummy_cert(): it uses the
 // compromised EM OV TLS CA - G3C key pair, mirrors Tesla's subject/SANs,
-// carries only EKU + AKI + SAN, and is valid for 199 days (notBefore -2d).
+// carries only EKU + AKI + SAN, and uses the same validity window as
+// TeslaDG/app/certs2/mitmproxy-ca-cert.pem (2026-11-07 -> 2036-11-04).
 // The car trusts the emSign root, so no certificate installation is required.
 // SANs additionally include mothership.vn.teslamotors.com, fsd.local, 9.9.9.9,
 // 127.0.0.1 for the ESP32 panel/client-config endpoint. Lab use only.
 
 static constexpr char kFsdTlsCertificate[] = R"PEM(-----BEGIN CERTIFICATE-----
-MIIC6DCCAm6gAwIBAgIUEvmcygzJxfzK9nLSnTaGdKy/hDwwCgYIKoZIzj0EAwIw
+MIIC6DCCAm6gAwIBAgIUTVaWpuNDmkkTuX479NAcs3QycLQwCgYIKoZIzj0EAwIw
 QDELMAkGA1UEBhMCVVMxFDASBgNVBAoMC2VNdWRocmEgSW5jMRswGQYDVQQDDBJF
-TSBPViBUTFMgQ0EgLSBHM0MwHhcNMjYxMTE5MDYwNDAxWhcNMjcwNjA2MDYwNDAx
+TSBPViBUTFMgQ0EgLSBHM0MwHhcNMjYxMTA3MjI1NDQ1WhcNMzYxMTA0MjI1NDQ1
 WjA5MSIwIAYDVQQDDBlhcGktcHJkLnZuLmNsb3VkLnRlc2xhLmNuMRMwEQYDVQQK
 DApUZXNsYSBJbmMuMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEE4JRzVKskpjByKrZ
 dzId65fnCb0LTKCspV3IrVHc/J0ViaFZfjpRIOHv1jHGPhg1ysrimGmmLhYx6KKB
@@ -28,9 +29,9 @@ LWNuLW5vcnRoLXByZC52bi5jbG91ZC50ZXNsYS5jboIjZGV2aWNlLWFwaS5wcmQu
 Y24udm4uY2xvdWQudGVzbGEuY26CJGRldmljZS1hcGkucHJkLmV1LnZuLmNsb3Vk
 LnRlc2xhLmNvbYIkZGV2aWNlLWFwaS5wcmQubmEudm4uY2xvdWQudGVzbGEuY29t
 gh1tb3RoZXJzaGlwLnZuLnRlc2xhbW90b3JzLmNvbYIJZnNkLmxvY2FshwQJCQkJ
-hwR/AAABMAoGCCqGSM49BAMCA2gAMGUCMQDfGUKcd49LxU7G4N2YlL5rfx90OQMN
-CR6NovyjU/i7+8n/ACs7NCA5+HI5fEPGgs8CMGSYi5FRhANbpkQIylf3h9tjipYV
-RXqFyJq1UpnVQAngun/xvrSqwyEsanrs1qStUA==
+hwR/AAABMAoGCCqGSM49BAMCA2gAMGUCMEtkGxBw4LKOHlrLK0IWLMS2UdCxjHYc
+BAQeMi2tL6a9poNNuhWgUP0bKkAwm8dH5AIxAKduGPqWCq1zqQPKxU+kMxW1rWdI
+sZDzefdjJ8SoHQU2yd7VO95QKUedvNGIoZWtJA==
 -----END CERTIFICATE-----
 -----BEGIN CERTIFICATE-----
 MIIDaDCCAu6gAwIBAgIPKWkmwiejoVJjkrGUgqUEMAoGCCqGSM49BAMDMFYxCzAJ
