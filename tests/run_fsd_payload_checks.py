@@ -52,6 +52,44 @@ def check_tls_identity() -> None:
         assert "9.9.9.9" in san
 
 
+def check_response_contract() -> None:
+    """TeslaDG/app/fsd_mock.py reply contract + RAM-only logging."""
+    source = (ROOT / "src/fsd_mock.cpp").read_text()
+    for needle in (
+        'httpd_resp_set_type(request, "application/json")',
+        'httpd_resp_set_hdr(request, "X-Checksum", checksum)',
+        'httpd_resp_set_hdr(request, "Cache-Control", "no-store")',
+        'setStatusLine(request, 200)',
+        'const bool observe = mode() == Mode::Observe',
+        'strlcpy(hit.kind, observe ? "OBSERVE" : "HIT"',
+        'gHits[gHitWrite] = hit',
+        'Handshake& handshake = gHandshakes[gHandshakeWrite]',
+        'esp_http_client_open(client, bodyLength)',
+        'esp_http_client_fetch_headers(client)',
+        'httpd_resp_send_chunk(request, buffer, read)',
+    ):
+        assert needle in source, f"missing reply contract: {needle}"
+    # Only removal of the old persisted logs is allowed; no append handles.
+    assert 'open("/fsd_hits.jsonl"' not in source
+    assert 'open("/fsd_handshake.log"' not in source
+    assert source.count('SPIFFS.remove("/fsd_hits.jsonl")') == 1
+    assert source.count('SPIFFS.remove("/fsd_handshake.log")') == 1
+    # perform() consumes and discards the response body; must use streaming.
+    assert 'esp_http_client_perform(client)' not in source
+
+
+def check_port_policy() -> None:
+    """443 is FSD-only; the management UI defaults to 10010."""
+    main = (ROOT / "src/main.cpp").read_text()
+    mod = (ROOT / "include/mod_client_config.h").read_text()
+    assert "kManagementPort = 10010" in main
+    assert "constexpr uint16_t kFsdPort = 443;" in mod
+    assert "constexpr uint16_t kClientConfigPort = 10011;" in mod
+    server = (ROOT / "src/client_config.cpp").read_text()
+    assert "startServer(fsdServer, kFsdPort" in server
+    assert "startServer(configServer, kClientConfigPort" in server
+
+
 def payloads() -> list[str]:
     return PATTERN.findall(HEADER)
 
@@ -107,7 +145,10 @@ def main() -> None:
     for uri in false_cases:
         assert not matches(uri), uri
     check_tls_identity()
-    print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, TLS chain OK")
+    check_response_contract()
+    check_port_policy()
+    print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "
+          f"TLS chain + reply contract + 443/10010 policy OK")
 
 
 if __name__ == "__main__":

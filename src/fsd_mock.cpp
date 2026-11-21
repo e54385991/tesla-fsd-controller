@@ -5,8 +5,8 @@
 #if defined(WIFI_BRIDGE_ENABLED) && defined(CONFIG_IDF_TARGET_ESP32S3) && defined(CONFIG_ESP_HTTPS_SERVER_ENABLE)
 
 #include <Arduino.h>
-#include <SPIFFS.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 #include <WiFi.h>
 #include <cJSON.h>
 #include <esp_http_client.h>
@@ -14,10 +14,10 @@
 #include <esp_log.h>
 #include <esp_rom_md5.h>
 #include <esp_tls.h>
-#include <mbedtls/ssl.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <lwip/sockets.h>
+#include <mbedtls/ssl.h>
 
 #include <cctype>
 #include <cstdarg>
@@ -26,6 +26,7 @@
 #include <cstring>
 #include <new>
 #include <strings.h>
+#include <time.h>
 
 #include "fsd_payload.h"
 #include "mod_dns.h"
@@ -33,14 +34,11 @@
 namespace fsd_mock {
 namespace {
 
-constexpr uint32_t kSettingsMagic = 0x46444D31;  // "FDM1"
+constexpr uint32_t kSettingsMagic = 0x46444D32;  // "FDM2"
 constexpr char kPayloadPath[] = "/fsd_payload.json";
 constexpr char kPayloadTempPath[] = "/fsd_payload.tmp";
-constexpr char kHitLogPath[] = "/fsd_hits.jsonl";
-constexpr char kHandshakeLogPath[] = "/fsd_handshake.log";
-constexpr size_t kHitLogMaxBytes = 16 * 1024;
-constexpr size_t kHitLogKeepBytes = 8 * 1024;
-constexpr size_t kRequestCaptureBytes = 512;
+constexpr char kPayloadBackupPath[] = "/fsd_payload.bak";
+constexpr size_t kRequestCaptureBytes = 64;
 constexpr size_t kForwardBodyBytes = 8192;
 
 struct Settings {
@@ -64,13 +62,23 @@ struct State {
 struct Capture {
     uint32_t requestBytes = 0;
     char requestMd5[33] = {};
+    char ctype[32] = {};
     char vin[18] = {};
-    char head[97] = {};
+    char head[kRequestCaptureBytes + 1] = {};
+};
+
+struct LastResponse {
+    char kind[8] = {};
+    uint16_t status = 0;
+    char ctype[32] = {};
+    char md5[33] = {};
+    uint32_t bytes = 0;
+    char body[kLastResponseCapacity] = {};
 };
 
 State gState;
-char gSendBuffer[kPayloadCapacity];
 SemaphoreHandle_t gStateMutex = nullptr;
+bool gActive = false;
 
 Hit gHits[kRecentHitCapacity];
 size_t gHitCount = 0;
@@ -80,40 +88,28 @@ uint32_t gHitTotal = 0;
 uint32_t gObserveTotal = 0;
 uint32_t gFlowTotal = 0;
 
-char gReportedHost[kHostCapacity] = "api-prd.vn.cloud.tesla.cn";
-bool gActive = false;
-
-struct HandshakeState {
-    uint32_t ok = 0;
-    uint32_t fail = 0;
-    uint32_t lastOkMs = 0;
-    uint32_t lastFailMs = 0;
-    uint32_t lastFailLogMs = 0;
-    char lastClient[16] = {};
-    char lastTls[16] = {};
-    char lastCipher[64] = {};
-    char lastAlpn[16] = {};
-    char lastError[64] = {};
-};
-HandshakeState gHandshake;
+Handshake gHandshakes[kHandshakeCapacity];
+size_t gHandshakeCount = 0;
+size_t gHandshakeWrite = 0;
 portMUX_TYPE gHandshakeMux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t gHandshakeOk = 0;
+uint32_t gHandshakeFail = 0;
+uint32_t gLastHandshakeOkMs = 0;
+uint32_t gLastHandshakeFailMs = 0;
+char gLastHandshakeClient[16] = {};
+char gLastHandshakeTls[16] = {};
+char gLastHandshakeCipher[64] = {};
+char gLastHandshakeAlpn[16] = {};
+char gLastHandshakeError[64] = {};
 
-struct LastResponse {
-    char kind[8] = {};
-    uint16_t status = 0;
-    char ctype[48] = {};
-    char md5[33] = {};
-    char body[2049] = {};
-    uint32_t bytes = 0;
-};
 LastResponse gLastResponse;
 portMUX_TYPE gLastResponseMux = portMUX_INITIALIZER_UNLOCKED;
 
 vprintf_like_t gPreviousLog = nullptr;
-bool gInLogHook = false;
-constexpr size_t kHandshakeLogMaxBytes = 16 * 1024;
+volatile bool gInUpstreamRequest = false;
+volatile uint32_t gLastMbedtlsFailureMs = 0;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── basic helpers ───────────────────────────────────────────────────────────
 
 void lockState() {
     if (gStateMutex) xSemaphoreTake(gStateMutex, portMAX_DELAY);
@@ -143,16 +139,28 @@ void jsonEscape(String& out, const char* value) {
             case '\\': out += "\\\\"; break;
             case '"': out += "\\\""; break;
             case '\n': out += "\\n"; break;
-            case '\r': break;
+            case '\r': out += "\\r"; break;
             case '\t': out += "\\t"; break;
             default:
-                if (c < 0x20) out += ' ';
+                // High bytes may be gzip/binary previews. Replacing them keeps
+                // /api/wifi-bridge/status parseable as UTF-8 JSON.
+                if (c < 0x20 || c >= 0x7f) out += '.';
                 else out += static_cast<char>(c);
                 break;
         }
     }
 }
 
+void formatTimestamp(char out[32]) {
+    const time_t now = time(nullptr);
+    if (now > 1600000000) {
+        struct tm local = {};
+        localtime_r(&now, &local);
+        strftime(out, 32, "%Y-%m-%dT%H:%M:%S%z", &local);
+    } else {
+        snprintf(out, 32, "up:%lu", static_cast<unsigned long>(millis() / 1000));
+    }
+}
 
 const char* trimCopy(const char* value, char* out, size_t capacity) {
     if (capacity == 0) return out;
@@ -223,167 +231,53 @@ bool compactJson(const char* json, size_t length, char* out, size_t outCapacity,
     return true;
 }
 
-
-bool persistSettings() {
-    Settings settings;
-    lockState();
-    settings.enabled = gState.enabled ? 1 : 0;
-    settings.mode = static_cast<uint8_t>(gState.mode);
-    strlcpy(settings.host, gState.host, sizeof(settings.host));
-    unlockState();
-
-    Preferences prefs;
-    if (!prefs.begin("fsdmock", false)) return false;
-    const size_t written = prefs.putBytes("cfg", &settings, sizeof(settings));
-    prefs.end();
-    return written == sizeof(settings);
-}
-
-void syncDnsRedirect() {
-    bool enabledNow;
-    char hostNow[kHostCapacity];
-    lockState();
-    enabledNow = gState.enabled;
-    strlcpy(hostNow, gState.host, sizeof(hostNow));
-    unlockState();
-
-    const IPAddress answer = WiFi.softAPIP();
-    dnsSetFsdRedirect(gActive && enabledNow, hostNow, answer);
-
-    strlcpy(gReportedHost, hostNow, sizeof(gReportedHost));
-}
-
-bool savePayloadFile(const char* payload, size_t length) {
-    File file = SPIFFS.open(kPayloadTempPath, "w");
-    if (!file) return false;
-    const size_t written = file.write(reinterpret_cast<const uint8_t*>(payload), length);
-    file.close();
-    if (written != length) {
-        SPIFFS.remove(kPayloadTempPath);
-        return false;
-    }
-    SPIFFS.remove(kPayloadPath);
-    if (!SPIFFS.rename(kPayloadTempPath, kPayloadPath)) {
-        SPIFFS.remove(kPayloadTempPath);
-        return false;
-    }
-    return true;
-}
-
-bool loadPayloadFile(char* out, size_t capacity, size_t& length) {
-    File file = SPIFFS.open(kPayloadPath, "r");
-    if (!file) return false;
-    length = file.size();
-    if (length == 0 || length >= capacity) {
-        file.close();
-        return false;
-    }
-    const size_t read = file.read(reinterpret_cast<uint8_t*>(out), length);
-    file.close();
-    out[length] = '\0';
-    return read == length;
-}
-
-void rotateHitLog() {
-    File source = SPIFFS.open(kHitLogPath, "r");
-    if (!source) return;
-    const size_t size = source.size();
-    if (size <= kHitLogMaxBytes) {
-        source.close();
-        return;
-    }
-    source.seek(size - kHitLogKeepBytes);
-    File target = SPIFFS.open("/fsd_hits.tmp", "w");
-    if (!target) {
-        source.close();
-        return;
-    }
-    uint8_t buffer[512];
-    while (source.available()) {
-        const size_t count = source.read(buffer, sizeof(buffer));
-        if (count == 0) break;
-        target.write(buffer, count);
-    }
-    source.close();
-    target.close();
-    SPIFFS.remove(kHitLogPath);
-    SPIFFS.rename("/fsd_hits.tmp", kHitLogPath);
-}
-
-void logSafe(const char* in, char* out, size_t capacity) {
+void copyPrintable(const uint8_t* source, size_t sourceLength, char* out, size_t capacity) {
     if (capacity == 0) return;
     size_t written = 0;
-    for (const char* p = in; p && *p && written + 1 < capacity; ++p) {
-        const unsigned char c = static_cast<unsigned char>(*p);
-        out[written++] = (c == '"' || c == '\\' || c < 0x20) ? '_' : static_cast<char>(c);
+    for (size_t i = 0; i < sourceLength && written + 1 < capacity; ++i) {
+        const unsigned char c = source[i];
+        out[written++] = (c < 0x20 || c > 0x7e) ? '.' : static_cast<char>(c);
     }
     out[written] = '\0';
 }
 
-void appendHitLog(const Hit& hit) {
-    char url[193];
-    char head[97];
-    char resp[130];
-    char ctype[49];
-    logSafe(hit.url, url, sizeof(url));
-    logSafe(hit.reqHead, head, sizeof(head));
-    logSafe(hit.respHead, resp, sizeof(resp));
-    logSafe(hit.respCtype, ctype, sizeof(ctype));
-    char line[1024];
-    const int length = snprintf(line, sizeof(line),
-        "{\"kind\":\"%s\",\"uptime_ms\":%lu,\"client\":\"%s\",\"method\":\"%s\",\"url\":\"%s\",\"vin\":\"%s\","
-        "\"req_bytes\":%lu,\"req_md5\":\"%s\",\"req_head\":\"%s\",\"status\":%u,\"bytes\":%lu,"
-        "\"md5\":\"%s\",\"ctype\":\"%s\",\"resp_head\":\"%s\",\"mode\":\"%s\"}\n",
-        hit.kind[0] ? hit.kind : "HIT",
-        static_cast<unsigned long>(hit.uptimeMs), hit.client, hit.method, url, hit.vin,
-        static_cast<unsigned long>(hit.reqBytes), hit.reqMd5, head, static_cast<unsigned>(hit.status),
-        static_cast<unsigned long>(hit.bytes), hit.md5, ctype, resp, hit.mode);
-    if (length <= 0 || static_cast<size_t>(length) >= sizeof(line)) return;
-    File file = SPIFFS.open(kHitLogPath, "a");
-    if (!file) return;
-    file.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(length));
-    const size_t size = file.size();
-    file.close();
-    if (size > kHitLogMaxBytes) rotateHitLog();
-}
-
-void recordHit(const Hit& hit) {
-    portENTER_CRITICAL(&gHitMux);
-    gHits[gHitWrite] = hit;
-    gHitWrite = (gHitWrite + 1) % kRecentHitCapacity;
-    if (gHitCount < kRecentHitCapacity) ++gHitCount;
-    if (strcmp(hit.kind, "OBSERVE") == 0) ++gObserveTotal;
-    else if (strcmp(hit.kind, "FLOW") == 0) ++gFlowTotal;
-    else ++gHitTotal;
-    portEXIT_CRITICAL(&gHitMux);
-    appendHitLog(hit);
-}
-
-void setStatusLine(httpd_req_t* request, int code) {
-    const char* text = "";
-    switch (code) {
-        case 200: text = "OK"; break;
-        case 201: text = "Created"; break;
-        case 204: text = "No Content"; break;
-        case 301: text = "Moved Permanently"; break;
-        case 302: text = "Found"; break;
-        case 304: text = "Not Modified"; break;
-        case 400: text = "Bad Request"; break;
-        case 401: text = "Unauthorized"; break;
-        case 403: text = "Forbidden"; break;
-        case 404: text = "Not Found"; break;
-        case 409: text = "Conflict"; break;
-        case 429: text = "Too Many Requests"; break;
-        case 500: text = "Internal Server Error"; break;
-        case 502: text = "Bad Gateway"; break;
-        case 503: text = "Service Unavailable"; break;
-        default: text = ""; break;
+void copyText(const char* source, size_t sourceLength, char* out, size_t capacity) {
+    if (capacity == 0) return;
+    size_t written = 0;
+    for (size_t i = 0; i < sourceLength && written + 1 < capacity; ++i) {
+        const unsigned char c = static_cast<unsigned char>(source[i]);
+        out[written++] = (c < 0x20 || c > 0x7e) ? '.' : static_cast<char>(c);
     }
-    // httpd stores the pointer until the response is sent, so keep it alive.
-    static char line[32];
-    if (text[0]) snprintf(line, sizeof(line), "%d %s", code, text);
-    else snprintf(line, sizeof(line), "%d", code);
-    httpd_resp_set_status(request, line);
+    out[written] = '\0';
+}
+
+void socketAddress(int fd, char* out, size_t capacity) {
+    out[0] = '\0';
+    if (fd < 0) return;
+    struct sockaddr_in address = {};
+    socklen_t length = sizeof(address);
+    if (getpeername(fd, reinterpret_cast<struct sockaddr*>(&address), &length) != 0) return;
+    const char* text = inet_ntoa(address.sin_addr);
+    if (text) strlcpy(out, text, capacity);
+}
+
+void clientAddress(httpd_req_t* request, char* out, size_t capacity) {
+    socketAddress(httpd_req_to_sockfd(request), out, capacity);
+}
+
+void extractVin(const char* uri, char out[18]) {
+    out[0] = '\0';
+    const char* marker = strstr(uri, "/vehicles/");
+    if (!marker) return;
+    marker += strlen("/vehicles/");
+    size_t length = 0;
+    while (length < 17 && marker[length] &&
+           (isalnum(static_cast<unsigned char>(marker[length])) || marker[length] == '-')) {
+        ++length;
+    }
+    if (length == 0) return;
+    memcpy(out, marker, length);
+    out[length] = '\0';
 }
 
 const char* httpMethodName(int method) {
@@ -412,112 +306,174 @@ esp_http_client_method_t upstreamMethod(int method) {
     }
 }
 
-void socketAddress(int fd, char* out, size_t capacity) {
+void copyHeader(httpd_req_t* request, const char* name, char* out, size_t capacity) {
     out[0] = '\0';
-    if (fd < 0) return;
-    struct sockaddr_in address = {};
-    socklen_t length = sizeof(address);
-    if (getpeername(fd, reinterpret_cast<struct sockaddr*>(&address), &length) != 0) return;
-    const char* text = inet_ntoa(address.sin_addr);
-    if (text) strlcpy(out, text, capacity);
+    const size_t length = httpd_req_get_hdr_value_len(request, name);
+    if (length == 0 || length + 1 > capacity) return;
+    httpd_req_get_hdr_value_str(request, name, out, capacity);
 }
 
-void clientAddress(httpd_req_t* request, char* out, size_t capacity) {
-    socketAddress(httpd_req_to_sockfd(request), out, capacity);
+void parseRequestMeta(httpd_req_t* request, Hit& hit, Capture& capture) {
+    char hostHeader[96] = {};
+    copyHeader(request, "Host", hostHeader, sizeof(hostHeader));
+    char userAgent[48] = {};
+    copyHeader(request, "User-Agent", userAgent, sizeof(userAgent));
+    char ctype[32] = {};
+    copyHeader(request, "Content-Type", ctype, sizeof(ctype));
+
+    const char* uri = request->uri ? request->uri : "/";
+    strlcpy(hit.method, httpMethodName(request->method), sizeof(hit.method));
+    // fsd_mock.py logs flow.request.pretty_url (scheme://host/path?query).
+    strlcpy(hit.url, "https://", sizeof(hit.url));
+    if (hostHeader[0]) strlcat(hit.url, hostHeader, sizeof(hit.url));
+    strlcat(hit.url, uri, sizeof(hit.url));
+    strlcpy(hit.host, hostHeader, sizeof(hit.host));
+    strlcpy(hit.userAgent, userAgent, sizeof(hit.userAgent));
+    strlcpy(hit.httpVersion, "HTTP/1.1", sizeof(hit.httpVersion));
+    strlcpy(capture.ctype, ctype, sizeof(capture.ctype));
+    extractVin(uri, capture.vin);
+    clientAddress(request, hit.client, sizeof(hit.client));
+    formatTimestamp(hit.ts);
+    hit.atMs = millis();
+    hit.reqBytes = static_cast<uint32_t>(request->content_len);
 }
 
-void copyPrintable(const char* source, size_t sourceLength, char* out, size_t capacity) {
-    if (capacity == 0) return;
-    size_t written = 0;
-    for (size_t i = 0; i < sourceLength && written + 1 < capacity; ++i) {
-        const unsigned char c = static_cast<unsigned char>(source[i]);
-        out[written++] = (c < 0x20 || c > 0x7e) ? '.' : static_cast<char>(c);
+void updateLatestHandshake(const Hit& hit) {
+    const char* host = hit.host[0] ? hit.host : "";
+    // fsd_mock.py logs "<METHOD> <path>" for first_request; keep the same
+    // shape but use the path portion of the pretty URL.
+    const char* path = strstr(hit.url, "://");
+    path = path ? strchr(path + 3, '/') : hit.url;
+    if (!path) path = "/";
+    char first[96] = {};
+    snprintf(first, sizeof(first), "%.7s %.80s", hit.method, path);
+    portENTER_CRITICAL(&gHandshakeMux);
+    for (size_t age = 0; age < gHandshakeCount; ++age) {
+        const size_t index = (gHandshakeWrite + kHandshakeCapacity - 1 - age) % kHandshakeCapacity;
+        Handshake& handshake = gHandshakes[index];
+        if (strcmp(handshake.event, "handshake_ok") != 0) continue;
+        if (host[0] && !handshake.sni[0]) strlcpy(handshake.sni, host, sizeof(handshake.sni));
+        if (!handshake.firstRequest[0]) strlcpy(handshake.firstRequest, first, sizeof(handshake.firstRequest));
+        break;
     }
-    out[written] = '\0';
+    portEXIT_CRITICAL(&gHandshakeMux);
 }
 
-void rotateHandshakeLog() {
-    File source = SPIFFS.open(kHandshakeLogPath, "r");
-    if (!source) return;
-    const size_t size = source.size();
-    if (size <= kHandshakeLogMaxBytes) {
-        source.close();
-        return;
-    }
-    source.seek(size - kHandshakeLogMaxBytes / 2);
-    File target = SPIFFS.open("/fsd_handshake.tmp", "w");
-    if (!target) {
-        source.close();
-        return;
-    }
-    uint8_t buffer[512];
-    while (source.available()) {
-        const size_t count = source.read(buffer, sizeof(buffer));
-        if (count == 0) break;
-        target.write(buffer, count);
-    }
-    source.close();
-    target.close();
-    SPIFFS.remove(kHandshakeLogPath);
-    SPIFFS.rename("/fsd_handshake.tmp", kHandshakeLogPath);
-}
+void recordHit(const Hit& hit, const char* responseBody) {
+    portENTER_CRITICAL(&gHitMux);
+    gHits[gHitWrite] = hit;
+    gHitWrite = (gHitWrite + 1) % kRecentHitCapacity;
+    if (gHitCount < kRecentHitCapacity) ++gHitCount;
+    if (strcmp(hit.kind, "OBSERVE") == 0) ++gObserveTotal;
+    else if (strcmp(hit.kind, "FLOW") == 0) ++gFlowTotal;
+    else ++gHitTotal;
+    portEXIT_CRITICAL(&gHitMux);
 
-void appendHandshakeLog(const char* event, const char* client, const char* tls,
-                        const char* cipher, const char* alpn, const char* error) {
-    char line[640];
-    if (error && *error) {
-        snprintf(line, sizeof(line),
-            "{\"event\":\"%s\",\"uptime_ms\":%lu,\"client\":\"%s\",\"error\":\"%s\"}\n",
-            event, static_cast<unsigned long>(millis()), client ? client : "", error);
-    } else {
-        snprintf(line, sizeof(line),
-            "{\"event\":\"%s\",\"uptime_ms\":%lu,\"client\":\"%s\",\"tls\":\"%s\","
-            "\"cipher\":\"%s\",\"alpn\":\"%s\"}\n",
-            event, static_cast<unsigned long>(millis()), client ? client : "",
-            tls ? tls : "", cipher ? cipher : "", alpn ? alpn : "");
-    }
-    const size_t length = strlen(line);
-    File file = SPIFFS.open(kHandshakeLogPath, "a");
-    if (!file) return;
-    file.write(reinterpret_cast<const uint8_t*>(line), length);
-    const size_t size = file.size();
-    file.close();
-    if (size > kHandshakeLogMaxBytes) rotateHandshakeLog();
-}
-
-void setLastResponse(const Hit& hit, const char* body) {
     portENTER_CRITICAL(&gLastResponseMux);
     strlcpy(gLastResponse.kind, hit.kind, sizeof(gLastResponse.kind));
     gLastResponse.status = hit.status;
     strlcpy(gLastResponse.ctype, hit.respCtype, sizeof(gLastResponse.ctype));
     strlcpy(gLastResponse.md5, hit.md5, sizeof(gLastResponse.md5));
     gLastResponse.bytes = hit.bytes;
-    const size_t length = body ? strlen(body) : 0;
+    const size_t length = responseBody ? strlen(responseBody) : 0;
     const size_t copy = length < sizeof(gLastResponse.body) - 1
         ? length : sizeof(gLastResponse.body) - 1;
-    if (copy) memcpy(gLastResponse.body, body, copy);
+    if (copy) memcpy(gLastResponse.body, responseBody, copy);
     gLastResponse.body[copy] = '\0';
     portEXIT_CRITICAL(&gLastResponseMux);
+
+    updateLatestHandshake(hit);
 }
 
-void extractVin(const char* uri, char out[18]) {
-    out[0] = '\0';
-    const char* marker = strstr(uri, "/vehicles/");
-    if (!marker) return;
-    marker += strlen("/vehicles/");
-    size_t length = 0;
-    while (length < 17 && marker[length] &&
-           (isalnum(static_cast<unsigned char>(marker[length])) || marker[length] == '-')) {
-        ++length;
+// ── payload storage ─────────────────────────────────────────────────────────
+
+void freeLogSpace() {
+    // FSD logs are RAM-only. If the payload file cannot be written, reclaim
+    // the existing diagnostic log; payload config is the critical file.
+    SPIFFS.remove("/diag.log");
+}
+
+bool writePayloadFile(const char* payload, size_t length) {
+    SPIFFS.remove(kPayloadTempPath);
+    File file = SPIFFS.open(kPayloadTempPath, "w");
+    if (!file) return false;
+    const size_t written = file.write(reinterpret_cast<const uint8_t*>(payload), length);
+    file.close();
+    if (written != length) {
+        SPIFFS.remove(kPayloadTempPath);
+        return false;
     }
-    if (length == 0) return;
-    memcpy(out, marker, length);
-    out[length] = '\0';
+    // Keep one generation until the rename succeeds. SPIFFS rename does not
+    // reliably replace an existing destination, hence the backup dance.
+    SPIFFS.remove(kPayloadBackupPath);
+    const bool hadOld = SPIFFS.exists(kPayloadPath);
+    if (hadOld && !SPIFFS.rename(kPayloadPath, kPayloadBackupPath)) {
+        SPIFFS.remove(kPayloadTempPath);
+        return false;
+    }
+    if (!SPIFFS.rename(kPayloadTempPath, kPayloadPath)) {
+        if (hadOld) SPIFFS.rename(kPayloadBackupPath, kPayloadPath);
+        SPIFFS.remove(kPayloadTempPath);
+        return false;
+    }
+    SPIFFS.remove(kPayloadBackupPath);
+    return true;
 }
 
-// Read the request body, hash it, keep the first bytes for diagnostics and the
-// whole body for observe-mode forwarding. Returns false only on socket errors.
-bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity, size_t& bodyLength, Capture& capture) {
+bool savePayloadFile(const char* payload, size_t length) {
+    const size_t used = SPIFFS.usedBytes();
+    const size_t total = SPIFFS.totalBytes();
+    const size_t margin = length + 4096;
+    if (total > used && total - used < margin) freeLogSpace();
+    if (writePayloadFile(payload, length)) return true;
+    freeLogSpace();
+    return writePayloadFile(payload, length);
+}
+
+bool loadPayloadFile(char* out, size_t capacity, size_t& length) {
+    File file = SPIFFS.open(kPayloadPath, "r");
+    if (!file) return false;
+    length = file.size();
+    if (length == 0 || length >= capacity) {
+        file.close();
+        return false;
+    }
+    const size_t read = file.read(reinterpret_cast<uint8_t*>(out), length);
+    file.close();
+    out[length] = '\0';
+    return read == length;
+}
+
+void syncDnsRedirect() {
+    bool enabledNow;
+    char hostNow[kHostCapacity];
+    lockState();
+    enabledNow = gState.enabled;
+    strlcpy(hostNow, gState.host, sizeof(hostNow));
+    unlockState();
+    const IPAddress answer = WiFi.softAPIP();
+    dnsSetFsdRedirect(gActive && enabledNow, hostNow, answer);
+}
+
+bool persistSettings() {
+    Settings settings;
+    lockState();
+    settings.enabled = gState.enabled ? 1 : 0;
+    settings.mode = static_cast<uint8_t>(gState.mode);
+    strlcpy(settings.host, gState.host, sizeof(settings.host));
+    unlockState();
+
+    Preferences prefs;
+    if (!prefs.begin("fsdmock", false)) return false;
+    const size_t written = prefs.putBytes("cfg", &settings, sizeof(settings));
+    prefs.end();
+    return written == sizeof(settings);
+}
+
+// ── request body ────────────────────────────────────────────────────────────
+
+bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity,
+                      size_t& bodyLength, Capture& capture) {
     bodyLength = 0;
     capture.requestBytes = static_cast<uint32_t>(request->content_len);
     capture.head[0] = '\0';
@@ -538,26 +494,38 @@ bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity, siz
             continue;
         }
         if (received <= 0) return false;
+        const size_t receivedSize = static_cast<size_t>(received);
         esp_rom_md5_update(&md5, chunk, static_cast<uint32_t>(received));
+
+        // Copy the complete body for observe/passthrough forwarding. Only the
+        // first kRequestCaptureBytes are mirrored into the RAM log preview.
+        if (body && bodyLength + 1 < bodyCapacity) {
+            size_t copy = receivedSize;
+            if (bodyLength + copy >= bodyCapacity) copy = bodyCapacity - 1 - bodyLength;
+            memcpy(body + bodyLength, chunk, copy);
+            bodyLength += copy;
+        }
+
         if (captured < kRequestCaptureBytes) {
-            const size_t copy = (kRequestCaptureBytes - captured) < static_cast<size_t>(received)
-                ? (kRequestCaptureBytes - captured) : static_cast<size_t>(received);
-            if (body && bodyLength + copy < bodyCapacity) {
-                memcpy(body + bodyLength, chunk, copy);
-                bodyLength += copy;
-            }
-            if (capture.head[0] == '\0') {
-                const size_t headCopy = copy < 96 ? copy : 96;
-                memcpy(capture.head, chunk, headCopy);
-                capture.head[headCopy] = '\0';
-                for (size_t i = 0; i < headCopy; ++i) {
-                    const unsigned char c = static_cast<unsigned char>(capture.head[i]);
-                    if (c < 0x20 || c > 0x7e) capture.head[i] = '.';
+            const size_t headCopy = (kRequestCaptureBytes - captured) < receivedSize
+                ? (kRequestCaptureBytes - captured) : receivedSize;
+            if (capture.head[0] == '\0' && headCopy > 0) {
+                const bool text = strstr(capture.ctype, "json") || strstr(capture.ctype, "text") ||
+                    chunk[0] == '{' || chunk[0] == '[';
+                if (text) {
+                    copyText(chunk, headCopy, capture.head, sizeof(capture.head));
+                } else {
+                    size_t written = 0;
+                    for (size_t i = 0; i < headCopy && written + 2 < sizeof(capture.head); ++i) {
+                        snprintf(capture.head + written, sizeof(capture.head) - written,
+                                 "%02x", static_cast<unsigned>(static_cast<uint8_t>(chunk[i])));
+                        written += 2;
+                    }
                 }
             }
-            captured += copy;
+            captured += headCopy;
         }
-        remaining -= static_cast<size_t>(received);
+        remaining -= receivedSize;
     }
     uint8_t digest[16];
     esp_rom_md5_final(digest, &md5);
@@ -568,8 +536,37 @@ bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity, siz
     return true;
 }
 
-void finishJsonError(httpd_req_t* request, Hit& hit, char* respBody, size_t respCapacity,
-                      int status, const char* json) {
+// ── responses / forwarding ──────────────────────────────────────────────────
+
+void setStatusLine(httpd_req_t* request, int code) {
+    const char* text = "";
+    switch (code) {
+        case 200: text = "OK"; break;
+        case 201: text = "Created"; break;
+        case 204: text = "No Content"; break;
+        case 301: text = "Moved Permanently"; break;
+        case 302: text = "Found"; break;
+        case 304: text = "Not Modified"; break;
+        case 400: text = "Bad Request"; break;
+        case 401: text = "Unauthorized"; break;
+        case 403: text = "Forbidden"; break;
+        case 404: text = "Not Found"; break;
+        case 409: text = "Conflict"; break;
+        case 413: text = "Payload Too Large"; break;
+        case 429: text = "Too Many Requests"; break;
+        case 500: text = "Internal Server Error"; break;
+        case 502: text = "Bad Gateway"; break;
+        case 503: text = "Service Unavailable"; break;
+        default: text = ""; break;
+    }
+    static char line[32];
+    if (text[0]) snprintf(line, sizeof(line), "%d %s", code, text);
+    else snprintf(line, sizeof(line), "%d", code);
+    httpd_resp_set_status(request, line);
+}
+
+void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
+                     int status, const char* json) {
     setStatusLine(request, status);
     httpd_resp_set_type(request, "application/json");
     const size_t length = strlen(json);
@@ -578,22 +575,19 @@ void finishJsonError(httpd_req_t* request, Hit& hit, char* respBody, size_t resp
     hit.bytes = static_cast<uint32_t>(length);
     md5Hex(json, length, hit.md5);
     strlcpy(hit.respCtype, "application/json", sizeof(hit.respCtype));
-    copyPrintable(json, length, hit.respHead, sizeof(hit.respHead));
-    if (respBody && respCapacity) strlcpy(respBody, json, respCapacity);
+    copyPrintable(reinterpret_cast<const uint8_t*>(json), length, hit.respHead, sizeof(hit.respHead));
+    if (responseBody) strlcpy(responseBody, json, kLastResponseCapacity);
 }
 
 int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
-                   Hit& hit, char* respBody, size_t respCapacity) {
+                   Hit& hit, char* responseBody, size_t responseCapacity) {
     hit.status = 0;
     hit.bytes = 0;
     hit.md5[0] = '\0';
     hit.respHead[0] = '\0';
     hit.respCtype[0] = '\0';
-    if (respBody && respCapacity) respBody[0] = '\0';
+    if (responseBody && responseCapacity) responseBody[0] = '\0';
 
-    // Windows runs reverse:https://api-prd.vn.cloud.tesla.cn@443, i.e. the
-    // upstream is fixed by config and the client's Host header is not reused
-    // (which also prevents a 9.9.9.9 -> 9.9.9.9 self-loop).
     char hostOnly[kHostCapacity] = {};
     lockState();
     const char* cursor = gState.host;
@@ -601,7 +595,7 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
         while (*cursor && (isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
         const char* begin = cursor;
         while (*cursor && !(isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
-        if (cursor > begin && *begin != '*') {
+        if (cursor > begin) {
             const size_t length = static_cast<size_t>(cursor - begin);
             const size_t copy = length < sizeof(hostOnly) - 1 ? length : sizeof(hostOnly) - 1;
             memcpy(hostOnly, begin, copy);
@@ -615,7 +609,7 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     const size_t urlLength = strlen(hostOnly) + strlen(request->uri) + 16;
     char* url = static_cast<char*>(malloc(urlLength));
     if (!url) {
-        finishJsonError(request, hit, respBody, respCapacity, 500, "{\"error\":\"no_memory\"}");
+        finishJsonError(request, hit, responseBody, 500, "{\"error\":\"no_memory\"}");
         return 500;
     }
     snprintf(url, urlLength, "https://%s%s", hostOnly, request->uri);
@@ -633,14 +627,15 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
         free(url);
-        finishJsonError(request, hit, respBody, respCapacity, 502, "{\"error\":\"upstream_init\"}");
+        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_init\"}");
         return 502;
     }
 
-    // IDF 4.4 has no public header-iteration API; forward the headers Tesla uses.
     static const char* const kForwardHeaders[] = {
-        "Authorization", "Content-Type", "Accept", "User-Agent", "Cookie",
+        "Authorization", "Content-Type", "Accept", "Accept-Encoding", "Accept-Language",
+        "User-Agent", "Cookie", "If-None-Match", "If-Modified-Since",
         "X-Tesla-User-Agent", "Tesla-User-Agent", "X-Tesla-Client",
+        "X-Tesla-Protocol-Version", "X-Requested-With",
     };
     for (const char* name : kForwardHeaders) {
         const size_t length = httpd_req_get_hdr_value_len(request, name);
@@ -652,13 +647,24 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
         }
         free(value);
     }
-    if (bodyLength > 0) esp_http_client_set_post_field(client, body, static_cast<int>(bodyLength));
-
-    esp_err_t error = esp_http_client_perform(client);
+    // Do NOT use esp_http_client_perform() here: it reads and discards the
+    // response body internally. Open/write/fetch/read lets us stream the real
+    // upstream bytes back to the car (mitmproxy reverse-mode behavior).
+    gInUpstreamRequest = true;
+    esp_err_t error = esp_http_client_open(client, bodyLength);
+    if (error == ESP_OK && bodyLength > 0) {
+        const int written = esp_http_client_write(client, body, static_cast<int>(bodyLength));
+        if (written != static_cast<int>(bodyLength)) error = ESP_FAIL;
+    }
+    if (error == ESP_OK && esp_http_client_fetch_headers(client) < 0) {
+        error = ESP_FAIL;
+    }
+    gInUpstreamRequest = false;
     if (error != ESP_OK) {
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
         free(url);
-        finishJsonError(request, hit, respBody, respCapacity, 502, "{\"error\":\"upstream_failed\"}");
+        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_failed\"}");
         return 502;
     }
 
@@ -672,9 +678,15 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
         httpd_resp_set_type(request, contentType);
         strlcpy(hit.respCtype, contentType, sizeof(hit.respCtype));
     }
-    char* cacheControl = nullptr;
-    if (esp_http_client_get_header(client, "Cache-Control", &cacheControl) == ESP_OK && cacheControl) {
-        httpd_resp_set_hdr(request, "Cache-Control", cacheControl);
+    static const char* const kResponseHeaders[] = {
+        "Cache-Control", "Content-Encoding", "Location", "ETag", "Vary",
+        "Set-Cookie",
+    };
+    for (const char* name : kResponseHeaders) {
+        char* value = nullptr;
+        if (esp_http_client_get_header(client, name, &value) == ESP_OK && value) {
+            httpd_resp_set_hdr(request, name, value);
+        }
     }
 
     md5_context_t md5;
@@ -689,23 +701,23 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
         if (preview < sizeof(hit.respHead) - 1) {
             const size_t copy = (sizeof(hit.respHead) - 1 - preview) < static_cast<size_t>(read)
                 ? (sizeof(hit.respHead) - 1 - preview) : static_cast<size_t>(read);
-            copyPrintable(buffer, copy, hit.respHead + preview, sizeof(hit.respHead) - preview);
+            copyPrintable(reinterpret_cast<const uint8_t*>(buffer), copy,
+                          hit.respHead + preview, sizeof(hit.respHead) - preview);
             preview += copy;
         }
-        if (respBody && respCapacity && bodyStored + 1 < respCapacity) {
-            const size_t copy = (respCapacity - 1 - bodyStored) < static_cast<size_t>(read)
-                ? (respCapacity - 1 - bodyStored) : static_cast<size_t>(read);
-            memcpy(respBody + bodyStored, buffer, copy);
+        if (responseBody && responseCapacity && bodyStored + 1 < responseCapacity) {
+            const size_t copy = (responseCapacity - 1 - bodyStored) < static_cast<size_t>(read)
+                ? (responseCapacity - 1 - bodyStored) : static_cast<size_t>(read);
+            memcpy(responseBody + bodyStored, buffer, copy);
             bodyStored += copy;
-            respBody[bodyStored] = '\0';
+            responseBody[bodyStored] = '\0';
         }
-        if (httpd_resp_send_chunk(request, buffer, read) != ESP_OK) {
-            total += static_cast<size_t>(read);
-            break;
-        }
+        const esp_err_t sent = httpd_resp_send_chunk(request, buffer, read);
         total += static_cast<size_t>(read);
+        if (sent != ESP_OK) break;
     }
     httpd_resp_send_chunk(request, nullptr, 0);
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     free(url);
     hit.bytes = static_cast<uint32_t>(total);
@@ -724,20 +736,21 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
 // ── public API ──────────────────────────────────────────────────────────────
 
 static int fsdLogHook(const char* format, va_list args) {
-    if (!gInLogHook && format) {
+    if (format && !gInUpstreamRequest) {
         if (strstr(format, "mbedtls_ssl_handshake returned")) {
             char message[96];
             va_list copy;
             va_copy(copy, args);
             vsnprintf(message, sizeof(message), format, copy);
             va_end(copy);
-            gInLogHook = true;
             noteHandshakeFailure(message);
-            gInLogHook = false;
+            gLastMbedtlsFailureMs = millis();
         } else if (strstr(format, "esp_tls_create_server_session failed")) {
-            gInLogHook = true;
-            noteHandshakeFailure("esp_tls_create_server_session failed");
-            gInLogHook = false;
+            // esp_https_server logs this right after the mbedtls line; count
+            // the attempt once but still catch failures without an mbedtls log.
+            if (gLastMbedtlsFailureMs == 0 || millis() - gLastMbedtlsFailureMs > 1000) {
+                noteHandshakeFailure("esp_tls_create_server_session failed");
+            }
         }
     }
     return gPreviousLog ? gPreviousLog(format, args) : vprintf(format, args);
@@ -749,24 +762,30 @@ void installLogHook() {
 
 void noteHandshakeFailure(const char* error) {
     const uint32_t now = millis();
-    bool logNow = false;
+    const char* message = error ? error : "handshake_failed";
+    char ts[32] = {};
+    formatTimestamp(ts);
     portENTER_CRITICAL(&gHandshakeMux);
-    // esp_https_server emits two error lines for one failed handshake
-    // (mbedtls code + generic session failure); count the pair once.
-    const bool newFailure = gHandshake.fail == 0 || now - gHandshake.lastFailMs > 1000;
-    if (newFailure) ++gHandshake.fail;
-    if (error && (newFailure || strlen(error) > strlen(gHandshake.lastError))) {
-        strlcpy(gHandshake.lastError, error, sizeof(gHandshake.lastError));
+    const bool newFailure = gHandshakeFail == 0 || now - gLastHandshakeFailMs > 1000;
+    const bool newMessage = strcmp(message, gLastHandshakeError) != 0;
+    ++gHandshakeFail;
+    if (newFailure || newMessage || strlen(message) > strlen(gLastHandshakeError)) {
+        strlcpy(gLastHandshakeError, message, sizeof(gLastHandshakeError));
     }
-    gHandshake.lastFailMs = now;
-    if (now - gHandshake.lastFailLogMs >= 5000) {
-        gHandshake.lastFailLogMs = now;
-        logNow = true;
+    gLastHandshakeFailMs = now;
+
+    // Count every attempt, but add at most one ring entry per second unless
+    // the error text changes, so a retrying car cannot evict handshake_ok.
+    if (newFailure || newMessage) {
+        Handshake& handshake = gHandshakes[gHandshakeWrite];
+        handshake = Handshake{};
+        strlcpy(handshake.event, "handshake_failed", sizeof(handshake.event));
+        strlcpy(handshake.ts, ts, sizeof(handshake.ts));
+        strlcpy(handshake.error, message, sizeof(handshake.error));
+        gHandshakeWrite = (gHandshakeWrite + 1) % kHandshakeCapacity;
+        if (gHandshakeCount < kHandshakeCapacity) ++gHandshakeCount;
     }
     portEXIT_CRITICAL(&gHandshakeMux);
-    // A client that retries a broken handshake can otherwise force a SPIFFS
-    // write per attempt and starve the Wi-Fi/HTTP tasks.
-    if (logNow) appendHandshakeLog("handshake_failed", "", "", "", "", gHandshake.lastError[0] ? gHandshake.lastError : "handshake_failed");
 }
 
 void noteHandshake(const esp_tls_t* tls) {
@@ -774,6 +793,8 @@ void noteHandshake(const esp_tls_t* tls) {
     char version[16] = {};
     char cipher[64] = {};
     char alpn[16] = {};
+    char ts[32] = {};
+    formatTimestamp(ts);
     if (tls) {
         socketAddress(tls->sockfd, client, sizeof(client));
 #if defined(CONFIG_ESP_TLS_USING_MBEDTLS)
@@ -785,20 +806,39 @@ void noteHandshake(const esp_tls_t* tls) {
         if (value) strlcpy(alpn, value, sizeof(alpn));
 #endif
     }
+
     portENTER_CRITICAL(&gHandshakeMux);
-    ++gHandshake.ok;
-    gHandshake.lastOkMs = millis();
-    strlcpy(gHandshake.lastClient, client, sizeof(gHandshake.lastClient));
-    strlcpy(gHandshake.lastTls, version, sizeof(gHandshake.lastTls));
-    strlcpy(gHandshake.lastCipher, cipher, sizeof(gHandshake.lastCipher));
-    strlcpy(gHandshake.lastAlpn, alpn, sizeof(gHandshake.lastAlpn));
+    ++gHandshakeOk;
+    gLastHandshakeOkMs = millis();
+    strlcpy(gLastHandshakeClient, client, sizeof(gLastHandshakeClient));
+    strlcpy(gLastHandshakeTls, version, sizeof(gLastHandshakeTls));
+    strlcpy(gLastHandshakeCipher, cipher, sizeof(gLastHandshakeCipher));
+    strlcpy(gLastHandshakeAlpn, alpn, sizeof(gLastHandshakeAlpn));
+
+    Handshake& handshake = gHandshakes[gHandshakeWrite];
+    handshake = Handshake{};
+    strlcpy(handshake.event, "handshake_ok", sizeof(handshake.event));
+    strlcpy(handshake.ts, ts, sizeof(handshake.ts));
+    strlcpy(handshake.client, client, sizeof(handshake.client));
+    strlcpy(handshake.tls, version, sizeof(handshake.tls));
+    strlcpy(handshake.cipher, cipher, sizeof(handshake.cipher));
+    strlcpy(handshake.alpn, alpn, sizeof(handshake.alpn));
+    gHandshakeWrite = (gHandshakeWrite + 1) % kHandshakeCapacity;
+    if (gHandshakeCount < kHandshakeCapacity) ++gHandshakeCount;
     portEXIT_CRITICAL(&gHandshakeMux);
-    appendHandshakeLog("handshake_ok", client, version, cipher, alpn, nullptr);
 }
 
 void begin() {
     gStateMutex = xSemaphoreCreateMutex();
     if (!gStateMutex) return;
+
+    // Older firmware persisted hit/handshake JSONL here. Logs are RAM-only
+    // now, so reclaim that space for payload storage.
+    SPIFFS.remove("/fsd_hits.jsonl");
+    SPIFFS.remove("/fsd_handshake.log");
+    if (!SPIFFS.exists(kPayloadPath) && SPIFFS.exists(kPayloadBackupPath)) {
+        SPIFFS.rename(kPayloadBackupPath, kPayloadPath);
+    }
 
     cJSON* defaultJson = cJSON_Parse(kFsdPayloadDefault);
     const size_t defaultFields = countFields(defaultJson);
@@ -865,70 +905,61 @@ bool isFeatureConfigurationUri(const char* uri) {
 }
 
 esp_err_t handleRequest(httpd_req_t* request) {
-    Capture capture;
-    extractVin(request->uri, capture.vin);
-    char client[16] = {};
-    clientAddress(request, client, sizeof(client));
+    if (!enabled()) return forwardPassthrough(request);
 
     Hit hit;
-    hit.uptimeMs = millis();
-    strlcpy(hit.client, client, sizeof(hit.client));
-    strlcpy(hit.method, httpMethodName(request->method), sizeof(hit.method));
-    strlcpy(hit.url, request->uri, sizeof(hit.url));
-    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
-    hit.reqBytes = static_cast<uint32_t>(request->content_len);
-
-    const bool mockEnabled = enabled();
-    const bool observe = mode() == Mode::Observe && mockEnabled;
+    Capture capture;
+    parseRequestMeta(request, hit, capture);
+    const bool observe = mode() == Mode::Observe;
     strlcpy(hit.kind, observe ? "OBSERVE" : "HIT", sizeof(hit.kind));
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
+
     if (observe && request->content_len > kForwardBodyBytes) {
-        finishJsonError(request, hit, nullptr, 0, 413, "{\"error\":\"request_too_large\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"request_too_large\"}");
+        const char* errorBody = "{\"error\":\"request_too_large\"}";
+        finishJsonError(request, hit, nullptr, 413, errorBody);
+        recordHit(hit, errorBody);
         return ESP_OK;
     }
+
     char* forwarded = nullptr;
-    if (observe) {
-        forwarded = static_cast<char*>(malloc(kForwardBodyBytes + 1));
-    }
+    if (observe) forwarded = static_cast<char*>(malloc(kForwardBodyBytes + 1));
     size_t forwardedLength = 0;
-    const bool bodyOk = drainRequestBody(request, forwarded, kForwardBodyBytes + 1, forwardedLength, capture);
+    const bool bodyOk = drainRequestBody(request, forwarded, kForwardBodyBytes + 1,
+                                           forwardedLength, capture);
     strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
+    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
     strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
     hit.reqBytes = capture.requestBytes;
+    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
     if (!bodyOk) {
         free(forwarded);
-        finishJsonError(request, hit, nullptr, 0, 400, "{\"error\":\"request_read_failed\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"request_read_failed\"}");
-        return ESP_OK;
-    }
-
-    if (!mockEnabled) {
-        free(forwarded);
-        finishJsonError(request, hit, nullptr, 0, 404, "{\"error\":\"fsd_mock_disabled\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"fsd_mock_disabled\"}");
+        const char* errorBody = "{\"error\":\"request_read_failed\"}";
+        finishJsonError(request, hit, nullptr, 400, errorBody);
+        recordHit(hit, errorBody);
         return ESP_OK;
     }
 
     if (observe) {
-        char responseBody[2049];
+        char responseBody[kLastResponseCapacity];
         forwardRequest(request, forwarded, forwardedLength, hit, responseBody, sizeof(responseBody));
         free(forwarded);
-        recordHit(hit);
-        setLastResponse(hit, responseBody);
+        recordHit(hit, responseBody);
         return ESP_OK;
     }
 
-    // Reply mode: byte-for-byte Windows fsd_mock response. The httpd task is
-    // single-threaded, so one static send buffer is enough.
+    char* body = static_cast<char*>(malloc(kPayloadCapacity));
+    if (!body) {
+        free(forwarded);
+        const char* errorBody = "{\"error\":\"no_memory\"}";
+        finishJsonError(request, hit, nullptr, 500, errorBody);
+        recordHit(hit, errorBody);
+        return ESP_OK;
+    }
     char checksum[33];
     size_t bytes = 0;
     lockState();
     bytes = gState.bytes;
-    memcpy(gSendBuffer, gState.payload, bytes + 1);
+    memcpy(body, gState.payload, bytes + 1);
     strlcpy(checksum, gState.md5, sizeof(checksum));
     unlockState();
 
@@ -936,45 +967,30 @@ esp_err_t handleRequest(httpd_req_t* request) {
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "X-Checksum", checksum);
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    const esp_err_t result = httpd_resp_send(request, gSendBuffer, bytes);
+    const esp_err_t result = httpd_resp_send(request, body, bytes);
 
     hit.status = 200;
     hit.bytes = static_cast<uint32_t>(bytes);
     strlcpy(hit.md5, checksum, sizeof(hit.md5));
     strlcpy(hit.respCtype, "application/json", sizeof(hit.respCtype));
-    copyPrintable(gSendBuffer, bytes, hit.respHead, sizeof(hit.respHead));
-    recordHit(hit);
-    setLastResponse(hit, gSendBuffer);
+    copyPrintable(reinterpret_cast<const uint8_t*>(body), bytes, hit.respHead, sizeof(hit.respHead));
+    recordHit(hit, body);
+    free(body);
     free(forwarded);
     return result;
 }
 
 esp_err_t forwardPassthrough(httpd_req_t* request) {
-    Capture capture;
-    extractVin(request->uri, capture.vin);
-    char client[16] = {};
-    clientAddress(request, client, sizeof(client));
-
     Hit hit;
-    hit.uptimeMs = millis();
+    Capture capture;
+    parseRequestMeta(request, hit, capture);
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
-    strlcpy(hit.client, client, sizeof(hit.client));
-    strlcpy(hit.method, httpMethodName(request->method), sizeof(hit.method));
-    strlcpy(hit.url, request->uri, sizeof(hit.url));
-    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
-    hit.reqBytes = static_cast<uint32_t>(request->content_len);
 
-    if (!enabled()) {
-        finishJsonError(request, hit, nullptr, 0, 404, "{\"error\":\"fsd_mock_disabled\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"fsd_mock_disabled\"}");
-        return ESP_OK;
-    }
     if (request->content_len > kForwardBodyBytes) {
-        finishJsonError(request, hit, nullptr, 0, 413, "{\"error\":\"request_too_large\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"request_too_large\"}");
+        const char* errorBody = "{\"error\":\"request_too_large\"}";
+        finishJsonError(request, hit, nullptr, 413, errorBody);
+        recordHit(hit, errorBody);
         return ESP_OK;
     }
 
@@ -982,28 +998,22 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     size_t bodyLength = 0;
     if (!drainRequestBody(request, body, kForwardBodyBytes + 1, bodyLength, capture)) {
         free(body);
-        finishJsonError(request, hit, nullptr, 0, 400, "{\"error\":\"request_read_failed\"}");
-        recordHit(hit);
-        setLastResponse(hit, "{\"error\":\"request_read_failed\"}");
+        const char* errorBody = "{\"error\":\"request_read_failed\"}";
+        finishJsonError(request, hit, nullptr, 400, errorBody);
+        recordHit(hit, errorBody);
         return ESP_OK;
     }
     strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
+    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
     strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
     hit.reqBytes = capture.requestBytes;
+    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
 
-    char responseBody[2049];
+    char responseBody[kLastResponseCapacity];
     forwardRequest(request, body, bodyLength, hit, responseBody, sizeof(responseBody));
     free(body);
-    recordHit(hit);
-    setLastResponse(hit, responseBody);
+    recordHit(hit, responseBody);
     return ESP_OK;
-}
-
-uint32_t dnsRedirectCount() {
-    uint32_t total = 0;
-    char last[128];
-    dnsGetFsdRedirectStats(&total, last, sizeof(last));
-    return total;
 }
 
 bool enabled() {
@@ -1025,15 +1035,7 @@ const char* modeName() {
 }
 
 const char* host() {
-    return gReportedHost;
-}
-
-const char* payload() {
-    return gState.payload;
-}
-
-const char* payloadMd5() {
-    return gState.md5;
+    return gState.host;
 }
 
 size_t payloadBytes() {
@@ -1050,18 +1052,19 @@ size_t payloadFields() {
     return value;
 }
 
-uint32_t hitCount() {
-    portENTER_CRITICAL(&gHitMux);
-    const uint32_t value = gHitTotal;
-    portEXIT_CRITICAL(&gHitMux);
-    return value;
+const char* payloadMd5() {
+    return gState.md5;
 }
 
-uint32_t observeCount() {
-    portENTER_CRITICAL(&gHitMux);
-    const uint32_t value = gObserveTotal;
-    portEXIT_CRITICAL(&gHitMux);
-    return value;
+size_t copyPayload(char* output, size_t capacity) {
+    if (!output || capacity == 0) return 0;
+    lockState();
+    const size_t bytes = gState.bytes;
+    const size_t copy = bytes < capacity - 1 ? bytes : capacity - 1;
+    memcpy(output, gState.payload, copy);
+    output[copy] = '\0';
+    unlockState();
+    return copy;
 }
 
 bool setEnabled(bool value) {
@@ -1087,7 +1090,6 @@ bool setMode(const char* value) {
 bool setHost(const char* value) {
     char trimmed[kHostCapacity];
     trimCopy(value, trimmed, sizeof(trimmed));
-    // Normalize separators to single spaces and lowercase (DNS is case-insensitive).
     char normalized[kHostCapacity];
     size_t out = 0;
     bool space = false;
@@ -1166,15 +1168,59 @@ void clearHits() {
     gFlowTotal = 0;
     memset(gHits, 0, sizeof(gHits));
     portEXIT_CRITICAL(&gHitMux);
-    SPIFFS.remove(kHitLogPath);
+    portENTER_CRITICAL(&gLastResponseMux);
+    gLastResponse = LastResponse{};
+    portEXIT_CRITICAL(&gLastResponseMux);
 }
 
 void clearHandshakes() {
     portENTER_CRITICAL(&gHandshakeMux);
-    gHandshake = HandshakeState{};
+    gHandshakeCount = 0;
+    gHandshakeWrite = 0;
+    gHandshakeOk = 0;
+    gHandshakeFail = 0;
+    gLastHandshakeOkMs = 0;
+    gLastHandshakeFailMs = 0;
+    gLastMbedtlsFailureMs = 0;
+    gLastHandshakeClient[0] = '\0';
+    gLastHandshakeTls[0] = '\0';
+    gLastHandshakeCipher[0] = '\0';
+    gLastHandshakeAlpn[0] = '\0';
+    gLastHandshakeError[0] = '\0';
+    memset(gHandshakes, 0, sizeof(gHandshakes));
     portEXIT_CRITICAL(&gHandshakeMux);
-    SPIFFS.remove(kHandshakeLogPath);
 }
+
+uint32_t hitCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gHitTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
+uint32_t observeCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gObserveTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
+uint32_t flowCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gFlowTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
+uint32_t dnsRedirectCount() {
+    uint32_t total = 0;
+    char last[128];
+    dnsGetFsdRedirectStats(&total, last, sizeof(last));
+    return total;
+}
+
+static bool readRecentHit(size_t index, Hit& out);
+static bool readRecentHandshake(size_t index, Handshake& out);
 
 void appendStatusJson(String& out) {
     bool enabledNow;
@@ -1209,31 +1255,35 @@ void appendStatusJson(String& out) {
     out += (bytesNow == kFsdCanonicalBytes && strcmp(md5Now, kFsdCanonicalMd5) == 0) ? "true" : "false";
     out += ",\"hits\":"; out += String(static_cast<unsigned>(hitCount()));
     out += ",\"observes\":"; out += String(static_cast<unsigned>(observeCount()));
-    uint32_t flowTotal = 0;
-    portENTER_CRITICAL(&gHitMux);
-    flowTotal = gFlowTotal;
-    portEXIT_CRITICAL(&gHitMux);
-    out += ",\"flows\":"; out += String(static_cast<unsigned>(flowTotal));
+    out += ",\"flows\":"; out += String(static_cast<unsigned>(flowCount()));
     out += ",\"dnsRedirects\":"; out += String(static_cast<unsigned>(dnsTotal));
     out += ",\"dnsLast\":\""; jsonEscape(out, dnsLast); out += "\"";
 
-    HandshakeState handshake;
     portENTER_CRITICAL(&gHandshakeMux);
-    handshake = gHandshake;
+    const uint32_t hsOk = gHandshakeOk;
+    const uint32_t hsFail = gHandshakeFail;
+    const uint32_t hsOkMs = gLastHandshakeOkMs;
+    const uint32_t hsFailMs = gLastHandshakeFailMs;
+    char hsClient[16]; strlcpy(hsClient, gLastHandshakeClient, sizeof(hsClient));
+    char hsTls[16]; strlcpy(hsTls, gLastHandshakeTls, sizeof(hsTls));
+    char hsCipher[64]; strlcpy(hsCipher, gLastHandshakeCipher, sizeof(hsCipher));
+    char hsAlpn[16]; strlcpy(hsAlpn, gLastHandshakeAlpn, sizeof(hsAlpn));
+    char hsError[64]; strlcpy(hsError, gLastHandshakeError, sizeof(hsError));
     portEXIT_CRITICAL(&gHandshakeMux);
+
     out += ",\"handshake\":{";
-    out += "\"ok\":"; out += String(static_cast<unsigned long>(handshake.ok));
-    out += ",\"fail\":"; out += String(static_cast<unsigned long>(handshake.fail));
-    out += ",\"lastOkMs\":"; out += String(static_cast<unsigned long>(handshake.lastOkMs));
-    out += ",\"lastFailMs\":"; out += String(static_cast<unsigned long>(handshake.lastFailMs));
-    out += ",\"client\":\""; jsonEscape(out, handshake.lastClient); out += "\"";
-    out += ",\"tls\":\""; jsonEscape(out, handshake.lastTls); out += "\"";
-    out += ",\"cipher\":\""; jsonEscape(out, handshake.lastCipher); out += "\"";
-    out += ",\"alpn\":\""; jsonEscape(out, handshake.lastAlpn); out += "\"";
-    out += ",\"error\":\""; jsonEscape(out, handshake.lastError); out += "\"";
+    out += "\"ok\":"; out += String(static_cast<unsigned long>(hsOk));
+    out += ",\"fail\":"; out += String(static_cast<unsigned long>(hsFail));
+    out += ",\"lastOkMs\":"; out += String(static_cast<unsigned long>(hsOkMs));
+    out += ",\"lastFailMs\":"; out += String(static_cast<unsigned long>(hsFailMs));
+    out += ",\"client\":\""; jsonEscape(out, hsClient); out += "\"";
+    out += ",\"tls\":\""; jsonEscape(out, hsTls); out += "\"";
+    out += ",\"cipher\":\""; jsonEscape(out, hsCipher); out += "\"";
+    out += ",\"alpn\":\""; jsonEscape(out, hsAlpn); out += "\"";
+    out += ",\"error\":\""; jsonEscape(out, hsError); out += "\"";
     out += "}";
 
-    LastResponse* last = new (std::nothrow) LastResponse;
+    auto* last = new (std::nothrow) LastResponse;
     if (last) {
         portENTER_CRITICAL(&gLastResponseMux);
         *last = gLastResponse;
@@ -1244,46 +1294,105 @@ void appendStatusJson(String& out) {
         out += ",\"ctype\":\""; jsonEscape(out, last->ctype); out += "\"";
         out += ",\"bytes\":"; out += String(static_cast<unsigned long>(last->bytes));
         out += ",\"md5\":\""; jsonEscape(out, last->md5); out += "\"";
-        char bodyPreview[513];
-        strlcpy(bodyPreview, last->body, sizeof(bodyPreview));
-        out += ",\"body\":\""; jsonEscape(out, bodyPreview); out += "\"";
+        out += ",\"body\":\""; jsonEscape(out, last->body); out += "\"";
         out += "}";
     }
     delete last;
 
-    lockState();
-    out += ",\"payload\":\"";
-    jsonEscape(out, gState.payload);
-    out += "\"";
-    unlockState();
-
-    // 16 × Hit ≈ 5.6 KB: heap, not the AsyncTCP task stack.
-    // The 3 s /api/wifi-bridge/status poll only needs the latest few rows.
-    constexpr size_t kStatusRecentLimit = 8;
-    Hit* recent = new (std::nothrow) Hit[kStatusRecentLimit];
-    const size_t count = recent ? recentHits(recent, kStatusRecentLimit) : 0;
+    constexpr size_t kStatusRecentLimit = 6;
     out += ",\"recent\":[";
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < kStatusRecentLimit; ++i) {
+        Hit recent;
+        if (!readRecentHit(i, recent)) break;
         if (i) out += ',';
-        out += "{\"uptimeMs\":"; out += String(static_cast<unsigned long>(recent[i].uptimeMs));
-        out += ",\"client\":\""; jsonEscape(out, recent[i].client); out += "\"";
-        out += ",\"method\":\""; jsonEscape(out, recent[i].method); out += "\"";
-        out += ",\"url\":\""; jsonEscape(out, recent[i].url); out += "\"";
-        out += ",\"vin\":\""; jsonEscape(out, recent[i].vin); out += "\"";
-        out += ",\"reqHead\":\""; jsonEscape(out, recent[i].reqHead); out += "\"";
-        out += ",\"reqBytes\":"; out += String(static_cast<unsigned long>(recent[i].reqBytes));
-        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(recent[i].bytes));
-        out += ",\"md5\":\""; jsonEscape(out, recent[i].md5); out += "\"";
-        out += ",\"mode\":\""; jsonEscape(out, recent[i].mode); out += "\"";
-        out += ",\"kind\":\""; jsonEscape(out, recent[i].kind); out += "\"";
-        out += ",\"status\":"; out += String(static_cast<unsigned>(recent[i].status));
-        out += ",\"statusText\":\""; out += (recent[i].status == 200 ? "OK" : (recent[i].status == 404 ? "Not Found" : (recent[i].status == 502 ? "Bad Gateway" : ""))); out += "\"";
-        out += ",\"ctype\":\""; jsonEscape(out, recent[i].respCtype); out += "\"";
-        out += ",\"respHead\":\""; jsonEscape(out, recent[i].respHead); out += "\"";
+        out += "{\"kind\":\""; jsonEscape(out, recent.kind); out += "\"";
+        out += ",\"ts\":\""; jsonEscape(out, recent.ts); out += "\"";
+        out += ",\"client\":\""; jsonEscape(out, recent.client); out += "\"";
+        out += ",\"method\":\""; jsonEscape(out, recent.method); out += "\"";
+        out += ",\"url\":\""; jsonEscape(out, recent.url); out += "\"";
+        out += ",\"vin\":\""; jsonEscape(out, recent.vin); out += "\"";
+        out += ",\"atMs\":"; out += String(static_cast<unsigned long>(recent.atMs));
+        out += ",\"reqBytes\":"; out += String(static_cast<unsigned long>(recent.reqBytes));
+        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(recent.bytes));
+        out += ",\"md5\":\""; jsonEscape(out, recent.md5); out += "\"";
+        out += ",\"mode\":\""; jsonEscape(out, recent.mode); out += "\"";
+        out += ",\"status\":"; out += String(static_cast<unsigned>(recent.status));
+        out += ",\"ctype\":\""; jsonEscape(out, recent.respCtype); out += "\"";
+        out += ",\"respHead\":\""; jsonEscape(out, recent.respHead); out += "\"";
         out += "}";
     }
-    delete[] recent;
     out += "]}";
+}
+
+// Copy one RAM ring entry without allocating an array of Hits. `index` is
+// 0 = newest. Keeps peak heap low on status polls and log downloads.
+static bool readRecentHit(size_t index, Hit& out) {
+    portENTER_CRITICAL(&gHitMux);
+    if (index >= gHitCount) {
+        portEXIT_CRITICAL(&gHitMux);
+        return false;
+    }
+    const size_t slot = (gHitWrite + kRecentHitCapacity - 1 - index) % kRecentHitCapacity;
+    out = gHits[slot];
+    portEXIT_CRITICAL(&gHitMux);
+    return true;
+}
+
+static bool readRecentHandshake(size_t index, Handshake& out) {
+    portENTER_CRITICAL(&gHandshakeMux);
+    if (index >= gHandshakeCount) {
+        portEXIT_CRITICAL(&gHandshakeMux);
+        return false;
+    }
+    const size_t slot = (gHandshakeWrite + kHandshakeCapacity - 1 - index) % kHandshakeCapacity;
+    out = gHandshakes[slot];
+    portEXIT_CRITICAL(&gHandshakeMux);
+    return true;
+}
+
+void appendHitsJsonl(String& out) {
+    for (size_t i = 0; i < kRecentHitCapacity; ++i) {
+        Hit h;
+        if (!readRecentHit(i, h)) break;
+        out += "{\"ts\":\""; jsonEscape(out, h.ts); out += "\"";
+        out += ",\"kind\":\""; jsonEscape(out, h.kind); out += "\"";
+        out += ",\"method\":\""; jsonEscape(out, h.method); out += "\"";
+        out += ",\"url\":\""; jsonEscape(out, h.url); out += "\"";
+        out += ",\"client\":\""; jsonEscape(out, h.client); out += "\"";
+        out += ",\"http_version\":\""; jsonEscape(out, h.httpVersion); out += "\"";
+        out += ",\"host_header\":\""; jsonEscape(out, h.host); out += "\"";
+        out += ",\"user_agent\":\""; jsonEscape(out, h.userAgent); out += "\"";
+        out += ",\"req_bytes\":"; out += String(static_cast<unsigned long>(h.reqBytes));
+        out += ",\"req_md5\":\""; jsonEscape(out, h.reqMd5); out += "\"";
+        out += ",\"req_ctype\":\""; jsonEscape(out, h.reqCtype); out += "\"";
+        out += ",\"vin\":\""; jsonEscape(out, h.vin); out += "\"";
+        out += ",\"mode\":\""; jsonEscape(out, h.mode); out += "\"";
+        out += ",\"req_head\":\""; jsonEscape(out, h.reqHead); out += "\"";
+        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(h.bytes));
+        out += ",\"md5\":\""; jsonEscape(out, h.md5); out += "\"";
+        out += ",\"status\":"; out += String(static_cast<unsigned>(h.status));
+        out += ",\"ctype\":\""; jsonEscape(out, h.respCtype); out += "\"";
+        out += ",\"resp_head\":\""; jsonEscape(out, h.respHead); out += "\"";
+        out += "}\n";
+    }
+}
+
+void appendHandshakesJsonl(String& out) {
+    for (size_t i = 0; i < kHandshakeCapacity; ++i) {
+        Handshake h;
+        if (!readRecentHandshake(i, h)) break;
+        out += "{\"ts\":\""; jsonEscape(out, h.ts); out += "\"";
+        out += ",\"event\":\""; jsonEscape(out, h.event); out += "\"";
+        out += ",\"client\":\""; jsonEscape(out, h.client); out += "\"";
+        out += ",\"sni\":\""; jsonEscape(out, h.sni); out += "\"";
+        out += ",\"alpn\":\""; jsonEscape(out, h.alpn); out += "\"";
+        out += ",\"tls\":\""; jsonEscape(out, h.tls); out += "\"";
+        out += ",\"cipher\":\""; jsonEscape(out, h.cipher); out += "\"";
+        out += ",\"confdir\":\"emudhra\"";
+        out += ",\"error\":\""; jsonEscape(out, h.error); out += "\"";
+        out += ",\"first_request\":\""; jsonEscape(out, h.firstRequest); out += "\"";
+        out += "}\n";
+    }
 }
 
 size_t recentHits(Hit* out, size_t capacity) {
@@ -1295,6 +1404,18 @@ size_t recentHits(Hit* out, size_t capacity) {
         out[i] = gHits[index];
     }
     portEXIT_CRITICAL(&gHitMux);
+    return count;
+}
+
+size_t recentHandshakes(Handshake* out, size_t capacity) {
+    if (!out || capacity == 0) return 0;
+    portENTER_CRITICAL(&gHandshakeMux);
+    const size_t count = gHandshakeCount < capacity ? gHandshakeCount : capacity;
+    for (size_t i = 0; i < count; ++i) {
+        const size_t index = (gHandshakeWrite + kHandshakeCapacity - 1 - i) % kHandshakeCapacity;
+        out[i] = gHandshakes[index];
+    }
+    portEXIT_CRITICAL(&gHandshakeMux);
     return count;
 }
 

@@ -55,6 +55,7 @@ def lock_output(file):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="9.9.9.9", help="ESP32 address or fsd.local")
+    parser.add_argument("--port", type=int, default=10011, help="client-config HTTPS port (443 is FSD-only)")
     parser.add_argument("--cert", required=True, help="Public PEM certificate exported over USB")
     parser.add_argument("--output", required=True, type=Path, help="Local configuration file")
     args = parser.parse_args()
@@ -69,7 +70,7 @@ def main():
         lock_path = args.output.with_name(args.output.name + ".lock")
         with lock_path.open("a+b") as lock:
             lock_output(lock)
-            connection = http.client.HTTPSConnection(args.host, 443, context=tls, timeout=10)
+            connection = http.client.HTTPSConnection(args.host, args.port, context=tls, timeout=10)
             try:
                 result = request(connection, token, "GET", base)
                 revision, config = result["revision"], result["config"]

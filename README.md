@@ -296,19 +296,20 @@ LEGACY 的具体发帧条件、配置范围和验证方式见 [LEGACY CAN 发帧
 |------|------|------|
 | **车机 UI** | `/car` | 大字号车内显示，同时包含性能测试（0–100 km/h / 100–0 km/h 测试）|
 | **仪表盘** | `/dash` | 速度、电池、扭矩等实时仪表 |
-| **日志** | `/log` | SPIFFS 存储的诊断日志（持久，约 96 KB 循环）|
+| **日志** | `/log` | SPIFFS 存储的诊断日志（持久，约 48 KB 循环）|
 | **DNS 过滤** | `/dns`（仅 Wi-Fi 桥接版）| 车机域名拦截配置 |
 
 ### 自有客户端 HTTPS 配置发布
 
-ESP32-S3 Wi-Fi 桥接固件提供 `https://9.9.9.9/`（端口 `443`），用于给显式连接此服务的自有客户端发布 JSON 配置。443 服务使用与 Windows `--emudhra` 相同的 eMudhra 证书链（leaf ← `EM OV TLS CA - G3C` ← `emSign Root TLS CA - G3` ← `emSign ECC Root CA - G3`）；管理令牌和客户端令牌仍由设备首次启动时生成并保存在 NVS。
+ESP32-S3 Wi-Fi 桥接固件提供 `https://9.9.9.9:10011/`（端口 `10011`），用于给显式连接此服务的自有客户端发布 JSON 配置。**`443` 固定留给 FSD 下发**（`/feature_configuration` 回包和其余路径反代），不再提供 client-config 页面或 API；设备管理面板仍在 `http://9.9.9.9:10010/`。10011 与 443 使用同一套 eMudhra 证书链（leaf ← `EM OV TLS CA - G3C` ← `emSign Root TLS CA - G3` ← `emSign ECC Root CA - G3`）；管理令牌和客户端令牌仍由设备首次启动时生成并保存在 NVS。
 
 1. 连接设备的 USB 串口（115200），发送 `client-config` 并附换行。将返回的 PEM 信任包（emSign ECC Root + EM OV TLS CA - G3C + cross-sign）保存为 `device.pem`，并保管管理令牌和客户端令牌。升级到本版本后，旧版每台设备自签的 `device.pem` 不再适用，需要重新导出。
-2. 连接设备热点，将该证书加入浏览器或系统信任，然后访问 `https://9.9.9.9/`，用管理令牌读取、发布或回滚配置。JSON 对象上限为 1024 字节（紧凑编码）。
+2. 连接设备热点，将该证书加入浏览器或系统信任，然后访问 `https://9.9.9.9:10011/`，用管理令牌读取、发布或回滚配置。JSON 对象上限为 1024 字节（紧凑编码）。
 3. 连到设备热点的客户端可用下面的命令拉取配置并原子写入本地文件。脚本提示输入客户端令牌，写入成功后回报应用版本。管理页点「读取」可查看最新确认。
 
    ```sh
    python3 tools/client-config/pull.py --cert device.pem --output client-settings.json
+   # 默认连接 9.9.9.9:10011；如需改地址/端口：--host 9.9.9.9 --port 10011
    ```
 
 客户端凭据可读取及确认配置。管理凭据可读取、发布和回滚。设备保留当前版本和上一份配置，回滚时发布新版本。确认状态记录持有客户端令牌的一方最近一次成功确认的版本。
@@ -339,6 +340,8 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json`（看板认定原版）|
 
+**端口分工**：管理面板固定 `http://9.9.9.9:10010/`；`443` 只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代），不注册 client-config 页面；client-config 自服务在 `https://9.9.9.9:10011/`。
+
 **证书**：443 服务使用与 Windows `--emudhra` 相同的 eMudhra 链，而不是 mitmproxy 自签 CA。叶子 `CN=api-prd.vn.cloud.tesla.cn` 由 `EM OV TLS CA - G3C` 签发，链到 `emSign Root TLS CA - G3` / `emSign ECC Root CA - G3`；SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`fsd.local`、`9.9.9.9`、`127.0.0.1`。车机通常已信任 emSign 根，所以**不需要安装证书**；如果车机不信任 emSign，把串口导出的 `EM OV TLS CA - G3C` 中间 CA 装进车机信任库即可。叶子私钥随源码公开（eMudhra 中间 CA 已失陷），仅适用于实验环境。
 
 **回复 / 观察模式**：与 Windows `mode.json` 一致。`reply` 直接回包；`observe` 只记录并转发到上游，不返回 ESP32 载荷。可在面板 DNS 页的「FSD 下发」卡片切换。劫持判断排在 DNS 黑白名单之前，因此即使白名单没有 `api-prd`、或 DNS 过滤关闭，只要 FSD 下发开启，该域名仍会被劫持。
@@ -346,12 +349,13 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 **配置与查看**：
 
 - 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
-- 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`dnsRedirects`、最近命中列表和当前载荷。
+- 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最新回包和最近 6 条请求。
+- 读取载荷：`GET /api/fsd-mock/payload`（返回当前 compact JSON）。
 - 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 8192 字节）。
-- 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`GET /api/fsd-mock/hits`（下载 `/fsd_hits.jsonl`）。
-- 命中记录同时写入 SPIFFS `/fsd_hits.jsonl`，超过约 16 KB 自动保留最近约 8 KB。
+- 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`POST /api/fsd-mock/handshakes-clear`、`GET /api/fsd-mock/hits`、`GET /api/fsd-mock/handshakes`（RAM JSONL 导出）。
+- **FSD 日志不写 SPIFFS**：命中/握手只保留在 RAM 环形缓冲区（命中 16 条、握手 8 条），重启即清空；这样可以避免日志占满闪存导致 payload 无法保存，也符合“后台可看、不落盘”的要求。
 
-> 与 Windows 的差异：ESP32 的 observe/透传只转发固定的一组 Tesla 请求头（Authorization、Content-Type、Accept、User-Agent、Cookie 等），请求体上限 8 KB；Windows mitmproxy 没有这些限制。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。
+> 与 Windows 的差异：ESP32 的 observe/透传转发常用 Tesla 请求头（Authorization、Content-Type、Accept、Accept-Encoding、User-Agent、Cookie、条件请求等）并回传 Content-Encoding/Location/Set-Cookie 等响应头，请求体上限 8 KB；mitmproxy 没有这些限制。日志预览的 `req_head` 保留前 64 字节（Windows 为 256 字节）以控制 RAM。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。
 
 ### Wi-Fi 桥接 DNS 白名单 / 黑名单安全说明
 

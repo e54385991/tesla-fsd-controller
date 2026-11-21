@@ -1143,6 +1143,7 @@ function startApp(){
 // ── WiFi bridge card (shown only if backend supports it) ───────────
 var brDirty=false;  // true while user editing DNS lists → skip overwrite
 var fsdDirtyP=false; // true while user editing the FSD payload → skip overwrite
+var fsdLoadedP=false;
 var brPollTimer=null;
 var __brPollEnabled=false;  // true once bridge endpoint confirmed + poll started
 var __mainPollT=null;       // handle for main 1s status poll (nullable when tab hidden)
@@ -1273,10 +1274,7 @@ function brPoll(){
             '<span>'+escHtml(h.client||'-')+' · '+(h.bytes||0)+'B</span></div>';
         }).join('') || '<span>暂无命中</span>';
       }
-      if(!fsdDirtyP){
-        var fp=document.getElementById('fsdPayloadP');
-        if(fp && fp.value!==(fm.payload||'')) fp.value=fm.payload||'';
-      }
+      if(!fsdLoadedP){ fsdLoadedP=true; fsdLoadPayloadP(); }
       if(fm.active===false) fsdCard.style.display='none';
     }
   }).catch(function(){});
@@ -1293,7 +1291,17 @@ function fsdModeP(){
 }
 function fsdPresetP(name){
   fsdDirtyP=false;
+  fsdLoadedP=false;
   fsdSetP('preset='+encodeURIComponent(name));
+}
+function fsdLoadPayloadP(){
+  fetch('/api/fsd-mock/payload'+(token?'?token='+token:''))
+    .then(function(r){ return r.ok ? r.text() : ''; })
+    .then(function(text){
+      var fp=document.getElementById('fsdPayloadP');
+      if(fp && text && !fsdDirtyP) fp.value=text;
+    })
+    .catch(function(){});
 }
 function fsdSaveP(){
   var text=document.getElementById('fsdPayloadP').value.trim();

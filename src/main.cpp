@@ -585,6 +585,18 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
                   static_cast<unsigned>(ESP.getFreeHeap()));
+#ifdef CLIENT_CONFIG_HTTPS_ENABLED
+    Serial.printf("[wifi-diag] fsd=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u dns=%u spi=%u/%u\n",
+                  fsd_mock::enabled() ? 1 : 0, fsd_mock::modeName(),
+                  static_cast<unsigned>(fsd_mock::payloadBytes()), fsd_mock::payloadMd5(),
+                  static_cast<unsigned>(fsd_mock::payloadFields()),
+                  static_cast<unsigned>(fsd_mock::hitCount()),
+                  static_cast<unsigned>(fsd_mock::observeCount()),
+                  static_cast<unsigned>(fsd_mock::flowCount()),
+                  static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
+                  static_cast<unsigned>(SPIFFS.usedBytes()),
+                  static_cast<unsigned>(SPIFFS.totalBytes()));
+#endif
 }
 #endif
 
@@ -1512,6 +1524,18 @@ void setupWebServer() {
         req->send(200, "application/json", "{\"ok\":true}");
     });
 
+    server.on("/api/fsd-mock/payload", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        char* body = static_cast<char*>(malloc(fsd_mock::kPayloadCapacity));
+        if (!body) { req->send(500, "application/json", "{\"error\":\"no_memory\"}"); return; }
+        const size_t length = fsd_mock::copyPayload(body, fsd_mock::kPayloadCapacity);
+        String payloadText(body, length);
+        free(body);
+        auto* response = req->beginResponse(200, "application/json", payloadText);
+        response->addHeader("Cache-Control", "no-store");
+        req->send(response);
+    });
+
     server.on("/api/fsd-mock/payload", HTTP_POST, fsdPayloadRequest, nullptr, fsdPayloadBody);
 
     server.on("/api/fsd-mock/hits-clear", HTTP_POST, [](AsyncWebServerRequest* req) {
@@ -1522,12 +1546,11 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/hits", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
-        if (!SPIFFS.exists("/fsd_hits.jsonl")) {
-            req->send(200, "application/x-ndjson", "");
-            return;
-        }
-        auto* response = req->beginResponse(SPIFFS, "/fsd_hits.jsonl", "application/x-ndjson");
-        response->addHeader("Content-Disposition", "attachment; filename=\"fsd_hits.jsonl\"");
+        String body;
+        body.reserve(4096);
+        fsd_mock::appendHitsJsonl(body);
+        auto* response = req->beginResponse(200, "application/x-ndjson", body);
+        response->addHeader("Cache-Control", "no-store");
         req->send(response);
     });
 
@@ -1539,12 +1562,11 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/handshakes", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
-        if (!SPIFFS.exists("/fsd_handshake.log")) {
-            req->send(200, "application/x-ndjson", "");
-            return;
-        }
-        auto* response = req->beginResponse(SPIFFS, "/fsd_handshake.log", "application/x-ndjson");
-        response->addHeader("Content-Disposition", "attachment; filename=\"fsd_handshake.log\"");
+        String body;
+        body.reserve(2048);
+        fsd_mock::appendHandshakesJsonl(body);
+        auto* response = req->beginResponse(200, "application/x-ndjson", body);
+        response->addHeader("Cache-Control", "no-store");
         req->send(response);
     });
 #endif
@@ -2048,6 +2070,7 @@ void setup() {
         esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
         if (apNetif) {
             const esp_err_t stopErr = esp_netif_dhcps_stop(apNetif);
+            (void)stopErr;
             esp_netif_dns_info_t dnsInfo = {};
             dnsInfo.ip.type = ESP_IPADDR_TYPE_V4;
             dnsInfo.ip.u_addr.ip4.addr = static_cast<uint32_t>(WiFi.softAPIP());
@@ -2055,6 +2078,7 @@ void setup() {
             dhcps_offer_t offerDns = OFFER_DNS;
             const esp_err_t offerErr = esp_netif_dhcps_option(apNetif, ESP_NETIF_OP_SET,
                 ESP_NETIF_DOMAIN_NAME_SERVER, &offerDns, sizeof(offerDns));
+            (void)offerErr;
             esp_err_t startErr = esp_netif_dhcps_start(apNetif);
             if (startErr != ESP_OK && startErr != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
                 delay(100);
@@ -2094,10 +2118,16 @@ void setup() {
     // Start web server
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    const bool clientConfigAvailable = !safeModeActive && client_config::start();
+    const bool fsdHttpsAvailable = !safeModeActive && client_config::start();
+    const bool clientConfigAvailable = fsdHttpsAvailable && client_config::configStarted();
     if (!safeModeActive) {
-        addDiagLog(clientConfigAvailable ? 0 : 1,
-            clientConfigAvailable ? "Client config HTTPS started" : "Client config HTTPS startup failed");
+        addDiagLog(fsdHttpsAvailable ? 0 : 1,
+            fsdHttpsAvailable ? "FSD HTTPS on 443 started" : "FSD HTTPS startup failed");
+        if (fsdHttpsAvailable) {
+            addDiagLog(clientConfigAvailable ? 0 : 1,
+                clientConfigAvailable ? "Client config HTTPS on 10011 started"
+                                      : "Client config HTTPS startup failed");
+        }
     }
 #endif
 
@@ -2105,7 +2135,8 @@ void setup() {
     if (MDNS.begin("fsd")) {
         MDNS.addService("http", "tcp", kManagementPort);
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-        if (clientConfigAvailable) MDNS.addService("https", "tcp", client_config::kHttpsPort);
+        if (fsdHttpsAvailable) MDNS.addService("https", "tcp", client_config::kFsdPort);
+        if (clientConfigAvailable) MDNS.addService("client-config", "tcp", client_config::kClientConfigPort);
 #endif
         DLOGLN("mDNS: fsd.local");
         addDiagLog(0, "mDNS: fsd.local");

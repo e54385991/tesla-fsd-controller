@@ -23,7 +23,8 @@ extern void wifiBridgePrintDiag();
 namespace client_config {
 
 static nvs_handle_t storage;
-static httpd_handle_t server;
+static httpd_handle_t fsdServer;
+static httpd_handle_t configServer;
 
 static bool readState(ClientConfigState& state) {
     size_t length = sizeof(state);
@@ -213,19 +214,11 @@ static void tlsUserCallback(esp_https_server_user_cb_arg_t* argument) {
     if (argument && argument->tls) fsd_mock::noteHandshake(argument->tls);
 }
 
-bool start() {
-    if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
-    if (!loadIdentity(storage)) {
-        nvs_close(storage);
-        return false;
-    }
-
-    // Same cert chain as TeslaDG/app/certs2: leaf signed by the mitmproxy CA.
-    // Feature_configuration and the self-service client config share port 443.
-    fsd_mock::installLogHook();
+static bool startServer(httpd_handle_t& handle, uint16_t port,
+                        const httpd_uri_t* endpoints, size_t endpointCount,
+                        bool fsdTraffic) {
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.port_secure = kHttpsPort;
-    config.user_cb = tlsUserCallback;
+    config.port_secure = port;
     config.cacert_pem = reinterpret_cast<const uint8_t*>(kFsdTlsCertificate);
     config.cacert_len = strlen(kFsdTlsCertificate) + 1;
     config.prvtkey_pem = reinterpret_cast<const uint8_t*>(kFsdTlsPrivateKey);
@@ -233,22 +226,39 @@ bool start() {
     config.httpd.uri_match_fn = matchUri;
     config.httpd.max_uri_handlers = 16;
     config.httpd.core_id = 0;
-    config.httpd.stack_size = 12288;
-    config.httpd.max_open_sockets = 2;
+    // The FSD socket needs headroom for 8 KB request bodies; the optional
+    // client-config panel is small, so keep its task/socket footprint lower.
+    config.httpd.stack_size = fsdTraffic ? 12288 : 8192;
+    config.httpd.max_open_sockets = fsdTraffic ? 2 : 1;
     config.httpd.recv_wait_timeout = 3;
     config.httpd.send_wait_timeout = 3;
+    // Only the FSD socket reports handshakes; panel/client-config handshakes
+    // would otherwise inflate the vehicle TLS counters.
+    if (fsdTraffic) config.user_cb = tlsUserCallback;
 
-    const httpd_uri_t endpoints[] = {
-        {"/", HTTP_GET, dashboard, nullptr},
-        {"/api/client-config", HTTP_GET, fetchConfig, nullptr},
-        {"/api/client-config", HTTP_PUT,
-            [](httpd_req_t* request) { return changeConfig(request, Change::Publish); }, nullptr},
-        {"/api/client-config/rollback", HTTP_POST,
-            [](httpd_req_t* request) { return changeConfig(request, Change::Rollback); }, nullptr},
-        {"/api/client-config/ack", HTTP_POST,
-            [](httpd_req_t* request) { return changeConfig(request, Change::Acknowledge); }, nullptr},
-        // Must stay last: Windows fsd_mock matches /feature_configuration anywhere.
-        // IDF 4.4 has no HTTP_ANY, so register the catch-all once per method.
+    httpd_handle_t started = nullptr;
+    if (httpd_ssl_start(&started, &config) != ESP_OK) return false;
+    for (size_t i = 0; i < endpointCount; ++i) {
+        if (httpd_register_uri_handler(started, &endpoints[i]) == ESP_OK) continue;
+        httpd_ssl_stop(started);
+        return false;
+    }
+    handle = started;
+    return true;
+}
+
+bool start() {
+    if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
+    if (!loadIdentity(storage)) {
+        nvs_close(storage);
+        return false;
+    }
+
+    fsd_mock::installLogHook();
+
+    // 443 is FSD-only: the catch-all handles /feature_configuration and
+    // reverse-proxies every other vehicle path (Windows mitmdump behavior).
+    const httpd_uri_t fsdEndpoints[] = {
         {"/*", HTTP_GET, catchAll, nullptr},
         {"/*", HTTP_POST, catchAll, nullptr},
         {"/*", HTTP_PUT, catchAll, nullptr},
@@ -257,25 +267,45 @@ bool start() {
         {"/*", HTTP_OPTIONS, catchAll, nullptr},
         {"/*", HTTP_PATCH, catchAll, nullptr},
     };
-    if (httpd_ssl_start(&server, &config) == ESP_OK) {
-        for (const auto& endpoint : endpoints) {
-            if (httpd_register_uri_handler(server, &endpoint) == ESP_OK) continue;
-            httpd_ssl_stop(server);
-            server = nullptr;
-            break;
-        }
-        if (server) {
-            // Only redirect api-prd after 443 is actually accepting connections.
-            fsd_mock::begin();
-            return true;
-        }
+    const bool fsdOk = startServer(fsdServer, kFsdPort, fsdEndpoints,
+        sizeof(fsdEndpoints) / sizeof(fsdEndpoints[0]), true);
+
+    // Optional self-service client-config API, kept off 443.
+    const httpd_uri_t configEndpoints[] = {
+        {"/", HTTP_GET, dashboard, nullptr},
+        {"/api/client-config", HTTP_GET, fetchConfig, nullptr},
+        {"/api/client-config", HTTP_PUT,
+            [](httpd_req_t* request) { return changeConfig(request, Change::Publish); }, nullptr},
+        {"/api/client-config/rollback", HTTP_POST,
+            [](httpd_req_t* request) { return changeConfig(request, Change::Rollback); }, nullptr},
+        {"/api/client-config/ack", HTTP_POST,
+            [](httpd_req_t* request) { return changeConfig(request, Change::Acknowledge); }, nullptr},
+    };
+    if (!startServer(configServer, kClientConfigPort, configEndpoints,
+                     sizeof(configEndpoints) / sizeof(configEndpoints[0]), false)) {
+        configServer = nullptr;
+    }
+
+    if (fsdOk) {
+        // Only redirect api-prd after 443 is actually accepting connections.
+        fsd_mock::begin();
+        return true;
+    }
+
+    if (configServer) {
+        httpd_ssl_stop(configServer);
+        configServer = nullptr;
     }
     nvs_close(storage);
     return false;
 }
 
+bool configStarted() {
+    return configServer != nullptr;
+}
+
 void serviceSerial() {
-    if (!server) return;
+    if (!fsdServer && !configServer) return;
     static char command[24];
     static size_t length = 0;
     for (int budget = 48; budget > 0 && Serial.available(); --budget) {
