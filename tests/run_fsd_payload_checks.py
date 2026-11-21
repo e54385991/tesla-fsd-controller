@@ -89,6 +89,8 @@ def check_response_contract() -> None:
         'gHits[gHitWrite] = hit',
         'Handshake& handshake = gHandshakes[gHandshakeWrite]',
         'esp_http_client_open(client, bodyLength)',
+        'upstream_unavailable',
+        'constexpr size_t kForwardBodyBytes = 4096;',
         'esp_http_client_fetch_headers(client)',
         'httpd_resp_send_chunk(request, buffer, read)',
     ):
@@ -117,6 +119,7 @@ def check_port_policy() -> None:
     assert '"/api/client-config"' in main
     assert "client_config::apiGet" in main
     assert "client_config::apiChange" in main
+    assert "max_open_sockets = 1" in server
 
 
 def payloads() -> list[str]:

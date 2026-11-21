@@ -39,7 +39,7 @@ constexpr char kPayloadPath[] = "/fsd_payload.json";
 constexpr char kPayloadTempPath[] = "/fsd_payload.tmp";
 constexpr char kPayloadBackupPath[] = "/fsd_payload.bak";
 constexpr size_t kRequestCaptureBytes = 64;
-constexpr size_t kForwardBodyBytes = 8192;
+constexpr size_t kForwardBodyBytes = 4096;
 
 struct Settings {
     uint32_t magic = kSettingsMagic;
@@ -601,6 +601,9 @@ void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
                      int status, const char* json) {
     setStatusLine(request, status);
     httpd_resp_set_type(request, "application/json");
+    // Requests that fail before their body is drained must not reuse the
+    // socket; the car would otherwise keep a half-read request open.
+    httpd_resp_set_hdr(request, "Connection", "close");
     const size_t length = strlen(json);
     httpd_resp_send(request, json, length);
     hit.status = static_cast<uint16_t>(status);
@@ -611,8 +614,17 @@ void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
     if (responseBody) strlcpy(responseBody, json, kLastResponseCapacity);
 }
 
+bool upstreamReady() {
+    return WiFi.status() == WL_CONNECTED &&
+        static_cast<uint32_t>(WiFi.localIP()) != 0;
+}
+
 int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
                    Hit& hit, char* responseBody, size_t responseCapacity) {
+    if (!upstreamReady()) {
+        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
+        return 502;
+    }
     hit.status = 0;
     hit.bytes = 0;
     hit.md5[0] = '\0';
@@ -649,7 +661,7 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = upstreamMethod(request->method);
-    config.timeout_ms = 8000;
+    config.timeout_ms = 5000;
     config.disable_auto_redirect = true;
     config.transport_type = HTTP_TRANSPORT_OVER_SSL;
     config.skip_cert_common_name_check = true;
@@ -946,6 +958,16 @@ esp_err_t handleRequest(httpd_req_t* request) {
     strlcpy(hit.kind, observe ? "OBSERVE" : "HIT", sizeof(hit.kind));
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
+    if (observe && !upstreamReady()) {
+        strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
+        strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
+        hit.reqBytes = static_cast<uint32_t>(request->content_len);
+        const char* errorBody = "{\"error\":\"upstream_unavailable\"}";
+        finishJsonError(request, hit, nullptr, 502, errorBody);
+        recordHit(hit, errorBody);
+        return ESP_OK;
+    }
+
     if (observe && request->content_len > kForwardBodyBytes) {
         const char* errorBody = "{\"error\":\"request_too_large\"}";
         finishJsonError(request, hit, nullptr, 413, errorBody);
@@ -1018,6 +1040,16 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     parseRequestMeta(request, hit, capture);
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
+    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
+    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
+    hit.reqBytes = static_cast<uint32_t>(request->content_len);
+
+    if (!upstreamReady()) {
+        const char* errorBody = "{\"error\":\"upstream_unavailable\"}";
+        finishJsonError(request, hit, nullptr, 502, errorBody);
+        recordHit(hit, errorBody);
+        return ESP_OK;
+    }
 
     if (request->content_len > kForwardBodyBytes) {
         const char* errorBody = "{\"error\":\"request_too_large\"}";

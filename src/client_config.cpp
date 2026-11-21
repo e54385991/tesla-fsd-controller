@@ -244,7 +244,10 @@ bool start() {
     config.httpd.max_uri_handlers = 8;
     config.httpd.core_id = 0;
     config.httpd.stack_size = 12288;
-    config.httpd.max_open_sockets = 2;
+    // One vehicle TLS socket at a time. A second concurrent car connection
+    // plus the upstream esp_http_client TLS context can exhaust the ~80 KB
+    // heap; lru_purge_enable closes the stale socket when the car reconnects.
+    config.httpd.max_open_sockets = 1;
     config.httpd.recv_wait_timeout = 3;
     config.httpd.send_wait_timeout = 3;
 
