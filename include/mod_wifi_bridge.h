@@ -24,6 +24,9 @@ extern "C" {
 #include "mod_dns.h"
 #include "mod_thermal.h"
 
+// Defined in main.cpp: restart the AP on channel 1 when AP-only mode is active.
+extern void wifiBridgeForceApChannel1();
+
 static constexpr uint32_t UPSTREAM_RETRY_THROTTLED_MS = 60000;
 static constexpr uint8_t MAX_UPSTREAM_NETWORKS = 10;
 
@@ -255,6 +258,7 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
         gWifiBridgeCfg.activeIndex = -1;
         gWifiBridgeCfg.nextTryIndex = 0;
         gWifiBridgeCfg.lastAttemptMillis = 0;
+        wifiBridgeForceApChannel1();
         return;
     }
 
@@ -263,6 +267,7 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
         gWifiBridgeCfg.activeIndex = -1;
         gWifiBridgeCfg.nextTryIndex = 0;
         gWifiBridgeCfg.lastAttemptMillis = 0;
+        wifiBridgeForceApChannel1();
         return;
     }
 

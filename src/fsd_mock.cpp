@@ -568,6 +568,28 @@ bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity,
     return true;
 }
 
+// Drain an unread request body before an early error response. Closing a
+// socket with unread data sends RST, which can discard the 502/413 response
+// before the client reads it (visible as "empty reply" from curl/the car).
+bool discardRequestBody(httpd_req_t* request, size_t limit) {
+    size_t remaining = request->content_len;
+    char buffer[256];
+    int timeouts = 0;
+    while (remaining > 0 && limit > 0) {
+        const size_t want = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+        const size_t capped = want < limit ? want : limit;
+        const int received = httpd_req_recv(request, buffer, capped);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeouts > 2) return false;
+            continue;
+        }
+        if (received <= 0) return false;
+        remaining -= static_cast<size_t>(received);
+        limit -= static_cast<size_t>(received);
+    }
+    return remaining == 0;
+}
+
 // ── responses / forwarding ──────────────────────────────────────────────────
 
 void setStatusLine(httpd_req_t* request, int code) {
@@ -622,6 +644,7 @@ bool upstreamReady() {
 int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
                    Hit& hit, char* responseBody, size_t responseCapacity) {
     if (!upstreamReady()) {
+        discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
         return 502;
     }
@@ -959,6 +982,7 @@ esp_err_t handleRequest(httpd_req_t* request) {
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
     if (observe && !upstreamReady()) {
+        discardRequestBody(request, 8192);
         strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
         strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
         hit.reqBytes = static_cast<uint32_t>(request->content_len);
@@ -969,6 +993,7 @@ esp_err_t handleRequest(httpd_req_t* request) {
     }
 
     if (observe && request->content_len > kForwardBodyBytes) {
+        discardRequestBody(request, 8192);
         const char* errorBody = "{\"error\":\"request_too_large\"}";
         finishJsonError(request, hit, nullptr, 413, errorBody);
         recordHit(hit, errorBody);
@@ -1045,6 +1070,7 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     hit.reqBytes = static_cast<uint32_t>(request->content_len);
 
     if (!upstreamReady()) {
+        discardRequestBody(request, 8192);
         const char* errorBody = "{\"error\":\"upstream_unavailable\"}";
         finishJsonError(request, hit, nullptr, 502, errorBody);
         recordHit(hit, errorBody);
@@ -1052,6 +1078,7 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     }
 
     if (request->content_len > kForwardBodyBytes) {
+        discardRequestBody(request, 8192);
         const char* errorBody = "{\"error\":\"request_too_large\"}";
         finishJsonError(request, hit, nullptr, 413, errorBody);
         recordHit(hit, errorBody);

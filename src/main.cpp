@@ -610,9 +610,21 @@ static void clientConfigChange(AsyncWebServerRequest* req, client_config::Change
 #endif
 
 #ifdef WIFI_BRIDGE_ENABLED
+// AP-only mode must not stay on the last STA channel: some car/phone Wi-Fi
+// stacks fail to re-associate after the AP follows a hotspot to ch 6-14.
+void wifiBridgeForceApChannel1() {
+    uint8_t channel = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&channel, &second);
+    if (channel == 1) return;
+    WiFi.softAPConfig(IPAddress(9, 9, 9, 9), IPAddress(9, 9, 9, 9), IPAddress(255, 255, 255, 0));
+    WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1);
+    Serial.printf("[wifi] AP forced to channel 1 (was %u)\n", static_cast<unsigned>(channel));
+}
+
 // Recovery helper exposed to the USB serial console (`wifi-ap-only`).
 // Disables upstream STA attempts so the AP stops following the iPhone hotspot
-// channel, and moves a 12/13-channel AP back to channel 1 when needed.
+// channel, and forces the AP back to channel 1.
 void wifiBridgeRecoverApOnly() {
     uint8_t channel = 0;
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
@@ -623,11 +635,7 @@ void wifiBridgeRecoverApOnly() {
     gWifiBridgeCfg.enabled = false;
     wifiBridgeSaveConfig();
     wifiBridgeRequestApply();
-    if (channel == 0 || channel > 11) {
-        WiFi.softAPConfig(IPAddress(9, 9, 9, 9), IPAddress(9, 9, 9, 9), IPAddress(255, 255, 255, 0));
-        WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1);
-        Serial.println("[wifi] AP restarted on channel 1");
-    }
+    wifiBridgeForceApChannel1();
     Serial.println("[wifi] upstream disabled; AP should stay visible");
 }
 #endif
