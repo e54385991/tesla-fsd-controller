@@ -175,7 +175,7 @@ function kindBadge(kind){ var k=String(kind||'HIT'); var c=k==='HIT'?'#3fb950':(
 function valText(v){ if(v===true) return 'true'; if(v===false) return 'false'; if(v===null) return 'null'; return String(v); }
 
 async function refresh(){
-  if(busy) return; busy=true;
+  if(document.hidden || busy) return; busy=true;
   try{
     // Sequential requests: the ESP32 AsyncWebServer is much more reliable
     // with one 4 KB response at a time than five parallel fetches.
@@ -345,7 +345,8 @@ document.getElementById('pinBtn').onclick=async function(){
 };
 document.getElementById('pinInput').addEventListener('keydown',function(e){ if(e.key==='Enter') document.getElementById('pinBtn').click(); });
 fetch('/api/time',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ts='+Math.floor(Date.now()/1000)}).catch(function(){});
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) refresh(); });
 refresh();
-setInterval(refresh,2000);
+setInterval(refresh,5000);
 </script>
 </body></html>)rawliteral";

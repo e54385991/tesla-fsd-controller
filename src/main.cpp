@@ -609,6 +609,21 @@ static void clientConfigChange(AsyncWebServerRequest* req, client_config::Change
 }
 #endif
 
+static const char* resetReasonName() {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON: return "poweron";
+        case ESP_RST_EXT: return "external";
+        case ESP_RST_SW: return "software";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "int_wdt";
+        case ESP_RST_TASK_WDT: return "task_wdt";
+        case ESP_RST_WDT: return "wdt";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        default: return "unknown";
+    }
+}
+
 #ifdef WIFI_BRIDGE_ENABLED
 // AP-only mode must not stay on the last STA channel: some car/phone Wi-Fi
 // stacks fail to re-associate after the AP follows a hotspot to ch 6-14.
@@ -658,8 +673,9 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
                   static_cast<unsigned>(ESP.getFreeHeap()));
-    Serial.printf("[wifi-diag] heap=%u psram=%u freePsram=%u\n",
+    Serial.printf("[wifi-diag] heap=%u minHeap=%u reset=%s psram=%u freePsram=%u\n",
                   static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()), resetReasonName(),
                   static_cast<unsigned>(ESP.getPsramSize()),
                   static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
@@ -1475,6 +1491,9 @@ void setupWebServer() {
             json += ",\"pingLastSuccessAgeSec\":"; json += (ps ? String((unsigned)ageSec) : String("null"));
         }
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
+        json += ",\"heap\":"; json += String(ESP.getFreeHeap());
+        json += ",\"minHeap\":"; json += String(ESP.getMinFreeHeap());
+        json += ",\"resetReason\":\""; json += resetReasonName(); json += "\"";
         json += ',';
         fsd_mock::appendStatusJson(json);
 #endif
