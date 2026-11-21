@@ -38,8 +38,9 @@
 | Waveshare ESP32-S3 Wi-Fi 桥接 | [esp32s3_waveshare_wifi_v1.4.25.bin](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_wifi_v1.4.25.bin) | [ota](https://github.com/wjsall/tesla-fsd-controller/releases/download/v1.4.25/esp32s3_waveshare_wifi_v1.4.25_ota.bin) | 车内安装 + Wi-Fi 桥接 |
 
 > **变体说明**：
-> - **CAN 控制器**：所有固件都接入车辆一路 CAN（X179 或 X652），完成 FSD 注入与遥测。
-> - **Wi-Fi 桥接**：ESP32 作为 STA 连上行 Wi-Fi，并以 AP 方式向车机输出带 DNS 过滤/域名拦截的网络。非必需功能，按需选择。
+> - **CAN 控制器**（`esp32` / `esp32s3-waveshare`）：接入车辆一路 CAN（X179 或 X652），完成 FSD 注入与遥测。
+> - **Wi-Fi 桥接**（`esp32-wifi`）：ESP32 作为 STA 连上行 Wi-Fi，并以 AP 方式向车机输出带 DNS 过滤/域名拦截的网络。
+> - **Waveshare ESP32-S3 Wi-Fi 桥接**（`esp32s3-waveshare-wifi`）：在 Wi-Fi 桥接基础上内置 FSD `/feature_configuration` 下发。该固件**不编译 CAN/TWAI、FSD 注入、DAS/灯光/空调/BMS/GPS/性能/服务模式**等旧模块，也不提供对应网页，只保留 Wi-Fi 热点/上游、DNS 过滤、FSD 下发、`/fsd` 看板、client-config、OTA 与日志。
 
 ### 第二步：刷入固件
 
@@ -292,12 +293,21 @@ LEGACY 的具体发帧条件、配置范围和验证方式见 [LEGACY CAN 发帧
 
 **扩展页面**
 
-| 页面 | 路径 | 说明 |
-|------|------|------|
-| **车机 UI** | `/car` | 大字号车内显示，同时包含性能测试（0–100 km/h / 100–0 km/h 测试）|
-| **仪表盘** | `/dash` | 速度、电池、扭矩等实时仪表 |
-| **日志** | `/log` | SPIFFS 存储的诊断日志（持久，约 48 KB 循环）|
-| **DNS 过滤** | `/dns`（仅 Wi-Fi 桥接版）| 车机域名拦截配置 |
+| 页面 | 路径 | 适用固件 | 说明 |
+|------|------|----------|------|
+| **统一管理页** | `/`、`/car` | Wi-Fi 桥接 | 大按钮：AP、上游 Wi-Fi、DNS 过滤、FSD 开关、OTA、日志 |
+| **FSD 看板** | `/fsd` | Wi-Fi 桥接 | 命中/握手/时间线/载荷字段编辑（对齐 `fsd_panel.py`）|
+| **车机客户端配置** | `/client-config` | Wi-Fi 桥接 | client-config JSON 发布/回滚/确认（端口 10010）|
+| **日志** | `/api/log` | 全部 | RAM 诊断日志（约 80 条）；`/api/log/download` 下载 SPIFFS 持久日志 |
+| **车机 UI / 仪表盘 / 性能测试 / 服务模式** | `/dash`、`/perf`、`/service` | 仅 CAN 版 | Wi-Fi 桥接精简固件已移除这些页面与接口 |
+
+### Wi-Fi 桥接精简构建（`FSD_MOCK_ONLY`）
+
+`esp32s3-waveshare-wifi` 在 `platformio.ini` 中定义 `-DFSD_MOCK_ONLY`，从链接层面移除旧 CAN/FSD 注入栈：
+
+- `main.cpp` 不再包含 `handlers.h`、`fsd_config.h`、`mod_fsd.h`、`mod_bms.h`、遥测/灯光/空调/性能/服务模式等头文件，也不创建 CAN 任务或注册 `/dash`、`/perf`、`/service`、`/api/set`、`/api/perf`、`/api/diag/*`。
+- `compress_html.py` 只为该 env 打包 `web_ui_manage.h` + `web_ui_fsd.h`，不再把手机主面板、车机面板、仪表盘、性能页和服务模式页写进固件。
+- 与清理前相比，实测 Flash 约减少 142 KB、静态 RAM 约减少 3.5 KB；运行时还少一个 8 KB 的 CAN 任务栈。`esp32` / `esp32s3-waveshare` 等 CAN 版本行为不变。
 
 ### 自有客户端 HTTPS 配置发布
 
@@ -349,7 +359,7 @@ ESP32 默认载荷在 Windows `payload.json` 的 20 字段基础上追加了 `en
 
 **配置与查看**：
 
-- 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
+- 面板：`http://9.9.9.9:10010/`（或 `/car`）的「FSD 下发」卡片。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。该精简固件不再包含旧 CAN 仪表/注入页面。
 - **PC 风格看板**：`http://9.9.9.9:10010/fsd`，对齐 `TeslaDG/app/web/fsd_panel.py`：拦截次数、最后拦截、VIN、当前载荷、车机状态、最后下发、请求总数、DNS 重定向、握手表、下发时间线、车机最近请求、接口分布、配置变更、当前回包载荷。
 - **字段编辑**：同一页面底部可添加/删除参数、修改值、恢复默认（22 字段 / 653B，含 `enable_eu_fsd_behavior:false`、`autoshift_dr:true` 最后）、加载 Windows 602B / 16f / 282B，或切换原始 JSON。字段旁有中文说明，保存后写入 SPIFFS，重启保持。
 - 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最后一条 FSD 回包和最近 3 条 FSD 命中（`FLOW` 只进 JSONL 日志，不占“最近命中”/“当前回包载荷”）。面板的“当前回包载荷”按 Windows `fsd_panel.py` 的方式显示格式化 JSON；非 FSD 透传的 400/200 不会覆盖它。
@@ -554,19 +564,26 @@ include/
   mod_thermal.h         ← S3 内部温度监控
   lwip_hooks.h          ← lwIP IP-forward 钩子（DNS 路由）
 
+  json_escape.h         ← 有界 JSON 字符串转义（状态/诊断/FSD 共用）
+
   # Web UI（均为 PROGMEM 字符串，编译期压缩）
-  web_ui.h              ← 手机 / 桌面浏览器主界面
-  web_ui_car.h          ← 车机大字号界面（/car）
-  web_ui_dash.h         ← 实时仪表盘（/dash）
-  web_perf.h            ← 独立性能测试页（/perf）
+  web_ui.h              ← CAN 版手机 / 桌面浏览器主界面
+  web_ui_car.h          ← CAN 版车机大字号界面（/car）
+  web_ui_dash.h         ← CAN 版实时仪表盘（/dash）
+  web_perf.h            ← CAN 版性能测试页（/perf）
+  web_ui_service.h      ← CAN 版服务模式页（/service）
+  web_ui_manage.h       ← Wi-Fi 桥接精简版统一管理页（FSD_MOCK_ONLY）
+  web_ui_fsd.h          ← PC 风格 FSD 看板（/fsd，全部版本）
   web_ui_gz.h           ← 构建脚本自动生成的 gzip 资产
 
   drivers/
     can_driver.h        ← 驱动抽象基类
     twai_driver.h       ← ESP32 TWAI（内置 CAN）
 
-platformio.ini          ← 4 个 env：esp32 / esp32s3_waveshare /
-                         esp32_wifi / esp32s3_waveshare_wifi
+platformio.ini          ← 4 组 env（release/debug）：esp32 /
+                         esp32s3-waveshare / esp32-wifi /
+                         esp32s3-waveshare-wifi（后两组为 Wi-Fi 桥接；
+                         仅 S3 版定义 FSD_MOCK_ONLY，链接 FSD 下发精简栈）
 ```
 
 ---

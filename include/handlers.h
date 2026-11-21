@@ -15,24 +15,7 @@
 #include "can_frame_types.h"
 #include "drivers/can_driver.h"
 
-// JSON-string escape into a bounded destination. Backslash-prefixes `"` and
-// `\\` (the only two characters JSON requires); copies everything else
-// verbatim. Output is always NUL-terminated; truncates silently if `cap`
-// runs out, so caller must size `dst` for at most 2× source + 1 NUL.
-//
-// Shared between /api/status (apSSID/staSSID/perfModel/carSwVer), the diag
-// upload payload (carSwVer), and /api/diag/status (msg) so all firmware
-// JSON strings escape uniformly.
-static inline void jsonEscapeInto(const char* src, char* dst, size_t cap) {
-    if (!dst || cap == 0) return;
-    char* out = dst;
-    char* end = dst + cap - 3;  // room for one final escape byte + NUL
-    while (src && *src && out < end) {
-        if (*src == '"' || *src == '\\') *out++ = '\\';
-        *out++ = *src++;
-    }
-    *out = 0;
-}
+#include "json_escape.h"
 
 // ── Single shared state instance ──────────────────────────────────────────
 // Accessed by Core0 (web/WiFi) and Core1 (CAN task).

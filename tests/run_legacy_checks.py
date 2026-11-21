@@ -177,9 +177,16 @@ def integration_source():
     keys = '#define NV_FSD_EN' + keys
     persistence = 'void loadConfig() {' + between(SOURCE, 'void loadConfig() {', '// ═══════════════════════════════════════════\n//  SPIFFS')
     api = between(SOURCE, 'server.on("/api/set", HTTP_GET, [](AsyncWebServerRequest* req) {', '\n    });')
-    status = between(SOURCE, 'server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {', '\n    });')
-    helpers = (ROOT / 'include/handlers.h').read_text()
-    escape = 'static inline void jsonEscapeInto' + between(helpers, 'static inline void jsonEscapeInto', '// ── Single shared state instance')
+    # The FSD-mock-only build registers its own compact /api/status first in
+    # source order; anchor on the legacy body so the integration harness keeps
+    # exercising the full CAN status payload.
+    legacy_status = 'server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {\n        const auto settings = captureCanControl().settings;'
+    status_offset = SOURCE.index(legacy_status)
+    status = '        const auto settings = captureCanControl().settings;' + between(
+        SOURCE[status_offset:], legacy_status, '\n    });')
+    escape = ('#include "json_escape.h"\n'
+              'static uint32_t gBootMillis = 0;\n'
+              'static inline uint32_t bootUptimeSeconds() { return (millis() - gBootMillis) / 1000; }\n')
     runtime = sorted(set(re.findall(r'cfg\.(\w+)', status)) - {'perfModel', 'carSwVer', 'dbgFrame', 'dbgFrameCaptured'})
     maximum = '\n'.join(f'    maximize(cfg.{field});' for field in runtime)
     return (PREAMBLE + keys + persistence + escape + '\nvoid applyRequest(AsyncWebServerRequest* req) {' + api +

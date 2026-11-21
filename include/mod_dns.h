@@ -1,8 +1,9 @@
 #pragma once
 // ── DNS whitelist/blacklist module ────────────────────────────────────────────
-// Compiled only when WIFI_BRIDGE_ENABLED. Single-TU: handlers.h defines
-// MOD_DNS_IMPLEMENTATION before including this so the definition compiles
-// exactly once in main.cpp's TU.
+// Compiled only when WIFI_BRIDGE_ENABLED. Single-TU: main.cpp defines
+// MOD_DNS_IMPLEMENTATION before including this (via handlers.h in CAN builds,
+// or directly in FSD_MOCK_ONLY builds) so the definition compiles exactly
+// once in main.cpp's TU.
 //
 // This header is ALSO included from IDF lwIP C code via lwip_hooks.h — from
 // that side only the extern "C" declarations are visible (no Arduino/WiFi.h).
@@ -1063,6 +1064,18 @@ extern "C" void dnsIpBlockerClear(void) {
     portEXIT_CRITICAL(&gDnsIpPolicyMux);
 }
 
+// The IP-blocker gate used to read the injected CAN settings struct. In the
+// Wi-Fi/FSD-mock build that struct no longer exists, so keep a local flag
+// there (default OFF) and defer to cfg in full CAN builds.
+#ifdef FSD_MOCK_ONLY
+static bool gDnsIpBlockerEnabled = false;
+static inline bool dnsIpBlockerEnabled() { return gDnsIpBlockerEnabled; }
+static inline void dnsIpBlockerSetEnabled(bool enabled) { gDnsIpBlockerEnabled = enabled; }
+#else
+static inline bool dnsIpBlockerEnabled() { return cfg.ipBlockerEnabled; }
+static inline void dnsIpBlockerSetEnabled(bool enabled) { cfg.ipBlockerEnabled = enabled; }
+#endif
+
 extern "C" int dnsHookIp4CanForward(uint32_t destAddrHostOrder) {
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
     const uint32_t now = millis() / 1000;
@@ -1083,7 +1096,7 @@ extern "C" int dnsHookIp4CanForward(uint32_t destAddrHostOrder) {
     // disabled or the IP cache is empty. Per-packet overhead drops to a single
     // volatile load + an atomic uint16 read, which is what users feel as
     // "music streaming smoothly".
-    if (!cfg.ipBlockerEnabled) return -1;
+    if (!dnsIpBlockerEnabled()) return -1;
     if (gBlockedIpCount == 0)  return -1;
 
     uint32_t nowSeconds = millis() / 1000;
