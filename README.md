@@ -367,6 +367,7 @@ ESP32 默认载荷在 Windows `payload.json` 的 20 字段基础上追加了 `en
 - 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 2048 字节）。
 - 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`POST /api/fsd-mock/handshakes-clear`、`GET /api/fsd-mock/hits`、`GET /api/fsd-mock/handshakes`（RAM JSONL 导出）。
 - 串口恢复（115200，附换行）：`fsd-payload` 打印当前 compact JSON；`fsd-default` / `fsd-16f` / `fsd-282b` 直接加载对应预设并写入 SPIFFS。`net-test` 检查 upstream DNS + TCP 到 `api-prd`，`wifi-diag` 打印载荷/命中/握手计数、堆、PSRAM 和 SPIFFS 余量。
+- 串口 Wi-Fi 恢复：`wifi-list` 列出已保存上游；`wifi-add <ssid> <password>` 添加/更新上游并立即连接；`wifi-del <ssid>` 删除；`wifi-up` 启用上游；`wifi-ap-only` 关闭上游并强制 AP 回信道 1。NVS 被清空后可用这组命令重新配置，无需先连上 AP。
 - **FSD 日志不写 SPIFFS**：命中/握手只保留在 RAM 环形缓冲区（命中 8 条、握手 6 条），重启即清空；这样可以避免日志占满闪存导致 payload 无法保存，也符合“后台可看、不落盘”的要求。
 
 > 非 FSD 反代按 Windows 的 `--set ssl_insecure=true` 关闭上游证书校验（Tesla `api-prd` 使用私有 CA，公共 CA bundle 无法验证）。如果 Tesla 端点要求 mTLS 客户端证书，默认 mitmproxy 不会转发车机证书，会得到 Tesla 的真实 `400 No required SSL certificate was sent`；ESP32 现在同样返回这个真实响应，而不是本地 502。需要 mTLS 的端点必须在 PC/网关侧配置客户端证书，ESP32 无法替车机出示其私钥。
@@ -486,6 +487,8 @@ ESP32 的 lwIP 转发钩子会检查每个准备从 AP 转发到上游的 IPv4 �
 > ⚠️ **OTA 必须使用 `_ota.bin` 文件**，不能用合并固件（`<env>_v<ver>.bin`）。合并固件包含 bootloader，OTA 会报 "Wrong Magic Byte" 错误。
 >
 > ⚠️ **切换 env 不能走 OTA**：从 esp32 切到 esp32s3_waveshare（或单 CAN 切双 CAN、Wi-Fi 变体）分区布局不同，必须用 USB Web Flasher 重新烧合并固件。
+>
+> ⚠️ **合并固件会覆盖 NVS**：`<env>_v<ver>.bin` 从 `0x0` 写入，包含 bootloader、分区表和 app 之间的填充区（`0x9000` 起的 NVS）。首次刷机没问题；日常升级请优先用 OTA `_ota.bin`，或用 `esptool write_flash 0x10000 .pio/build/<env>/firmware.bin` 只写 app，以保留 Wi-Fi/PIN/上游配置。
 
 ---
 
