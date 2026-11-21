@@ -641,8 +641,10 @@ button{font-family:inherit;cursor:pointer}
         </div>
         <div class="tip" style="margin-top:10px">劫持域名：<span id="fsdHost">--</span></div>
         <div class="tip" style="margin-top:6px">与 Windows 一致：任意路径中的 /feature_configuration 返回 200 + compact JSON，X-Checksum 为 md5(body)，Cache-Control: no-store。目标域名由 DNS 劫持到 9.9.9.9:443。</div>
+        <div class="tip" style="margin-top:6px"><a href="/fsd" target="_blank" style="color:#58a6ff">打开 PC 风格看板 / 字段编辑 →</a></div>
         <div class="bgroup" style="flex-wrap:wrap;gap:8px;margin-top:12px">
-          <button class="pill" onclick="fsdPreset('default')">Windows 20 字段 602B</button>
+          <button class="pill" onclick="fsdPreset('default')">默认 22 字段 654B</button>
+          <button class="pill" onclick="fsdPreset('windows')">Windows 602B</button>
           <button class="pill" onclick="fsdPreset('16f')">16 字段 476B</button>
           <button class="pill" onclick="fsdPreset('282b')">官方 282B</button>
         </div>

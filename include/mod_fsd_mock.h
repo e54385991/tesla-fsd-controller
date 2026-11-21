@@ -25,6 +25,7 @@ constexpr size_t kPayloadCapacity = 2049;   // compact payload limit (Windows UI
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
+constexpr size_t kConfigHistoryCapacity = 8; // RAM ring, not persisted
 constexpr size_t kLastResponseCapacity = 641;   // full 602B payload + headroom
 
 enum class Mode : uint8_t {
@@ -58,6 +59,15 @@ struct Hit {
 };
 
 // Mirrors handshake.log entries: handshake_ok / handshake_failed.
+struct ConfigChange {
+    char ts[32] = {};
+    char source[16] = {};
+    char md5[33] = {};
+    char prevMd5[33] = {};
+    uint32_t bytes = 0;
+    uint16_t fields = 0;
+};
+
 struct Handshake {
     char event[16] = {};
     char ts[32] = {};
@@ -92,7 +102,8 @@ size_t copyPayload(char* output, size_t capacity);
 bool setEnabled(bool value);
 bool setMode(const char* value);
 bool setHost(const char* value);
-bool setPayload(const char* json, size_t length, char* error, size_t errorSize);
+bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
+                const char* source = "api");
 bool loadPreset(const char* name, char* error, size_t errorSize);
 
 void clearHits();
@@ -108,6 +119,7 @@ void appendStatusJson(String& out);
 // RAM log export (JSONL) for /api/fsd-mock/hits and /handshakes.
 void appendHitsJsonl(Print& out);
 void appendHandshakesJsonl(Print& out);
+void appendConfigHistoryJsonl(Print& out);
 
 size_t recentHits(Hit* out, size_t capacity);
 size_t recentHandshakes(Handshake* out, size_t capacity);

@@ -774,6 +774,14 @@ void setupWebServer() {
         req->send(r);
     });
 
+    // PC-style FSD dashboard + field editor (TeslaDG fsd_panel.py parity)
+    server.on("/fsd", HTTP_GET, [](AsyncWebServerRequest* req) {
+        auto* r = req->beginResponse(200, "text/html", FSD_HTML_GZ, FSD_HTML_GZ_LEN);
+        r->addHeader("Content-Encoding", "gzip");
+        r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        req->send(r);
+    });
+
     // Dashboard page — instrument cluster view (token checked via JS)
     server.on("/dash", HTTP_GET, [](AsyncWebServerRequest* req) {
         auto* r = req->beginResponse(200, "text/html", DASH_HTML_GZ, DASH_HTML_GZ_LEN);
@@ -1664,6 +1672,14 @@ void setupWebServer() {
         auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendHandshakesJsonl(*response);
+        req->send(response);
+    });
+
+    server.on("/api/fsd-mock/config-history", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        auto* response = req->beginResponseStream("application/x-ndjson");
+        response->addHeader("Cache-Control", "no-store");
+        fsd_mock::appendConfigHistoryJsonl(*response);
         req->send(response);
     });
 #endif

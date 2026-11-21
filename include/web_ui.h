@@ -517,7 +517,8 @@ select:focus{outline:none;border-color:#38bdf8}
       TLS 握手：<span id="fsdTlsP">—</span> · 成功 <span id="fsdTlsOkP">0</span> / 失败 <span id="fsdTlsFailP">0</span>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      <button type="button" onclick="fsdPresetP('default')" style="height:28px;padding:0 10px;background:#065f46;color:#d1fae5;border:none;border-radius:6px;font-size:11px;cursor:pointer">Windows 602B</button>
+      <button type="button" onclick="fsdPresetP('default')" style="height:28px;padding:0 10px;background:#065f46;color:#d1fae5;border:none;border-radius:6px;font-size:11px;cursor:pointer">默认 22 字段 654B</button>
+      <button type="button" onclick="fsdPresetP('windows')" style="height:28px;padding:0 10px;background:#334155;color:#e2e8f0;border:none;border-radius:6px;font-size:11px;cursor:pointer">Windows 602B</button>
       <button type="button" onclick="fsdPresetP('16f')" style="height:28px;padding:0 10px;background:#1e3a8a;color:#dbeafe;border:none;border-radius:6px;font-size:11px;cursor:pointer">16 字段 476B</button>
       <button type="button" onclick="fsdPresetP('282b')" style="height:28px;padding:0 10px;background:#7c2d12;color:#fed7aa;border:none;border-radius:6px;font-size:11px;cursor:pointer">官方 282B</button>
     </div>
@@ -525,6 +526,7 @@ select:focus{outline:none;border-color:#38bdf8}
       style="font-family:monospace;font-size:11px;width:100%;box-sizing:border-box" placeholder='{"full_self_driving":true}'></textarea>
     <button class="save-btn" onclick="fsdSaveP()" style="margin-top:8px">保存并下发</button>
     <div class="msg" id="fsdMsgP"></div>
+    <div style="font-size:11px;margin-top:6px"><a href="/fsd" target="_blank" style="color:#58a6ff">PC 风格看板 / 字段编辑 →</a></div>
     <div style="font-size:11px;color:#94a3b8;margin-top:8px">当前回包载荷 <span id="fsdLastMetaP">—</span></div>
     <pre id="fsdLastBodyP" style="margin:4px 0 0 0;padding:8px;background:#0f172a;border:1px solid #1e293b;border-radius:6px;color:#a5d6ff;font:11px/1.5 monospace;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto">暂无回包</pre>
     <div id="fsdRecentP" style="font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.6"></div>

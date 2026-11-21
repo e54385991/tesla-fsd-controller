@@ -143,8 +143,9 @@ def matches(uri: str) -> bool:
 
 def main() -> None:
     found = payloads()
-    assert len(found) == 3, f"expected 3 payloads, found {len(found)}"
+    assert len(found) == 4, f"expected 4 payloads, found {len(found)}"
     expected = [
+        (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (602, "241cb01b81a2b9c8b9f389a471bcbc94", 20),
         (476, "b61035d9dea38e737fbf8195ccb39f2c", 16),
         (282, "c212a75ca858750ac302093c138991f2", 9),
@@ -156,6 +157,11 @@ def main() -> None:
         assert len(json.loads(raw)) == fields
         assert b"\n" not in raw and b": " not in raw
         assert f'"{digest}"' in HEADER
+
+    default_json = json.loads(found[0])
+    assert default_json.get("enable_eu_fsd_behavior") is False
+    assert default_json.get("autoshift_dr") is True
+    assert list(default_json)[-1] == "autoshift_dr"
 
     true_cases = [
         "/feature_configuration",

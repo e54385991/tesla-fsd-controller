@@ -88,6 +88,11 @@ uint32_t gHitTotal = 0;
 uint32_t gObserveTotal = 0;
 uint32_t gFlowTotal = 0;
 
+ConfigChange gConfigHistory[kConfigHistoryCapacity];
+size_t gConfigCount = 0;
+size_t gConfigWrite = 0;
+portMUX_TYPE gConfigMux = portMUX_INITIALIZER_UNLOCKED;
+
 Handshake gHandshakes[kHandshakeCapacity];
 size_t gHandshakeCount = 0;
 size_t gHandshakeWrite = 0;
@@ -1229,7 +1234,24 @@ bool setHost(const char* value) {
     return persistSettings();
 }
 
-bool setPayload(const char* json, size_t length, char* error, size_t errorSize) {
+void recordConfigChange(const char* source, size_t bytes, size_t fields,
+                        const char* md5, const char* prevMd5) {
+    ConfigChange record;
+    formatTimestamp(record.ts);
+    strlcpy(record.source, source && source[0] ? source : "api", sizeof(record.source));
+    strlcpy(record.md5, md5, sizeof(record.md5));
+    strlcpy(record.prevMd5, prevMd5, sizeof(record.prevMd5));
+    record.bytes = static_cast<uint32_t>(bytes);
+    record.fields = static_cast<uint16_t>(fields);
+    portENTER_CRITICAL(&gConfigMux);
+    gConfigHistory[gConfigWrite] = record;
+    gConfigWrite = (gConfigWrite + 1) % kConfigHistoryCapacity;
+    if (gConfigCount < kConfigHistoryCapacity) ++gConfigCount;
+    portEXIT_CRITICAL(&gConfigMux);
+}
+
+bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
+                const char* source) {
     if (error && errorSize) error[0] = '\0';
     char* compacted = static_cast<char*>(malloc(kPayloadCapacity));
     if (!compacted) {
@@ -1247,12 +1269,17 @@ bool setPayload(const char* json, size_t length, char* error, size_t errorSize) 
         snprintf(error, errorSize, "storage");
         return false;
     }
+    char prevMd5[33];
+    char md5[33];
     lockState();
+    strlcpy(prevMd5, gState.md5, sizeof(prevMd5));
     memcpy(gState.payload, compacted, compactLength + 1);
     gState.bytes = compactLength;
     gState.fields = fields;
     md5Hex(gState.payload, gState.bytes, gState.md5);
+    strlcpy(md5, gState.md5, sizeof(md5));
     unlockState();
+    recordConfigChange(source, compactLength, fields, md5, prevMd5);
     free(compacted);
     return true;
 }
@@ -1262,15 +1289,18 @@ bool loadPreset(const char* name, char* error, size_t errorSize) {
         snprintf(error, errorSize, "unknown_preset");
         return false;
     }
-    if (strcasecmp(name, "default") == 0 || strcasecmp(name, "windows") == 0) {
-        return setPayload(kFsdPayloadDefault, strlen(kFsdPayloadDefault), error, errorSize);
+    if (strcasecmp(name, "default") == 0 || strcasecmp(name, "autoshift") == 0) {
+        return setPayload(kFsdPayloadDefault, strlen(kFsdPayloadDefault), error, errorSize, "preset");
+    }
+    if (strcasecmp(name, "windows") == 0 || strcasecmp(name, "602") == 0) {
+        return setPayload(kFsdPayloadWindows, strlen(kFsdPayloadWindows), error, errorSize, "preset");
     }
     if (strcasecmp(name, "16f") == 0 || strcasecmp(name, "payload-16f") == 0) {
-        return setPayload(kFsdPayload16f, strlen(kFsdPayload16f), error, errorSize);
+        return setPayload(kFsdPayload16f, strlen(kFsdPayload16f), error, errorSize, "preset");
     }
     if (strcasecmp(name, "282b") == 0 || strcasecmp(name, "payload-282b") == 0 ||
         strcasecmp(name, "official") == 0) {
-        return setPayload(kFsdPayload282b, strlen(kFsdPayload282b), error, errorSize);
+        return setPayload(kFsdPayload282b, strlen(kFsdPayload282b), error, errorSize, "preset");
     }
     snprintf(error, errorSize, "unknown_preset");
     return false;
@@ -1513,6 +1543,27 @@ void appendHandshakesJsonl(Print& out) {
         out.print(",\"confdir\":\"emudhra\"");
         out.print(",\"error\":\""); jsonEscape(out, h.error); out.print("\"");
         out.print(",\"first_request\":\""); jsonEscape(out, h.firstRequest); out.print("\"");
+        out.print("}\n");
+    }
+}
+
+void appendConfigHistoryJsonl(Print& out) {
+    for (size_t i = 0; i < kConfigHistoryCapacity; ++i) {
+        ConfigChange record;
+        portENTER_CRITICAL(&gConfigMux);
+        if (i >= gConfigCount) {
+            portEXIT_CRITICAL(&gConfigMux);
+            break;
+        }
+        const size_t slot = (gConfigWrite + kConfigHistoryCapacity - 1 - i) % kConfigHistoryCapacity;
+        record = gConfigHistory[slot];
+        portEXIT_CRITICAL(&gConfigMux);
+        out.print("{\"ts\":\""); jsonEscape(out, record.ts); out.print("\"");
+        out.print(",\"source\":\""); jsonEscape(out, record.source); out.print("\"");
+        out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(record.bytes));
+        out.print(",\"md5\":\""); jsonEscape(out, record.md5); out.print("\"");
+        out.print(",\"prev_md5\":\""); jsonEscape(out, record.prevMd5); out.print("\"");
+        out.print(",\"fields\":"); out.print(static_cast<unsigned>(record.fields));
         out.print("}\n");
     }
 }

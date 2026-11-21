@@ -330,13 +330,14 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
    - body 为当前下发载荷的 compact JSON
 3. **其他路径**：与 Windows mitmdump reverse 模式一样转发到真实 `api-prd.vn.cloud.tesla.cn`，不会在 ESP32 本地返回 404。
 
-默认载荷与 `TeslaDG/app/payload.json` 逐字节一致（602 字节 / md5 `241cb01b81a2b9c8b9f389a471bcbc94` / 20 字段）。面板还提供两个 Windows 回滚样本：
+ESP32 默认载荷在 Windows `payload.json` 的 20 字段基础上追加了 `enable_eu_fsd_behavior:false` 和 `autoshift_dr:true`（`autoshift_dr` 固定最后），共 22 字段 / 654 字节 / md5 `bd262907ff9fb2709bb54f9d3e78d07d`。原始 Windows 602B 仍保留为独立预设，可随时回滚：
 
 > 注：`fsd_mock.py` 内置的 `DEFAULT_PAYLOAD` 与 `payload-282b.json` 字段相同、键顺序不同（md5 为 `104ccde7d817ab00667f2d98326259ec`）；Windows 启动脚本始终优先加载 `payload.json`，所以这里以 602 字节文件和看板认定的 282B 原版为准。
 
 | 预设 | 字节 | md5 | 来源 |
 |---|---:|---|---|
-| Windows 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` |
+| ESP32 默认 22 字段 | 654 | `bd262907ff9fb2709bb54f9d3e78d07d` | Windows 20 字段 + `enable_eu_fsd_behavior:false` + `autoshift_dr:true` |
+| Windows 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json`（未修改）|
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json`（看板认定原版）|
 
@@ -349,6 +350,8 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 **配置与查看**：
 
 - 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
+- **PC 风格看板**：`http://9.9.9.9:10010/fsd`，对齐 `TeslaDG/app/web/fsd_panel.py`：拦截次数、最后拦截、VIN、当前载荷、车机状态、最后下发、请求总数、DNS 重定向、握手表、下发时间线、车机最近请求、接口分布、配置变更、当前回包载荷。
+- **字段编辑**：同一页面底部可添加/删除参数、修改值、恢复默认（22 字段 / 654B，含 `enable_eu_fsd_behavior:false`、`autoshift_dr:true` 最后）、加载 Windows 602B / 16f / 282B，或切换原始 JSON。字段旁有中文说明，保存后写入 SPIFFS，重启保持。
 - 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最后一条 FSD 回包和最近 3 条 FSD 命中（`FLOW` 只进 JSONL 日志，不占“最近命中”/“当前回包载荷”）。面板的“当前回包载荷”按 Windows `fsd_panel.py` 的方式显示格式化 JSON；非 FSD 透传的 400/200 不会覆盖它。
 - 读取载荷：`GET /api/fsd-mock/payload`（返回当前 compact JSON）。
 - 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 2048 字节）。

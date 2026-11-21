@@ -20,6 +20,7 @@ HTML_SOURCES = [
     ("include/web_perf_share.h", "PERF_SHARE_HTML", "rawliteral"),
     ("include/web_ui_car.h",  "CAR_HTML",   "rawliteral"),
     ("include/web_ui_service.h", "SERVICE_HTML", "rawliteral"),
+    ("include/web_ui_fsd.h", "FSD_HTML", "rawliteral"),
 ]
 
 OUTPUT_HEADER = "include/web_ui_gz.h"
