@@ -659,9 +659,9 @@ button{font-family:inherit;cursor:pointer}
           <button class="abtn gray" onclick="fsdDownloadHandshakes()">下载握手日志</button>
           <button class="abtn gray" onclick="fsdDownloadHits()">下载命中日志</button>
         </div>
-        <div class="ptitle" style="margin-top:16px">最新回包 <span id="fsdLastMeta" style="color:#8a8a8a;font-size:13px;font-weight:500"></span></div>
+        <div class="ptitle" style="margin-top:16px">当前回包载荷（与 Windows 看板一致） <span id="fsdLastMeta" style="color:#8a8a8a;font-size:13px;font-weight:500"></span></div>
         <pre id="fsdLastBody" style="margin:0;padding:10px;background:#0e1419;border:1px solid #30363d;border-radius:8px;color:#a5d6ff;font:12px/1.5 Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto">--</pre>
-        <div class="ptitle" style="margin-top:16px">最近命中 / 请求</div>
+        <div class="ptitle" style="margin-top:16px">最近命中（feature_configuration）</div>
         <div id="fsdHits" style="font-size:14px;line-height:1.7;color:#e5e5e5">--</div>
       </div>
       <div class="actions">
@@ -1646,15 +1646,9 @@ function brPoll(){
         modeButtons[mi].classList.toggle('active', modeButtons[mi].getAttribute('data-v') === fm.mode);
       }
       if (!fsdLoaded) { fsdLoaded = true; fsdLoadPayload(); }
-      var lr = fm.lastResponse;
       var lastMeta = document.getElementById('fsdLastMeta');
-      var lastBody = document.getElementById('fsdLastBody');
-      if (lr && lastBody) {
-        lastMeta.textContent = 'HTTP ' + (lr.status||'--') + ' · ' + (lr.ctype||'—') + ' · ' + (lr.bytes||0) + ' B · md5 ' + (lr.md5||'').slice(0,12) + '…';
-        lastBody.textContent = lr.body || '(空回包)';
-      } else if (lastBody) {
-        lastBody.textContent = '暂无回包';
-        lastMeta.textContent = '';
+      if (lastMeta) {
+        lastMeta.textContent = (fm.bytes||0) + ' B · md5 ' + (fm.md5||'').slice(0,12) + '… · ' + (fm.fields||0) + ' 字段';
       }
       var hits = fm.recent || [];
       var hitsEl = document.getElementById('fsdHits');
@@ -1973,8 +1967,13 @@ function fsdLoadPayload(){
   fetch('/api/fsd-mock/payload'+(tok?'?token='+encodeURIComponent(tok):''))
     .then(function(r){ return r.ok ? r.text() : ''; })
     .then(function(text){
+      if (!text) return;
+      var pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) {}
       var editor = document.getElementById('fsdPayload');
-      if (editor && text && !fsdEditing) editor.value = text;
+      if (editor && !fsdEditing) editor.value = pretty;
+      var body = document.getElementById('fsdLastBody');
+      if (body) body.textContent = pretty;
     })
     .catch(function(){});
 }
@@ -1996,6 +1995,7 @@ function fsdSave(){
         fsdMsg('已保存并下发', true);
         toast('配置已下发','ok');
         brPoll();
+        fsdLoadPayload();
       } else if(r.status===403){
         showPin();
       } else {

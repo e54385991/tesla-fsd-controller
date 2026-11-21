@@ -333,7 +333,7 @@ The default payload is byte-for-byte `TeslaDG/app/payload.json` (602 B, md5 `241
 
 **Modes**: `reply` returns the ESP32 payload; `observe` records the request and forwards it upstream, matching `mode.json`. Switch it in the DNS tab of the control panel.
 
-**API**: `fsdMock` in `/api/wifi-bridge/status` (mode, host, payload size/md5/fields, hit/observe/flow/DNS counters, handshake summary, last response, and the latest 3 requests); `GET /api/fsd-mock/payload` returns the compact JSON; `POST /api/fsd-mock/payload` writes a JSON object (max 2048 B); `GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`; `POST /api/fsd-mock/hits-clear`; `POST /api/fsd-mock/handshakes-clear`; `GET /api/fsd-mock/hits` and `GET /api/fsd-mock/handshakes` export RAM logs as JSONL.
+**API**: `fsdMock` in `/api/wifi-bridge/status` (mode, host, payload size/md5/fields, hit/observe/flow/DNS counters, handshake summary, last response, and the latest 3 FSD hits (FLOW stays in the JSONL log)); `GET /api/fsd-mock/payload` returns the compact JSON; `POST /api/fsd-mock/payload` writes a JSON object (max 2048 B); `GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`; `POST /api/fsd-mock/hits-clear`; `POST /api/fsd-mock/handshakes-clear`; `GET /api/fsd-mock/hits` and `GET /api/fsd-mock/handshakes` export RAM logs as JSONL.
 
 **RAM-only logs**: hits/handshakes are kept in fixed RAM rings (16 hits, 8 handshakes) and are lost on reboot. Nothing is appended to SPIFFS; old `/fsd_hits.jsonl` and `/fsd_handshake.log` files are removed at boot so payload storage cannot be starved by logs.
 

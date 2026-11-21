@@ -1418,10 +1418,15 @@ void appendStatusJson(String& out) {
 
     constexpr size_t kStatusRecentLimit = 3;
     out += ",\"recent\":[";
-    for (size_t i = 0; i < kStatusRecentLimit; ++i) {
+    size_t shown = 0;
+    for (size_t i = 0; i < kRecentHitCapacity && shown < kStatusRecentLimit; ++i) {
         Hit recent;
         if (!readRecentHit(i, recent)) break;
-        if (i) out += ',';
+        // Windows fsd_panel's timeline only lists feature_configuration
+        // intercepts; non-FSD FLOW entries stay in the JSONL log.
+        if (strcmp(recent.kind, "FLOW") == 0) continue;
+        if (shown) out += ',';
+        ++shown;
         out += "{\"kind\":\""; jsonEscape(out, recent.kind); out += "\"";
         out += ",\"ts\":\""; jsonEscape(out, recent.ts); out += "\"";
         out += ",\"client\":\""; jsonEscape(out, recent.client); out += "\"";

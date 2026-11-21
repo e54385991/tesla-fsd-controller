@@ -349,7 +349,7 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 **配置与查看**：
 
 - 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
-- 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最新回包和最近 6 条请求。
+- 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最后一条 FSD 回包和最近 3 条 FSD 命中（`FLOW` 只进 JSONL 日志，不占“最近命中”/“当前回包载荷”）。面板的“当前回包载荷”按 Windows `fsd_panel.py` 的方式显示格式化 JSON；非 FSD 透传的 400/200 不会覆盖它。
 - 读取载荷：`GET /api/fsd-mock/payload`（返回当前 compact JSON）。
 - 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 2048 字节）。
 - 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`POST /api/fsd-mock/handshakes-clear`、`GET /api/fsd-mock/hits`、`GET /api/fsd-mock/handshakes`（RAM JSONL 导出）。

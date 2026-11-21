@@ -525,7 +525,7 @@ select:focus{outline:none;border-color:#38bdf8}
       style="font-family:monospace;font-size:11px;width:100%;box-sizing:border-box" placeholder='{"full_self_driving":true}'></textarea>
     <button class="save-btn" onclick="fsdSaveP()" style="margin-top:8px">保存并下发</button>
     <div class="msg" id="fsdMsgP"></div>
-    <div style="font-size:11px;color:#94a3b8;margin-top:8px">最新回包 <span id="fsdLastMetaP">—</span></div>
+    <div style="font-size:11px;color:#94a3b8;margin-top:8px">当前回包载荷 <span id="fsdLastMetaP">—</span></div>
     <pre id="fsdLastBodyP" style="margin:4px 0 0 0;padding:8px;background:#0f172a;border:1px solid #1e293b;border-radius:6px;color:#a5d6ff;font:11px/1.5 monospace;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto">暂无回包</pre>
     <div id="fsdRecentP" style="font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.6"></div>
   </div>
@@ -1254,14 +1254,9 @@ function brPoll(){
       document.getElementById('fsdTlsP').textContent=hsOk>0?('已建立 · '+(hs.tls||'TLS')+' · '+(hs.client||'-')):(hsFail>0?('未建立 · '+(hs.error||'握手失败')):'未建立');
       document.getElementById('fsdTlsOkP').textContent=hsOk;
       document.getElementById('fsdTlsFailP').textContent=hsFail;
-      var lr=fm.lastResponse;
-      var lb=document.getElementById('fsdLastBodyP');
       var lm=document.getElementById('fsdLastMetaP');
-      if(lr && lb){
-        lm.textContent='HTTP '+(lr.status||'--')+' · '+(lr.ctype||'—')+' · '+(lr.bytes||0)+' B · md5 '+(lr.md5||'').slice(0,10)+'…';
-        lb.textContent=lr.body||'(空回包)';
-      } else if(lb){
-        lm.textContent='—'; lb.textContent='暂无回包';
+      if(lm){
+        lm.textContent=(fm.bytes||0)+' B · md5 '+(fm.md5||'').slice(0,10)+'… · '+(fm.fields||0)+' 字段';
       }
       var recent=fm.recent||[];
       var rp=document.getElementById('fsdRecentP');
@@ -1301,8 +1296,13 @@ function fsdLoadPayloadP(){
   fetch('/api/fsd-mock/payload'+(token?'?token='+token:''))
     .then(function(r){ return r.ok ? r.text() : ''; })
     .then(function(text){
+      if(!text) return;
+      var pretty=text;
+      try{ pretty=JSON.stringify(JSON.parse(text),null,2); }catch(e){}
       var fp=document.getElementById('fsdPayloadP');
-      if(fp && text && !fsdDirtyP) fp.value=text;
+      if(fp && !fsdDirtyP) fp.value=pretty;
+      var lb=document.getElementById('fsdLastBodyP');
+      if(lb) lb.textContent=pretty;
     })
     .catch(function(){});
 }
@@ -1319,7 +1319,7 @@ function fsdSaveP(){
       var reason=ok?'已保存并下发':'保存失败';
       if(!ok){ try{reason=JSON.parse(t).error||reason;}catch(e){} }
       msg('fsdMsgP',reason,ok);
-      if(ok) brPoll();
+      if(ok){ brPoll(); fsdLoadPayloadP(); }
     });
   });
 }
