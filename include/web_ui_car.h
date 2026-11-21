@@ -619,6 +619,50 @@ button{font-family:inherit;cursor:pointer}
           <div class="info-item"><div class="info-lbl">峰值</div><div class="info-val"><span id="brIpPeak">--</span></div></div>
         </div>
       </div>
+      <div class="panel" id="panelFsdMock">
+        <div class="ptitle">FSD 下发 · feature_configuration</div>
+        <div class="row"><div class="rlbl">启用劫持</div><div class="tog" id="tgFsd"></div><div class="rval" id="fsdEnMode">--</div></div>
+        <div class="row" style="margin-top:10px">
+          <div class="rlbl">模式</div>
+          <div class="bgroup" id="grpFsdMode">
+            <button class="pill" data-v="reply" onclick="fsdMode('reply')">回包 reply</button>
+            <button class="pill" data-v="observe" onclick="fsdMode('observe')">只观察 observe</button>
+          </div>
+        </div>
+        <div class="info-grid" style="margin-top:12px">
+          <div class="info-item"><div class="info-lbl">TLS 握手</div><div class="info-val" id="fsdTls">--</div></div>
+          <div class="info-item"><div class="info-lbl">最近握手</div><div class="info-val"><span id="fsdTlsLast">--</span></div></div>
+          <div class="info-item"><div class="info-lbl">成功 / 失败</div><div class="info-val"><span id="fsdTlsOk">0</span> / <span id="fsdTlsFail">0</span></div></div>
+        </div>
+        <div class="info-grid" style="margin-top:12px">
+          <div class="info-item"><div class="info-lbl">当前载荷</div><div class="info-val"><span id="fsdBytes">--</span></div></div>
+          <div class="info-item"><div class="info-lbl">字段数</div><div class="info-val"><span id="fsdFields">--</span></div></div>
+          <div class="info-item"><div class="info-lbl">命中 / DNS 劫持</div><div class="info-val"><span id="fsdHitsCnt">--</span> / <span id="fsdDns">--</span></div></div>
+        </div>
+        <div class="tip" style="margin-top:10px">劫持域名：<span id="fsdHost">--</span></div>
+        <div class="tip" style="margin-top:6px">与 Windows 一致：任意路径中的 /feature_configuration 返回 200 + compact JSON，X-Checksum 为 md5(body)，Cache-Control: no-store。目标域名由 DNS 劫持到 9.9.9.9:443。</div>
+        <div class="bgroup" style="flex-wrap:wrap;gap:8px;margin-top:12px">
+          <button class="pill" onclick="fsdPreset('default')">Windows 20 字段 602B</button>
+          <button class="pill" onclick="fsdPreset('16f')">16 字段 476B</button>
+          <button class="pill" onclick="fsdPreset('282b')">官方 282B</button>
+        </div>
+        <textarea id="fsdPayload" spellcheck="false"
+          style="width:100%;min-height:180px;margin-top:12px;padding:10px;background:#0e1419;color:#a5d6ff;border:1px solid #30363d;border-radius:8px;font:12px/1.5 Consolas,monospace;box-sizing:border-box"></textarea>
+        <div class="bgroup" style="flex-wrap:wrap;gap:8px;margin-top:10px">
+          <button class="abtn" onclick="fsdSave()">保存并下发</button>
+          <button class="abtn gray" onclick="fsdReload()">重新读取</button>
+          <button class="abtn gray" onclick="fsdClearHits()">清空命中记录</button>
+        </div>
+        <div class="tip" id="fsdMsg" style="margin-top:8px"></div>
+        <div class="bgroup" style="flex-wrap:wrap;gap:8px;margin-top:12px">
+          <button class="abtn gray" onclick="fsdClearHandshakes()">清空握手日志</button>
+          <button class="abtn gray" onclick="fsdDownloadHandshakes()">下载握手日志</button>
+        </div>
+        <div class="ptitle" style="margin-top:16px">最新回包 <span id="fsdLastMeta" style="color:#8a8a8a;font-size:13px;font-weight:500"></span></div>
+        <pre id="fsdLastBody" style="margin:0;padding:10px;background:#0e1419;border:1px solid #30363d;border-radius:8px;color:#a5d6ff;font:12px/1.5 Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto">--</pre>
+        <div class="ptitle" style="margin-top:16px">最近命中 / 请求</div>
+        <div id="fsdHits" style="font-size:14px;line-height:1.7;color:#e5e5e5">--</div>
+      </div>
       <div class="actions">
         <button class="abtn gray" onclick="openPhone()">📱 打开手机版</button>
       </div>
@@ -1543,6 +1587,14 @@ document.getElementById('tgBrEn').onclick = function(){
   fetch('/api/wifi-bridge/set'+qs)
     .then(function(r){if(r.status===200){toast('WiFi 桥接 '+(newVal?'已启用':'已关闭'), 'ok');brPoll();}else toast('失败','err')});
 };
+// FSD 下发开关（feature_configuration）
+document.getElementById('tgFsd').onclick = function(){
+  var t = this;
+  var newVal = !t.classList.contains('on');
+  t.classList.toggle('on', newVal);
+  document.getElementById('fsdEnMode').textContent = newVal?'启用':'关闭';
+  fsdSet('enabled='+(newVal?1:0));
+};
 
 // ───── WiFi 桥接 / DNS 状态轮询 ─────
 function brPoll(){
@@ -1566,6 +1618,68 @@ function brPoll(){
     var tg = document.getElementById('tgDns');
     tg.classList.toggle('on', !!d.dnsEnable);
     document.getElementById('dnsMode').textContent = d.dnsEnable ? '启用' : '关闭';
+    // FSD 下发状态
+    var fm = d.fsdMock;
+    var panelFsd = document.getElementById('panelFsdMock');
+    if (panelFsd) panelFsd.style.display = fm ? '' : 'none';
+    if (fm) {
+      if (panelFsd) panelFsd.style.display = fm.active === false ? 'none' : '';
+      var tgFsd = document.getElementById('tgFsd');
+      tgFsd.classList.toggle('on', !!fm.enabled);
+      document.getElementById('fsdEnMode').textContent = fm.enabled ? '启用' : '关闭';
+      document.getElementById('fsdBytes').textContent = (fm.bytes||0)+' B / '+(fm.md5||'').slice(0,10)+'…';
+      document.getElementById('fsdFields').textContent = (fm.fields||0)+(fm.canonical?' · 官方 282B':'');
+      document.getElementById('fsdHitsCnt').textContent = fm.hits||0;
+      document.getElementById('fsdDns').textContent = fm.dnsRedirects||0;
+      document.getElementById('fsdHost').textContent = fm.host||'--';
+      var hs = fm.handshake || {};
+      var hsOk = hs.ok || 0, hsFail = hs.fail || 0;
+      document.getElementById('fsdTls').textContent = hsOk > 0 ? ('已建立 · ' + (hs.tls||'TLS')) : '未建立';
+      document.getElementById('fsdTlsLast').textContent = hsOk > 0
+        ? (fsdAgo(fm.nowMs, hs.lastOkMs) + ' · ' + (hs.client||'-') + ' · ' + (hs.cipher||''))
+        : (hsFail > 0 ? ('最近失败 · ' + fsdAgo(fm.nowMs, hs.lastFailMs) + (hs.error ? ' · ' + hs.error : '')) : '--');
+      document.getElementById('fsdTlsOk').textContent = hsOk;
+      document.getElementById('fsdTlsFail').textContent = hsFail;
+      var modeButtons = document.querySelectorAll('#grpFsdMode .pill');
+      for (var mi=0; mi<modeButtons.length; ++mi) {
+        modeButtons[mi].classList.toggle('active', modeButtons[mi].getAttribute('data-v') === fm.mode);
+      }
+      if (!fsdEditing) {
+        var editor = document.getElementById('fsdPayload');
+        if (editor && editor.value !== (fm.payload||'')) editor.value = fm.payload || '';
+      }
+      var lr = fm.lastResponse;
+      var lastMeta = document.getElementById('fsdLastMeta');
+      var lastBody = document.getElementById('fsdLastBody');
+      if (lr && lastBody) {
+        lastMeta.textContent = 'HTTP ' + (lr.status||'--') + ' · ' + (lr.ctype||'—') + ' · ' + (lr.bytes||0) + ' B · md5 ' + (lr.md5||'').slice(0,12) + '…';
+        lastBody.textContent = lr.body || '(空回包)';
+      } else if (lastBody) {
+        lastBody.textContent = '暂无回包';
+        lastMeta.textContent = '';
+      }
+      var hits = fm.recent || [];
+      var hitsEl = document.getElementById('fsdHits');
+      if (!hits.length) {
+        hitsEl.innerHTML = '<span style="color:#8a8a8a">暂无命中</span>';
+      } else {
+        hitsEl.innerHTML = hits.map(function(h){
+          var sec = Math.floor((h.uptimeMs||0)/1000);
+          var ts = Math.floor(sec/3600)+':'+('0'+Math.floor(sec/60)%60).slice(-2)+':'+('0'+sec%60).slice(-2);
+          var status = h.status || 0;
+          var sc = (status >= 200 && status < 300) ? '#34d399' : (status ? '#fca5a5' : '#8a8a8a');
+          return '<div style="border-bottom:1px solid #222;padding:5px 0">'
+            + '<div style="display:flex;gap:10px;justify-content:space-between">'
+            +   '<span><b style="color:'+sc+'">'+status+'</b> <span style="color:#8a8a8a">'+escHtml(h.kind||'HIT')+'</span> '+escHtml(h.method||'')+' '+escHtml(h.url||'')+'</span>'
+            +   '<span style="color:#8a8a8a">'+ts+' · '+escHtml(h.client||'-')+'</span>'
+            + '</div>'
+            + '<div style="color:#8a8a8a;font-size:13px">请求 '+(h.reqBytes||0)+' B → 回包 '+(h.bytes||0)+' B'
+            +   ' · md5 '+escHtml((h.md5||'').slice(0,12))+'… · '+escHtml(h.mode||'')+'</div>'
+            + (h.respHead ? '<div style="color:#a5d6ff;font-size:12px;font-family:monospace;word-break:break-all;margin-top:2px">'+escHtml(h.respHead)+'</div>' : '')
+            + '</div>';
+        }).join('');
+      }
+    }
     // 已保存热点列表（可添加/删除，带内联确认）
     var list = document.getElementById('brList');
     var nets = d.upstreamNetworks || [];
@@ -1832,6 +1946,89 @@ function dnsPreset(name){
   fetch('/api/wifi-bridge/set'+qs)
     .then(function(r){if(r.status===200){toast('预设已应用','ok');brPoll()}else{toast('失败','err')}});
 }
+// ───── FSD 下发（feature_configuration）─────
+var fsdEditing = false;
+function fsdMsg(text, ok){
+  var el = document.getElementById('fsdMsg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.style.color = ok === false ? '#fca5a5' : (ok === true ? '#34d399' : '#8a8a8a');
+}
+function fsdSet(qs){
+  if(!tok){ showPin(); return; }
+  fetch('/api/fsd-mock/set?'+qs+'&token='+encodeURIComponent(tok))
+    .then(function(r){
+      if(r.status===200){ toast('已保存','ok'); fsdMsg('已保存，车机下次请求生效', true); brPoll(); }
+      else if(r.status===403){ showPin(); }
+      else { fsdMsg('保存失败', false); toast('失败','err'); }
+    });
+}
+function fsdMode(mode){ fsdSet('mode='+encodeURIComponent(mode)); }
+function fsdPreset(name){ fsdEditing=false; fsdSet('preset='+encodeURIComponent(name)); }
+function fsdReload(){
+  fsdEditing = false;
+  brPoll();
+  fsdMsg('已重新读取', true);
+}
+function fsdSave(){
+  if(!tok){ showPin(); return; }
+  var editor = document.getElementById('fsdPayload');
+  var text = editor ? editor.value.trim() : '';
+  if(!text){ fsdMsg('请输入 JSON 对象', false); return; }
+  fetch('/api/fsd-mock/payload?token='+encodeURIComponent(tok), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: text
+  }).then(function(r){
+    return r.text().then(function(t){
+      if(r.status===200){
+        fsdEditing = false;
+        fsdMsg('已保存并下发', true);
+        toast('配置已下发','ok');
+        brPoll();
+      } else {
+        var reason = '保存失败';
+        try { reason = JSON.parse(t).error || reason; } catch(e) {}
+        fsdMsg(reason, false);
+      }
+    });
+  });
+}
+function fsdAgo(nowMs, thenMs){
+  if(!thenMs) return '--';
+  var sec = Math.max(0, Math.floor(((nowMs||0) - thenMs)/1000));
+  if(sec < 60) return sec+' 秒前';
+  if(sec < 3600) return Math.floor(sec/60)+' 分前';
+  return Math.floor(sec/3600)+' 小时前';
+}
+function fsdClearHandshakes(){
+  if(!tok){ showPin(); return; }
+  fetch('/api/fsd-mock/handshakes-clear?token='+encodeURIComponent(tok), {method:'POST'})
+    .then(function(r){
+      if(r.status===200){ fsdMsg('握手日志已清空', true); brPoll(); }
+      else if(r.status===403){ showPin(); }
+      else { fsdMsg('清空握手日志失败', false); }
+    });
+}
+function fsdDownloadHandshakes(){
+  window.open('/api/fsd-mock/handshakes'+(tok?'?token='+encodeURIComponent(tok):''), '_blank');
+}
+function fsdClearHits(){
+  if(!tok){ showPin(); return; }
+  fetch('/api/fsd-mock/hits-clear?token='+encodeURIComponent(tok), {method:'POST'})
+    .then(function(r){
+      if(r.status===200){ fsdMsg('命中记录已清空', true); brPoll(); }
+      else if(r.status===403){ showPin(); }
+      else { fsdMsg('清空失败', false); }
+    });
+}
+(function(){
+  var editor = document.getElementById('fsdPayload');
+  if(editor){
+    editor.addEventListener('focus', function(){ fsdEditing = true; });
+    editor.addEventListener('input', function(){ fsdEditing = true; });
+  }
+})();
 // ───── 添加 / 删除上联热点 ─────
 function brAdd(){
   var ssid = document.getElementById('brAddSsid').value.trim();

@@ -20,8 +20,12 @@ extern "C" {
 #endif
 
 // Return 1=allow, 0=drop, -1=fall through to default lwIP forwarding.
-// Takes destination IP in NETWORK byte order (as lwIP stores ip4_addr.addr).
-int dnsHookIp4CanForward(uint32_t destAddrNetOrder);
+// ESP-IDF's ip4_canforward passes the destination in host byte order.
+int dnsHookIp4CanForward(uint32_t destAddrHostOrder);
+
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+void dnsIpPolicyRecordIngress(uint8_t netifIndex);
+#endif
 
 // Periodic service: keeps the blocklist IP cache fresh. Call from loop().
 void dnsIpPolicyService(const char* allowlistRules,
@@ -56,6 +60,11 @@ void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t*
 #include <cctype>
 #include <cstring>
 
+// FSD payload interception (TeslaDG dns_sink.py parity): answer these exact
+// host rules with the ESP32 AP address instead of forwarding upstream.
+void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer);
+void dnsGetFsdRedirectStats(uint32_t* total, char* lastDomain, size_t capacity);
+
 // Buffer size for allow/block rule strings. 1024 was too small — user-customized
 // allowlists (full preset + extra domains) exceed 1024 and the /api/set handler
 // silently drops oversize writes. 3072 leaves headroom for ~30 extra entries
@@ -67,6 +76,12 @@ struct DNSFilterConfig {
     char allowlist[kDnsRuleBufSize] = {};
     char blocklist[kDnsRuleBufSize] = {};
 };
+
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+void dnsStrictSetApInterface(int netifIndex);
+void dnsStrictClearAddresses();
+void dnsStrictUpdateRules(DNSFilterConfig& cfg, bool enabled, const char* allowlist, const char* blocklist);
+#endif
 
 static constexpr size_t kDnsBlockedDomainCapacity = 50;
 
@@ -80,6 +95,7 @@ class DNSWhitelistServer {
   public:
     bool begin(uint16_t port = 53);
     void stop();
+    bool started() const { return started_; }
     void processNextRequest(const DNSFilterConfig& cfg, bool upstreamReady);
     size_t copyBlockedDomains(DNSBlockedDomainStatEntry* dest, size_t maxEntries, uint32_t& totalBlockedCount);
     void clearBlockedRequests();
@@ -125,7 +141,61 @@ constexpr uint16_t kDnsClassIN = 1;
 constexpr uint32_t kDnsTtlSeconds = 60;
 constexpr uint32_t kDnsForwardTimeoutMs = 1200;
 
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+// Shared by the DNS task and the lwIP TCP/IP thread. Only addresses actually
+// returned to AP DNS clients are permitted, for the advertised DNS TTL.
+struct AllowedAddress {
+    uint32_t ip;
+    uint32_t issuedAt;
+};
+portMUX_TYPE gDnsAllowMux = portMUX_INITIALIZER_UNLOCKED;
+AllowedAddress gAllowedAddresses[128] = {};
+uint32_t gDnsRulesEpoch = 0;
+uint8_t gApNetifIndex = 0;
+uint8_t gIngressNetifIndex = 0;  // Only accessed on the lwIP TCP/IP thread.
+
+void clearAllowedAddressesLocked() {
+    memset(gAllowedAddresses, 0, sizeof(gAllowedAddresses));
+    ++gDnsRulesEpoch;
+}
+
+bool destinationAllowed(const AllowedAddress* addresses, size_t count, uint32_t ip, uint32_t now) {
+    for (size_t i = 0; i < count; ++i) {
+        if (addresses[i].ip == ip && ip != 0 && now - addresses[i].issuedAt < kDnsTtlSeconds) return true;
+    }
+    return false;
+}
+
+bool rememberAllowedAddress(uint32_t ip, uint32_t epoch) {
+    if (ip == 0) return false;
+    const uint32_t now = millis() / 1000;
+    portENTER_CRITICAL(&gDnsAllowMux);
+    const bool currentRules = epoch == gDnsRulesEpoch && gApNetifIndex != 0;
+    if (currentRules) {
+        AllowedAddress* oldest = &gAllowedAddresses[0];
+        for (auto& entry : gAllowedAddresses) {
+            if (entry.ip == ip || entry.ip == 0) {
+                oldest = &entry;
+                break;
+            }
+            if (now - entry.issuedAt > now - oldest->issuedAt) oldest = &entry;
+        }
+        *oldest = {ip, now};
+    }
+    portEXIT_CRITICAL(&gDnsAllowMux);
+    return currentRules;
+}
+#endif
+
 portMUX_TYPE gDnsBlockedLogMux = portMUX_INITIALIZER_UNLOCKED;
+
+// FSD redirect snapshot shared by the DNS task and the HTTP config task.
+portMUX_TYPE gFsdRedirectMux = portMUX_INITIALIZER_UNLOCKED;
+bool gFsdRedirectEnabled = false;
+char gFsdRedirectHosts[128] = {};
+IPAddress gFsdRedirectAnswer;
+uint32_t gFsdRedirectTotal = 0;
+char gFsdRedirectLast[128] = {};
 
 uint16_t readU16(const uint8_t* ptr) {
     return static_cast<uint16_t>((ptr[0] << 8) | ptr[1]);
@@ -404,10 +474,36 @@ bool containsIpLocked(const CachedIpEntry* entries, size_t count, uint32_t ipHos
 
 }  // namespace
 
+// ── FSD redirect setters/getters (called from fsd_mock.cpp) ──────────────────
+void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer) {
+    portENTER_CRITICAL(&gFsdRedirectMux);
+    gFsdRedirectEnabled = enabled && hosts != nullptr && hosts[0] != '\0';
+    if (hosts != nullptr) {
+        strlcpy(gFsdRedirectHosts, hosts, sizeof(gFsdRedirectHosts));
+    } else {
+        gFsdRedirectHosts[0] = '\0';
+    }
+    gFsdRedirectAnswer = answer;
+    portEXIT_CRITICAL(&gFsdRedirectMux);
+}
+
+void dnsGetFsdRedirectStats(uint32_t* total, char* lastDomain, size_t capacity) {
+    portENTER_CRITICAL(&gFsdRedirectMux);
+    if (total) *total = gFsdRedirectTotal;
+    if (lastDomain && capacity) {
+        strlcpy(lastDomain, gFsdRedirectLast, capacity);
+    }
+    portEXIT_CRITICAL(&gFsdRedirectMux);
+}
+
 // ── DNSWhitelistServer member definitions ────────────────────────────────────
 bool DNSWhitelistServer::begin(uint16_t port) {
     stop();
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    started_ = udp_.begin(WiFi.softAPIP(), port) == 1;
+#else
     started_ = udp_.begin(port) == 1;
+#endif
     return started_;
 }
 
@@ -501,7 +597,11 @@ static size_t longestRuleMatchLen(const char* rules, const String& domain) {
 }
 
 bool DNSWhitelistServer::isAllowedDomain(const DNSFilterConfig& cfg, const String& domain) const {
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    if (!cfg.enabled || !hasDomainRules(cfg.allowlist)) return false;
+#else
     if (!cfg.enabled) return true;
+#endif
     if (domain.isEmpty()) return false;
 
     size_t blockLen = longestRuleMatchLen(cfg.blocklist, domain);
@@ -756,9 +856,63 @@ void DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
         return;
     }
 
-    if (!isAllowedDomain(cfg, domain)) {
+    // Windows dns_sink.py: --redirect host(s) -> local IP, ahead of the
+    // allow/block rules. AAAA and other types get an empty answer so the
+    // client falls back to A (same as build_empty in dns_sink.py).
+    bool fsdRedirectEnabled = false;
+    char fsdRedirectHosts[sizeof(gFsdRedirectHosts)] = {};
+    IPAddress fsdRedirectIp;
+    portENTER_CRITICAL(&gFsdRedirectMux);
+    fsdRedirectEnabled = gFsdRedirectEnabled;
+    strlcpy(fsdRedirectHosts, gFsdRedirectHosts, sizeof(fsdRedirectHosts));
+    fsdRedirectIp = gFsdRedirectAnswer;
+    portEXIT_CRITICAL(&gFsdRedirectMux);
+
+    bool fsdRedirect = false;
+    if (fsdRedirectEnabled && !domain.isEmpty()) {
+        const char* cursor = fsdRedirectHosts;
+        while (*cursor && !fsdRedirect) {
+            while (*cursor && (isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
+            const char* begin = cursor;
+            while (*cursor && !(isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
+            if (cursor > begin) {
+                // Windows dns_sink.py uses exact set membership for --redirect.
+                String rule(begin, static_cast<unsigned int>(cursor - begin));
+                if (domain == rule) fsdRedirect = true;
+            }
+        }
+        if (fsdRedirect) {
+            portENTER_CRITICAL(&gFsdRedirectMux);
+            ++gFsdRedirectTotal;
+            strlcpy(gFsdRedirectLast, domain.c_str(), sizeof(gFsdRedirectLast));
+            portEXIT_CRITICAL(&gFsdRedirectMux);
+        }
+    }
+    if (fsdRedirect) {
+        if (qType == kDnsTypeA) {
+            sendIPv4Answer(query, questionEnd, requestFlags, fsdRedirectIp);
+        } else {
+            sendNoAnswerResponse(query, questionEnd, requestFlags);
+        }
+        return;
+    }
+
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    // One DNS task owns this scratch copy. Never hold a mux during resolution.
+    static DNSFilterConfig rules;
+    portENTER_CRITICAL(&gDnsAllowMux);
+    rules = cfg;
+    const uint32_t epoch = gDnsRulesEpoch;
+    portEXIT_CRITICAL(&gDnsAllowMux);
+    const DNSFilterConfig& currentRules = rules;
+#else
+    const DNSFilterConfig& currentRules = cfg;
+#endif
+    if (!isAllowedDomain(currentRules, domain)) {
         logBlockedRequest(domain);
+#ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
         dnsIpBlockerRememberDomain(domain.c_str(), upstreamReady ? 1 : 0);
+#endif
         sendBlockedResponse(query, questionEnd, requestFlags, qType);
         return;
     }
@@ -768,6 +922,7 @@ void DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
         return;
     }
 
+#ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
     uint8_t upstreamResponse[512] = {};
     size_t upstreamResponseLength = 0;
     if (forwardUpstreamQuery(query, read, upstreamResponse, sizeof(upstreamResponse), upstreamResponseLength)) {
@@ -777,6 +932,7 @@ void DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
         udp_.endPacket();
         return;
     }
+#endif
 
     if (qType != kDnsTypeA) {
         sendNoAnswerResponse(query, questionEnd, requestFlags);
@@ -785,11 +941,48 @@ void DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
 
     IPAddress resolved;
     if (WiFi.hostByName(domain.c_str(), resolved) == 1) {
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+        if (WiFi.status() != WL_CONNECTED || !rememberAllowedAddress(ipAddressToHostOrder(resolved), epoch)) {
+            sendErrorResponse(query, questionEnd, requestFlags, 2);
+            return;
+        }
+#endif
         sendIPv4Answer(query, questionEnd, requestFlags, resolved);
     } else {
         sendErrorResponse(query, questionEnd, requestFlags, 3);
     }
 }
+
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+extern "C" void dnsIpPolicyRecordIngress(uint8_t netifIndex) {
+    gIngressNetifIndex = netifIndex;
+}
+
+void dnsStrictSetApInterface(int netifIndex) {
+    portENTER_CRITICAL(&gDnsAllowMux);
+    gApNetifIndex = netifIndex > 0 ? static_cast<uint8_t>(netifIndex) : 0;
+    clearAllowedAddressesLocked();
+    portEXIT_CRITICAL(&gDnsAllowMux);
+}
+
+void dnsStrictClearAddresses() {
+    portENTER_CRITICAL(&gDnsAllowMux);
+    clearAllowedAddressesLocked();
+    portEXIT_CRITICAL(&gDnsAllowMux);
+}
+
+void dnsStrictUpdateRules(DNSFilterConfig& cfg, bool enabled, const char* allowlist, const char* blocklist) {
+    portENTER_CRITICAL(&gDnsAllowMux);
+    if (cfg.enabled != enabled || (allowlist && strcmp(cfg.allowlist, allowlist) != 0) ||
+        (blocklist && strcmp(cfg.blocklist, blocklist) != 0)) {
+        cfg.enabled = enabled;
+        if (allowlist) strlcpy(cfg.allowlist, allowlist, sizeof(cfg.allowlist));
+        if (blocklist) strlcpy(cfg.blocklist, blocklist, sizeof(cfg.blocklist));
+        clearAllowedAddressesLocked();
+    }
+    portEXIT_CRITICAL(&gDnsAllowMux);
+}
+#endif
 
 // ── C-linkage entry points (visible to lwIP hook) ────────────────────────────
 extern "C" void dnsIpPolicyService(const char* allowlistRules, const char* blocklistRules, int rulesEnabled, int upstreamReady) {
@@ -870,7 +1063,21 @@ extern "C" void dnsIpBlockerClear(void) {
     portEXIT_CRITICAL(&gDnsIpPolicyMux);
 }
 
-extern "C" int dnsHookIp4CanForward(uint32_t destAddrNetOrder) {
+extern "C" int dnsHookIp4CanForward(uint32_t destAddrHostOrder) {
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    const uint32_t now = millis() / 1000;
+    portENTER_CRITICAL(&gDnsAllowMux);
+    const bool drop = gApNetifIndex == 0 || (gIngressNetifIndex == gApNetifIndex &&
+        !destinationAllowed(gAllowedAddresses, sizeof(gAllowedAddresses) / sizeof(gAllowedAddresses[0]),
+                            destAddrHostOrder, now));
+    portEXIT_CRITICAL(&gDnsAllowMux);
+    if (drop) {
+        portENTER_CRITICAL(&gDnsIpPolicyMux);
+        ++gIpForwardDropCount;
+        portEXIT_CRITICAL(&gDnsIpPolicyMux);
+    }
+    return drop ? 0 : -1;
+#else
     // Hot path — called for every outbound IPv4 packet while NAPT is on.
     // Short-circuit before touching the critical section when the blocker is
     // disabled or the IP cache is empty. Per-packet overhead drops to a single
@@ -879,13 +1086,6 @@ extern "C" int dnsHookIp4CanForward(uint32_t destAddrNetOrder) {
     if (!cfg.ipBlockerEnabled) return -1;
     if (gBlockedIpCount == 0)  return -1;
 
-    // lwIP passes ip4_addr.addr which is stored in NETWORK byte order on ESP32
-    // (little-endian host). Our cache stores in HOST order — byte-swap to match.
-    uint32_t destAddrHostOrder =
-        ((destAddrNetOrder & 0xFF000000u) >> 24) |
-        ((destAddrNetOrder & 0x00FF0000u) >> 8)  |
-        ((destAddrNetOrder & 0x0000FF00u) << 8)  |
-        ((destAddrNetOrder & 0x000000FFu) << 24);
     uint32_t nowSeconds = millis() / 1000;
 
     portENTER_CRITICAL(&gDnsIpPolicyMux);
@@ -898,6 +1098,7 @@ extern "C" int dnsHookIp4CanForward(uint32_t destAddrNetOrder) {
     }
     portEXIT_CRITICAL(&gDnsIpPolicyMux);
     return -1;  // fall through to default lwIP forwarding
+#endif
 }
 
 extern "C" void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t* outCachePeak) {

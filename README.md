@@ -255,6 +255,8 @@ static char apPass[64] = "12345678";
 2. 用手机打开 WiFi 设置，找到 `FSD-Controller`（或你修改的名字），输入密码连接。
 3. 连接后，手机浏览器访问 `9.9.9.9`。
 
+当前源码构建的 Waveshare ESP32-S3 Wi-Fi 桥接版使用 `http://9.9.9.9:10010/` 或 `http://fsd.local:10010/` 打开控制面板。访问旧首页会自动跳转到新端口。
+
 ### 5.2 控制面板说明
 
 **基础设置**
@@ -297,9 +299,64 @@ LEGACY 的具体发帧条件、配置范围和验证方式见 [LEGACY CAN 发帧
 | **日志** | `/log` | SPIFFS 存储的诊断日志（持久，约 96 KB 循环）|
 | **DNS 过滤** | `/dns`（仅 Wi-Fi 桥接版）| 车机域名拦截配置 |
 
+### 自有客户端 HTTPS 配置发布
+
+ESP32-S3 Wi-Fi 桥接固件提供 `https://9.9.9.9/`（端口 `443`），用于给显式连接此服务的自有客户端发布 JSON 配置。443 服务使用与 Windows `--emudhra` 相同的 eMudhra 证书链（leaf ← `EM OV TLS CA - G3C` ← `emSign Root TLS CA - G3` ← `emSign ECC Root CA - G3`）；管理令牌和客户端令牌仍由设备首次启动时生成并保存在 NVS。
+
+1. 连接设备的 USB 串口（115200），发送 `client-config` 并附换行。将返回的 PEM 信任包（emSign ECC Root + EM OV TLS CA - G3C + cross-sign）保存为 `device.pem`，并保管管理令牌和客户端令牌。升级到本版本后，旧版每台设备自签的 `device.pem` 不再适用，需要重新导出。
+2. 连接设备热点，将该证书加入浏览器或系统信任，然后访问 `https://9.9.9.9/`，用管理令牌读取、发布或回滚配置。JSON 对象上限为 1024 字节（紧凑编码）。
+3. 连到设备热点的客户端可用下面的命令拉取配置并原子写入本地文件。脚本提示输入客户端令牌，写入成功后回报应用版本。管理页点「读取」可查看最新确认。
+
+   ```sh
+   python3 tools/client-config/pull.py --cert device.pem --output client-settings.json
+   ```
+
+客户端凭据可读取及确认配置。管理凭据可读取、发布和回滚。设备保留当前版本和上一份配置，回滚时发布新版本。确认状态记录持有客户端令牌的一方最近一次成功确认的版本。
+
+HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本的热点对 IPv4 外出转发默认拒绝。只有按现有黑白名单规则获准、且经 ESP32 DNS 的 A 查询返回的 IPv4 地址才会临时放行，授权有效期为 60 秒。清空白名单、关闭 DNS 过滤、修改规则或上游断线会撤销授权。IPv6 转发关闭。开放热点给其他用户前，应先通过控制面板设置管理 PIN，保护规则编辑。
+
+转发层按目的 IP 放行，共用同一地址的服务无法在这一层按域名区分。此策略覆盖经 ESP32 热点转发的流量，设备自身的 OTA 和诊断功能使用独立网络路径。
+
+### FSD 下发（feature_configuration，与 Windows 对齐）
+
+`esp32s3-waveshare-wifi` 固件内置了 TeslaDG Windows 版的核心下发链路，默认开启，逻辑与 `C:\fsd-mitm` 一致：
+
+1. **DNS 劫持**：AP 的 DNS 把 `api-prd.vn.cloud.tesla.cn` 解析为 ESP32 自己的 AP 地址 `9.9.9.9`（对应 Windows `dns_sink.py --redirect api-prd.vn.cloud.tesla.cn`）。A 查询返回 AP IP，AAAA 和其他类型返回空答案。域名按精确匹配处理，多个域名用空格分隔；与 Windows `--redirect` 集合一致，不支持通配符。
+2. **443 回包**：车机请求任意路径中的 `/feature_configuration`（可带 VIN 前缀、结尾 `/`、`?` 或 `#`）时，返回：
+   - `200 OK`，`Content-Type: application/json`
+   - `X-Checksum: md5(compact body)`
+   - `Cache-Control: no-store`
+   - body 为当前下发载荷的 compact JSON
+3. **其他路径**：与 Windows mitmdump reverse 模式一样转发到真实 `api-prd.vn.cloud.tesla.cn`，不会在 ESP32 本地返回 404。
+
+默认载荷与 `TeslaDG/app/payload.json` 逐字节一致（602 字节 / md5 `241cb01b81a2b9c8b9f389a471bcbc94` / 20 字段）。面板还提供两个 Windows 回滚样本：
+
+> 注：`fsd_mock.py` 内置的 `DEFAULT_PAYLOAD` 与 `payload-282b.json` 字段相同、键顺序不同（md5 为 `104ccde7d817ab00667f2d98326259ec`）；Windows 启动脚本始终优先加载 `payload.json`，所以这里以 602 字节文件和看板认定的 282B 原版为准。
+
+| 预设 | 字节 | md5 | 来源 |
+|---|---:|---|---|
+| Windows 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` |
+| 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
+| 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json`（看板认定原版）|
+
+**证书**：443 服务使用与 Windows `--emudhra` 相同的 eMudhra 链，而不是 mitmproxy 自签 CA。叶子 `CN=api-prd.vn.cloud.tesla.cn` 由 `EM OV TLS CA - G3C` 签发，链到 `emSign Root TLS CA - G3` / `emSign ECC Root CA - G3`；SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`fsd.local`、`9.9.9.9`、`127.0.0.1`。车机通常已信任 emSign 根，所以**不需要安装证书**；如果车机不信任 emSign，把串口导出的 `EM OV TLS CA - G3C` 中间 CA 装进车机信任库即可。叶子私钥随源码公开（eMudhra 中间 CA 已失陷），仅适用于实验环境。
+
+**回复 / 观察模式**：与 Windows `mode.json` 一致。`reply` 直接回包；`observe` 只记录并转发到上游，不返回 ESP32 载荷。可在面板 DNS 页的「FSD 下发」卡片切换。劫持判断排在 DNS 黑白名单之前，因此即使白名单没有 `api-prd`、或 DNS 过滤关闭，只要 FSD 下发开启，该域名仍会被劫持。
+
+**配置与查看**：
+
+- 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
+- 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`dnsRedirects`、最近命中列表和当前载荷。
+- 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 8192 字节）。
+- 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`GET /api/fsd-mock/hits`（下载 `/fsd_hits.jsonl`）。
+- 命中记录同时写入 SPIFFS `/fsd_hits.jsonl`，超过约 16 KB 自动保留最近约 8 KB。
+
+> 与 Windows 的差异：ESP32 的 observe/透传只转发固定的一组 Tesla 请求头（Authorization、Content-Type、Accept、User-Agent、Cookie 等），请求体上限 8 KB；Windows mitmproxy 没有这些限制。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。
+
 ### Wi-Fi 桥接 DNS 白名单 / 黑名单安全说明
 
 > 本节只适用于 `esp32_wifi` / `esp32s3_waveshare_wifi` 这类 **Wi-Fi 桥接版固件**。它提供的是本地网络层面的风险控制，不是 Tesla 授权绕过，也不能保证账号、车辆或云端风控绝对安全。
+> 当前源码构建的 Waveshare ESP32-S3 Wi-Fi 桥接版使用上一节的默认拒绝转发策略。以下放行默认、IP 开关和缓存说明适用于传统桥接策略。
 
 **工作边界**
 

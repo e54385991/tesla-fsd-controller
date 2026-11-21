@@ -280,6 +280,8 @@ Connect the ESP32 to your computer with a USB cable.
 2. On your phone, find `FSD-Controller` (or your custom name) in WiFi settings and connect.
 3. Open `9.9.9.9` in your phone's browser.
 
+For the Waveshare ESP32-S3 Wi-Fi bridge firmware built from the current source, open the control panel at `http://9.9.9.9:10010/` or `http://fsd.local:10010/`. The previous home page address redirects to the new port.
+
 ### 5.2 Control Panel Reference
 
 | Setting | Description |
@@ -315,7 +317,25 @@ The status card updates in real time:
 - **CAN Bus** — OK means successfully connected to the vehicle CAN bus
 - **FSD Triggered** — Yes means FSD has been activated
 
-### 5.5 Wi-Fi Bridge DNS Rules
+### 5.5 FSD Payload Delivery (feature_configuration)
+
+The `esp32s3-waveshare-wifi` build implements the same hotspot chain as the TeslaDG Windows package, enabled by default:
+
+1. **DNS**: `api-prd.vn.cloud.tesla.cn` resolves to the ESP32 AP address `9.9.9.9` (A record; AAAA and other types return an empty answer), matching `dns_sink.py --redirect`. Host entries are exact matches, space-separated; wildcards are not supported.
+2. **Port 443**: any request path matching `/feature_configuration` (optional trailing slash, query, or fragment; optional VIN prefix) returns `200 OK` with `Content-Type: application/json`, `X-Checksum: md5(compact body)`, `Cache-Control: no-store`, and the current payload.
+3. **Other paths** are reverse-proxied to the real `api-prd.vn.cloud.tesla.cn`, like mitmdump reverse mode.
+
+The default payload is byte-for-byte `TeslaDG/app/payload.json` (602 B, md5 `241cb01b81a2b9c8b9f389a471bcbc94`, 20 fields). The panel also offers `payload-16f.json` (476 B, `b61035d9dea38e737fbf8195ccb39f2c`) and `payload-282b.json` (282 B, `c212a75ca858750ac302093c138991f2`). Note: `fsd_mock.py`'s built-in `DEFAULT_PAYLOAD` has the same 9 fields in a different order (md5 `104ccde7d817ab00667f2d98326259ec`); the Windows launcher always loads `payload.json`, so the 602 B file is the effective default.
+
+**Certificates**: port 443 uses the same eMudhra chain as Windows `--emudhra`, not the self-signed mitmproxy CA: leaf `CN=api-prd.vn.cloud.tesla.cn` is issued by `EM OV TLS CA - G3C` and chains to `emSign Root TLS CA - G3` / `emSign ECC Root CA - G3`. SANs cover `api-prd.vn.cloud.tesla.cn`, `mothership.vn.teslamotors.com`, `fsd.local`, `9.9.9.9`, and `127.0.0.1`. The car normally trusts the emSign root, so no certificate installation is needed; if it does not, install the exported `EM OV TLS CA - G3C` intermediate. The leaf private key is public in this repository (compromised eMudhra intermediate), lab use only.
+
+**Modes**: `reply` returns the ESP32 payload; `observe` records the request and forwards it upstream, matching `mode.json`. Switch it in the DNS tab of the control panel.
+
+**API**: `fsdMock` in `/api/wifi-bridge/status`; `POST /api/fsd-mock/payload` (JSON body, max 8192 B); `GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`; `POST /api/fsd-mock/hits-clear`; `GET /api/fsd-mock/hits` (downloads `/fsd_hits.jsonl`). Hits are also stored on SPIFFS and rotated around 16 KB.
+
+> Difference from Windows: observe/passthrough forwards a fixed set of Tesla headers and caps request bodies at 8 KB; mitmproxy has no such limits. Normal feature_configuration delivery is unaffected.
+
+### 5.6 Wi-Fi Bridge DNS Rules
 
 Both allowlists and blocklists accept `*.qq.com`: it matches `music.qq.com` and `a.b.qq.com` at any depth, but excludes `qq.com` itself and unrelated names such as `fakeqq.com`. A bare `qq.com` continues to match both the apex and all subdomains. Separate rules with spaces, newlines, commas, or semicolons.
 
