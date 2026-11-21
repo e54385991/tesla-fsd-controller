@@ -5,8 +5,11 @@
 #if defined(WIFI_BRIDGE_ENABLED) && defined(CONFIG_IDF_TARGET_ESP32S3) && defined(CONFIG_ESP_HTTPS_SERVER_ENABLE)
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <cJSON.h>
 #include <esp_https_server.h>
+#include <lwip/sockets.h>
+#include <cerrno>
 #include <memory>
 
 #include "client_config_state.h"
@@ -243,7 +246,7 @@ bool start() {
     config.httpd.uri_match_fn = matchUri;
     config.httpd.max_uri_handlers = 8;
     config.httpd.core_id = 0;
-    config.httpd.stack_size = 12288;
+    config.httpd.stack_size = 10240;
     // One vehicle TLS socket at a time. A second concurrent car connection
     // plus the upstream esp_http_client TLS context can exhaust the ~80 KB
     // heap; lru_purge_enable closes the stale socket when the car reconnects.
@@ -302,6 +305,26 @@ void serviceSerial() {
                         Serial.write(reinterpret_cast<const uint8_t*>(payload), payloadLength);
                         Serial.println();
                         free(payload);
+                    }
+                } else if (strcmp(command, "net-test") == 0) {
+                    IPAddress address;
+                    const int dns = WiFi.hostByName("api-prd.vn.cloud.tesla.cn", address);
+                    Serial.printf("net-test dns=%d ip=%s\n", dns, address.toString().c_str());
+                    if (dns == 1) {
+                        const int sock = socket(AF_INET, SOCK_STREAM, 0);
+                        if (sock >= 0) {
+                            struct sockaddr_in target = {};
+                            target.sin_family = AF_INET;
+                            target.sin_port = htons(443);
+                            target.sin_addr.s_addr = static_cast<uint32_t>(address);
+                            struct timeval tv = {5, 0};
+                            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+                            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                            const int connected = connect(sock, reinterpret_cast<struct sockaddr*>(&target), sizeof(target));
+                            Serial.printf("net-test tcp=%d errno=%d heap=%u\n", connected, errno,
+                                          static_cast<unsigned>(ESP.getFreeHeap()));
+                            close(sock);
+                        }
                     }
                 } else if (strcmp(command, "fsd-default") == 0 ||
                            strcmp(command, "fsd-16f") == 0 ||

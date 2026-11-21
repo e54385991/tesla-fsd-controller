@@ -497,7 +497,7 @@ static void fsdPayloadBody(AsyncWebServerRequest* req, uint8_t* data, size_t len
             upload->rejected = true;
             return;
         }
-        if (total > 8192) {
+        if (total > 2048) {
             upload->rejected = true;
             upload->tooLarge = true;
             return;
@@ -658,6 +658,10 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
                   static_cast<unsigned>(ESP.getFreeHeap()));
+    Serial.printf("[wifi-diag] heap=%u psram=%u freePsram=%u\n",
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getPsramSize()),
+                  static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     Serial.printf("[wifi-diag] fsd=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u dns=%u spi=%u/%u\n",
                   fsd_mock::enabled() ? 1 : 0, fsd_mock::modeName(),

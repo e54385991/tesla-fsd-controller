@@ -351,12 +351,14 @@ HTTPS 配置服务使用本地存储，可在上游断网时工作。此版本�
 - 面板：手机版控制面板的「FSD 下发」卡片，或 `http://9.9.9.9:10010/car` → DNS 页 →「FSD 下发」。可启停劫持、切换模式、编辑载荷、加载 Windows 预设。
 - 状态：`/api/wifi-bridge/status` 中的 `fsdMock` 字段包含 `enabled`、`mode`、`host`、`bytes`、`md5`、`fields`、`hits`、`observes`、`flows`、`dnsRedirects`、握手摘要、最新回包和最近 6 条请求。
 - 读取载荷：`GET /api/fsd-mock/payload`（返回当前 compact JSON）。
-- 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 8192 字节）。
+- 写入载荷：`POST /api/fsd-mock/payload`（body 为 JSON 对象，上限 2048 字节）。
 - 其余动作：`GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`、`POST /api/fsd-mock/hits-clear`、`POST /api/fsd-mock/handshakes-clear`、`GET /api/fsd-mock/hits`、`GET /api/fsd-mock/handshakes`（RAM JSONL 导出）。
-- 串口恢复（115200，附换行）：`fsd-payload` 打印当前 compact JSON；`fsd-default` / `fsd-16f` / `fsd-282b` 直接加载对应预设并写入 SPIFFS。`wifi-diag` 会同时打印载荷字节/md5、命中/握手计数和堆/SPIFFS 余量。
-- **FSD 日志不写 SPIFFS**：命中/握手只保留在 RAM 环形缓冲区（命中 16 条、握手 8 条），重启即清空；这样可以避免日志占满闪存导致 payload 无法保存，也符合“后台可看、不落盘”的要求。
+- 串口恢复（115200，附换行）：`fsd-payload` 打印当前 compact JSON；`fsd-default` / `fsd-16f` / `fsd-282b` 直接加载对应预设并写入 SPIFFS。`net-test` 检查 upstream DNS + TCP 到 `api-prd`，`wifi-diag` 打印载荷/命中/握手计数、堆、PSRAM 和 SPIFFS 余量。
+- **FSD 日志不写 SPIFFS**：命中/握手只保留在 RAM 环形缓冲区（命中 8 条、握手 6 条），重启即清空；这样可以避免日志占满闪存导致 payload 无法保存，也符合“后台可看、不落盘”的要求。
 
-> 与 Windows 的差异：ESP32 的 observe/透传转发常用 Tesla 请求头（Authorization、Content-Type、Accept、Accept-Encoding、User-Agent、Cookie、条件请求等）并回传 Content-Encoding/Location/Set-Cookie 等响应头，请求体上限 8 KB；mitmproxy 没有这些限制。日志预览的 `req_head` 保留前 64 字节（Windows 为 256 字节）以控制 RAM。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。
+> 非 FSD 反代按 Windows 的 `--set ssl_insecure=true` 关闭上游证书校验（Tesla `api-prd` 使用私有 CA，公共 CA bundle 无法验证）。如果 Tesla 端点要求 mTLS 客户端证书，默认 mitmproxy 不会转发车机证书，会得到 Tesla 的真实 `400 No required SSL certificate was sent`；ESP32 现在同样返回这个真实响应，而不是本地 502。需要 mTLS 的端点必须在 PC/网关侧配置客户端证书，ESP32 无法替车机出示其私钥。
+
+> 与 Windows 的差异：ESP32 的 observe/透传转发常用 Tesla 请求头（Authorization、Content-Type、Accept、Accept-Encoding、User-Agent、Cookie、条件请求等）并回传 Content-Encoding/Location/Set-Cookie 等响应头，请求体上限 4 KB；mitmproxy 没有这些限制。日志预览的 `req_head` 保留前 64 字节（Windows 为 256 字节）以控制 RAM。ESP-IDF 的 `esp_https_server` 只实现 HTTP/1.1，不提供 HTTP/2；客户端未协商到 h2 时会回退到 HTTP/1.1。日常 FSD 配置下发不受影响。
 
 ### Wi-Fi 桥接 DNS 白名单 / 黑名单安全说明
 

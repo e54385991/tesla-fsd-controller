@@ -21,11 +21,11 @@ struct esp_tls;
 
 namespace fsd_mock {
 
-constexpr size_t kPayloadCapacity = 8193;   // Windows /payload limit is 8192 B
+constexpr size_t kPayloadCapacity = 2049;   // compact payload limit (Windows UI sends 602/476/282 B)
 constexpr size_t kHostCapacity = 96;
-constexpr size_t kRecentHitCapacity = 16;   // RAM ring, not persisted
-constexpr size_t kHandshakeCapacity = 8;    // RAM ring, not persisted
-constexpr size_t kLastResponseCapacity = 1025;  // full 602B payload + headroom
+constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
+constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
+constexpr size_t kLastResponseCapacity = 641;   // full 602B payload + headroom
 
 enum class Mode : uint8_t {
     Reply = 0,
@@ -39,17 +39,17 @@ struct Hit {
     char ts[32] = {};
     char client[46] = {};
     char method[8] = {};
-    char url[256] = {};
-    char host[96] = {};
-    char userAgent[48] = {};
+    char url[160] = {};
+    char host[64] = {};
+    char userAgent[32] = {};
     char httpVersion[16] = {};
     char vin[18] = {};
     char reqMd5[33] = {};
     char reqCtype[32] = {};
-    char reqHead[129] = {};
+    char reqHead[65] = {};
     char md5[33] = {};
     char respCtype[32] = {};
-    char respHead[65] = {};
+    char respHead[33] = {};
     char mode[8] = {};
     uint32_t reqBytes = 0;
     uint32_t bytes = 0;
@@ -62,12 +62,12 @@ struct Handshake {
     char event[16] = {};
     char ts[32] = {};
     char client[46] = {};
-    char sni[96] = {};
+    char sni[64] = {};
     char alpn[16] = {};
     char tls[16] = {};
-    char cipher[64] = {};
+    char cipher[48] = {};
     char error[64] = {};
-    char firstRequest[96] = {};
+    char firstRequest[80] = {};
 };
 
 void installLogHook();

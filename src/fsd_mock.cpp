@@ -98,7 +98,7 @@ uint32_t gLastHandshakeOkMs = 0;
 uint32_t gLastHandshakeFailMs = 0;
 char gLastHandshakeClient[46] = {};
 char gLastHandshakeTls[16] = {};
-char gLastHandshakeCipher[64] = {};
+char gLastHandshakeCipher[48] = {};
 char gLastHandshakeAlpn[16] = {};
 char gLastHandshakeError[64] = {};
 
@@ -377,8 +377,8 @@ void updateLatestHandshake(const Hit& hit) {
     const char* path = strstr(hit.url, "://");
     path = path ? strchr(path + 3, '/') : hit.url;
     if (!path) path = "/";
-    char first[96] = {};
-    snprintf(first, sizeof(first), "%.7s %.80s", hit.method, path);
+    char first[80] = {};
+    snprintf(first, sizeof(first), "%.7s %.70s", hit.method, path);
     portENTER_CRITICAL(&gHandshakeMux);
     for (size_t age = 0; age < gHandshakeCount; ++age) {
         const size_t index = (gHandshakeWrite + kHandshakeCapacity - 1 - age) % kHandshakeCapacity;
@@ -802,15 +802,36 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
 
 // ── public API ──────────────────────────────────────────────────────────────
 
+static void storeHandshakeLogError(const char* format, va_list args) {
+    char raw[160];
+    va_list copy;
+    va_copy(copy, args);
+    vsnprintf(raw, sizeof(raw), format, copy);
+    va_end(copy);
+    // The ESP_LOG line includes ANSI colour/tag prefixes. Strip escapes and
+    // control bytes so the dashboard does not show terminal garbage.
+    char clean[96];
+    size_t out = 0;
+    for (const char* p = raw; *p && out + 1 < sizeof(clean); ++p) {
+        if (*p == '\x1b') {
+            ++p;
+            while (*p && !(*p >= '@' && *p <= '~')) ++p;
+            continue;
+        }
+        const unsigned char c = static_cast<unsigned char>(*p);
+        if (c < 0x20 || c >= 0x7f) continue;
+        clean[out++] = static_cast<char>(c);
+    }
+    clean[out] = '\0';
+    const char* detail = strstr(clean, "mbedtls_ssl_handshake returned");
+    if (!detail) detail = strstr(clean, "esp_tls_create_server_session failed");
+    noteHandshakeFailure(detail ? detail : clean);
+}
+
 static int fsdLogHook(const char* format, va_list args) {
     if (format && !gInUpstreamRequest) {
         if (strstr(format, "mbedtls_ssl_handshake returned")) {
-            char message[96];
-            va_list copy;
-            va_copy(copy, args);
-            vsnprintf(message, sizeof(message), format, copy);
-            va_end(copy);
-            noteHandshakeFailure(message);
+            storeHandshakeLogError(format, args);
             gLastMbedtlsFailureMs = millis();
         } else if (strstr(format, "esp_tls_create_server_session failed")) {
             // esp_https_server logs this right after the mbedtls line; count
@@ -858,7 +879,7 @@ void noteHandshakeFailure(const char* error) {
 void noteHandshake(const esp_tls_t* tls) {
     char client[46] = {};
     char version[16] = {};
-    char cipher[64] = {};
+    char cipher[48] = {};
     char alpn[16] = {};
     char ts[32] = {};
     formatTimestamp(ts);
@@ -1357,7 +1378,7 @@ void appendStatusJson(String& out) {
     const uint32_t hsFailMs = gLastHandshakeFailMs;
     char hsClient[46]; strlcpy(hsClient, gLastHandshakeClient, sizeof(hsClient));
     char hsTls[16]; strlcpy(hsTls, gLastHandshakeTls, sizeof(hsTls));
-    char hsCipher[64]; strlcpy(hsCipher, gLastHandshakeCipher, sizeof(hsCipher));
+    char hsCipher[48]; strlcpy(hsCipher, gLastHandshakeCipher, sizeof(hsCipher));
     char hsAlpn[16]; strlcpy(hsAlpn, gLastHandshakeAlpn, sizeof(hsAlpn));
     char hsError[64]; strlcpy(hsError, gLastHandshakeError, sizeof(hsError));
     portEXIT_CRITICAL(&gHandshakeMux);

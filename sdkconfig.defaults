@@ -13,10 +13,10 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # IDF default TCP window/send buffer of 5760 caps single-stream throughput
 # at ~2.3 Mbps (window÷RTT). 11520 doubles that; cost ~6 KB RAM/connection,
 # worst case ~96 KB at 16 concurrent TCP connections (well within budget).
-CONFIG_LWIP_TCP_WND_DEFAULT=11520
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
-CONFIG_TCP_WND_DEFAULT=11520
-CONFIG_TCP_SND_BUF_DEFAULT=11520
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_TCP_WND_DEFAULT=5760
+CONFIG_TCP_SND_BUF_DEFAULT=5760
 # Deeper TCP receive mailbox — fewer drops under NAPT burst load.
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
 # Move lwip hot paths into IRAM. +10-20% throughput, costs ~10 KB IRAM.
@@ -25,3 +25,13 @@ CONFIG_LWIP_IRAM_OPTIMIZATION=y
 # Bridge env peaks around here; cost ~2 KB RAM per window.
 CONFIG_ESP32_WIFI_TX_BA_WIN=16
 CONFIG_ESP32_WIFI_RX_BA_WIN=16
+
+# Dual TLS (vehicle server + upstream client): keep record buffers small.
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=6144
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Upstream is intentionally insecure, matching TeslaDG start_hotspot.ps1
+# (mitmdump --set ssl_insecure=true). Tesla's api-prd certificate is issued
+# by a private CA that is not in the public bundle.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
