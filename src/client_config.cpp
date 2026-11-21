@@ -21,6 +21,10 @@
 #ifdef WIFI_BRIDGE_ENABLED
 extern void wifiBridgeRecoverApOnly();
 extern void wifiBridgePrintDiag();
+extern void wifiBridgeSerialList();
+extern void wifiBridgeSerialAdd(const char* args);
+extern void wifiBridgeSerialRemove(const char* ssid);
+extern void wifiBridgeSerialEnableUpstream();
 #endif
 
 namespace client_config {
@@ -282,7 +286,7 @@ bool start() {
 }
 
 void serviceSerial() {
-    static char command[24];
+    static char command[100];
     static size_t length = 0;
     for (int budget = 48; budget > 0 && Serial.available(); --budget) {
         const int value = Serial.read();
@@ -298,6 +302,14 @@ void serviceSerial() {
                     wifiBridgeRecoverApOnly();
                 } else if (strcmp(command, "wifi-diag") == 0) {
                     wifiBridgePrintDiag();
+                } else if (strcmp(command, "wifi-list") == 0) {
+                    wifiBridgeSerialList();
+                } else if (strcmp(command, "wifi-up") == 0) {
+                    wifiBridgeSerialEnableUpstream();
+                } else if (strncmp(command, "wifi-add ", 9) == 0) {
+                    wifiBridgeSerialAdd(command + 9);
+                } else if (strncmp(command, "wifi-del ", 9) == 0) {
+                    wifiBridgeSerialRemove(command + 9);
                 } else if (strcmp(command, "fsd-payload") == 0) {
                     char* payload = static_cast<char*>(malloc(fsd_mock::kPayloadCapacity));
                     if (payload) {

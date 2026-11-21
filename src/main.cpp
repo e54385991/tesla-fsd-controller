@@ -682,6 +682,69 @@ void wifiBridgeForceApChannel1() {
     Serial.printf("[wifi] AP forced to channel 1 (was %u)\n", static_cast<unsigned>(channel));
 }
 
+// Serial-console helpers (see client_config::serviceSerial):
+//   wifi-list — print saved upstream networks without exposing passwords
+//   wifi-up   — re-enable upstream using the saved list
+void wifiBridgeSerialList() {
+    Serial.printf("[wifi] upstream=%d preferred=%d saved=%u\n",
+                  gWifiBridgeCfg.enabled ? 1 : 0,
+                  (int)gWifiBridgeCfg.preferredIndex,
+                  (unsigned)gWifiBridgeCfg.networkCount);
+    portENTER_CRITICAL(&gWifiBridgeMux);
+    for (uint8_t i = 0; i < gWifiBridgeCfg.networkCount; ++i) {
+        Serial.printf("[wifi] %u: ssid=%s pass=%s\n", (unsigned)i,
+                      gWifiBridgeCfg.networks[i].ssid,
+                      gWifiBridgeCfg.networks[i].pass[0] ? "saved" : "(open)");
+    }
+    portEXIT_CRITICAL(&gWifiBridgeMux);
+}
+
+void wifiBridgeSerialAdd(const char* args) {
+    const char* sep = strchr(args ? args : "", ' ');
+    if (!sep || sep == args || !sep[1]) {
+        Serial.println("[wifi] usage: wifi-add <ssid> <password>");
+        return;
+    }
+    String ssid(args);
+    ssid = ssid.substring(0, sep - args);
+    String pass(sep + 1);
+    ssid.trim();
+    if (ssid.isEmpty() || ssid.length() > 32 || pass.length() > 63) {
+        Serial.println("[wifi] invalid ssid/password length");
+        return;
+    }
+    if (!wifiBridgeAddOrUpdateNetwork(ssid, pass, true, apSSID)) {
+        Serial.println("[wifi] add failed (limit reached or save error)");
+        return;
+    }
+    wifiBridgeSaveConfig();
+    wifiBridgeRequestApply();
+    Serial.printf("[wifi] added %s (%u saved); connecting\n",
+                  ssid.c_str(), (unsigned)gWifiBridgeCfg.networkCount);
+}
+
+void wifiBridgeSerialRemove(const char* ssidArg) {
+    String ssid(ssidArg ? ssidArg : "");
+    ssid.trim();
+    if (!wifiBridgeRemoveNetwork(ssid)) {
+        Serial.printf("[wifi] %s not found\n", ssid.c_str());
+        return;
+    }
+    wifiBridgeSaveConfig();
+    wifiBridgeRequestApply();
+    Serial.printf("[wifi] removed %s (%u saved)\n",
+                  ssid.c_str(), (unsigned)gWifiBridgeCfg.networkCount);
+}
+
+void wifiBridgeSerialEnableUpstream() {
+    gWifiBridgeCfg.enabled = true;
+    gWifiBridgeCfg.consecutiveFailures = 0;
+    gWifiBridgeCfg.lastAttemptMillis = 0;
+    wifiBridgeSaveConfig();
+    wifiBridgeRequestApply();
+    Serial.println("[wifi] upstream enabled; reconnecting saved networks");
+}
+
 // Recovery helper exposed to the USB serial console (`wifi-ap-only`).
 // Disables upstream STA attempts so the AP stops following the iPhone hotspot
 // channel, and forces the AP back to channel 1.
@@ -1525,6 +1588,7 @@ void setupWebServer() {
         json += ",\"apPassDefault\":"; json += (strcmp(apPass, "12345678") == 0 ? "true" : "false");
         json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
         json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
+        json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());
         json += ",\"upstreamEnable\":"; json += (gWifiBridgeCfg.enabled ? "true" : "false");
         json += ",\"upstreamConnected\":"; json += (upConnected ? "true" : "false");
         json += ",\"upstreamRSSI\":"; json += (upConnected ? String(upRSSI) : String("null"));
