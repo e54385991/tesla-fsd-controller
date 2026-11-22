@@ -166,8 +166,13 @@ def check_port_policy() -> None:
         assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
     # Default reset is served from the firmware constants, not duplicated JS.
     assert "dnsReset" in main
-    assert "kTeslaMinAllowV4" in main
+    assert "kTeslaMinAllowV5" in main
     assert "kTeslaMinBlockV5" in main
+    # v5 default allowlist: consolidated Apple Music + Doubao domains.
+    for domain in ("*.apple.com", "mzstatic.com", "doubao.com", "doubaoapps.com",
+                   "doubaocdn.com", "butterflyai.cn", "byteimg.com", "bytescm.com",
+                   "bytednsdoc.com", "snssdk.com"):
+        assert domain in bridge, f"default allowlist missing {domain}"
 
 
 def check_tls_policy() -> None:

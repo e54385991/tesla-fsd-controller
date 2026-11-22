@@ -26,7 +26,7 @@
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
-| 默认白名单 | 41 条基础 / 地图 / 音乐域名（见下文） |
+| 默认白名单 | 60 条基础 / 地图 / 音乐 / 豆包域名（见下文） |
 | 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` |
 | FSD 下发 | 默认开启，`reply` 模式 |
 
@@ -117,7 +117,7 @@ Windows 把串口换成 `COMx`。ESP32-S3 进入下载模式：按住 **BOOT**�
 
 ### 默认白名单
 
-首次启动会写入以下 41 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
+首次启动会写入以下 60 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
 
 ```text
 connman.vn.cloud.tesla.cn
@@ -147,26 +147,48 @@ lbsnavi.cdn.bcebos.com
 enlargeroad-view.su.bcebos.com
 www.baidu.com
 
-qplaycloud.y.qq.com
-y.gtimg.cn
 y.qq.com
-stat6.y.qq.com
-music-file.y.qq.com
-qpic.y.qq.com
-isure6.stream.qqmusic.qq.com
-isure6-stream-qqmusic.a.bdycdn.cn
-isure6-stream-xyy6.tencentmusic.com
+qqmusic.qq.com
+music.qq.com
+ptlogin2.qq.com
+qlogo.cn
+gtimg.cn
+qpic.cn
+imgcache.qq.com
+aqqmusic.tc.qq.com
 *.tencentmusic.com
+bdycdn.cn
 www.qq.com
 
 music.163.com
+music.126.com
 music.126.net
+mam.netease.com
+hz.netease.com
+iplay.163.com
+163jiasu.com
+163yun.com
 
-aod-ssl.itunes.apple.com
-api.music.apple.com
-is1-ssl.mzstatic.com
-play.itunes.apple.com
+*.apple.com
+mzstatic.com
+
+doubao.com
+doubao.cn
+doubaoapps.com
+doubaocdn.com
+butterflyai.cn
+butterfly-static.cn
+picpic-ai.cn
+pixeldance.com
+byteimg.com
+bytescm.com
+bytednsdoc.com
+pstatp.com
+snssdk.com
+bytedance.com
 ```
+
+> 说明：`*.apple.com` 覆盖 Apple Music 的 `music.apple.com` / `itunes.apple.com` 等子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
 
 ### 默认黑名单
 

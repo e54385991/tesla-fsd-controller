@@ -480,14 +480,14 @@ select:focus{outline:none;border-color:#38bdf8}
         <span class="row-label" style="font-size:11px;color:#34d399">📥 白名单（放行，空格/换行分隔）</span>
         <button type="button" onclick="brResetDns('allow')" style="height:24px;padding:0 9px;background:#334155;color:#cbd5e1;border:1px solid #475569;border-radius:6px;font-size:10px;cursor:pointer">恢复默认</button>
       </div>
-      <textarea id="brDnsAllow" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn *.qq.com"></textarea>
+      <textarea id="brDnsAllow" class="text-input" maxlength="3071" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn *.qq.com"></textarea>
     </div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px">
         <span class="row-label" style="font-size:11px;color:#f87171">🚫 黑名单（屏蔽，空格/换行分隔）</span>
         <button type="button" onclick="brResetDns('block')" style="height:24px;padding:0 9px;background:#334155;color:#cbd5e1;border:1px solid #475569;border-radius:6px;font-size:10px;cursor:pointer">恢复默认</button>
       </div>
-      <textarea id="brDnsBlock" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: tesla.cn tesla.com"></textarea>
+      <textarea id="brDnsBlock" class="text-input" maxlength="3071" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: tesla.cn tesla.com"></textarea>
     </div>
     <button class="save-btn" onclick="brSet()" style="margin-top:10px">保存 DNS 配置</button>
     <div class="row" style="margin-top:10px"><span class="row-label">IP 层拦截</span>

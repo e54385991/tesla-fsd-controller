@@ -119,7 +119,7 @@ access. Old v3/v4 default blocklists migrate automatically.
 
 The allowlist and blocklist each have a one-click **Restore Default** action in
 all three UIs. It calls `/api/wifi-bridge/set?dnsReset=allow|block|all`, which
-reads `kTeslaMinAllowV4` / `kTeslaMinBlockV5` directly and re-enables DNS
+reads `kTeslaMinAllowV5` / `kTeslaMinBlockV5` directly and re-enables DNS
 filtering; the old preset buttons have been removed.
 
 ## Verification commands

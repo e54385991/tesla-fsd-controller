@@ -384,7 +384,8 @@ static inline void syncNATState() {
 // Uses the "fsd" namespace (shared with main.cpp) and its own key prefixes
 // (ub_*) to avoid collision.
 
-// Tesla 推荐方案 — 当前 (v4): 基础服务 + 百度地图 + QQ/网易云/Apple Music。
+// Tesla 推荐方案 — 当前 (v5): 基础服务 + 百度地图 + QQ/网易云/Apple Music
+// + 豆包（Doubao）相关域名。
 // 默认额外放行车机常用流媒体，避免音乐/导航因白名单过窄而不可用。
 //
 // ⚠️ 关于两个特殊域名（默认都不按“可远程车控”处理）：
@@ -397,7 +398,11 @@ static inline void syncNATState() {
 //     或断开 Wi-Fi。
 //
 // ⚠️ 一键恢复默认通过 /api/wifi-bridge/set?dnsReset=allow|block|all 直接使用
-//    本文件的 kTeslaMinAllowV4 / kTeslaMinBlockV5，前端不再维护重复的预设常量。
+//    本文件的 kTeslaMinAllowV5 / kTeslaMinBlockV5，前端不再维护重复的预设常量。
+static const char* kTeslaMinAllowV5 =
+    "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com y.qq.com qqmusic.qq.com music.qq.com ptlogin2.qq.com qlogo.cn gtimg.cn qpic.cn imgcache.qq.com aqqmusic.tc.qq.com *.tencentmusic.com bdycdn.cn www.qq.com music.163.com music.126.com music.126.net mam.netease.com hz.netease.com iplay.163.com 163jiasu.com 163yun.com *.apple.com mzstatic.com www.baidu.com www.tesla.cn doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
+
+// v4 默认 allowlist — 仅用于识别未自定义过的配置并迁移
 static const char* kTeslaMinAllowV4 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn";
 
@@ -466,7 +471,7 @@ static inline void wifiBridgeLoadConfig() {
     // the ub_init flag persists so we never overwrite their choices.
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV5);
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV5);
         Preferences p2;
         p2.begin("fsd", false);
@@ -478,16 +483,17 @@ static inline void wifiBridgeLoadConfig() {
         return;
     }
 
-    // Migration: 老用户如果 allowlist 完全等于 v1 / v2 / v3 默认值（未自定义过），
-    // 自动升级到 v4（去掉 hermes-prd / signaling / api-prd，补充音乐与视频域名）。
+    // Migration: 老用户如果 allowlist 完全等于 v1 / v2 / v3 / v4 默认值
+    // （未自定义过），自动升级到 v5（补充豆包与 Apple Music 相关域名）。
     // 黑名单只要仍是旧默认值（v3 的整段 tesla.* 或 v4 的仅 api-prd）就升级到 v5，
     // 加入 mothership 母舰域名；用户改过则不动，尊重用户选择。
     bool allowChanged = false;
     bool blockChanged = false;
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV2) == 0 ||
-        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV3) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV3) == 0 ||
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV4) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV5);
         allowChanged = true;
     }
     if (strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0 ||

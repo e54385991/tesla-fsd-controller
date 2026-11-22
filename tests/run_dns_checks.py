@@ -119,6 +119,22 @@ int main() {
     // Bare domains retain apex + arbitrary-depth subdomain matching.
     for (const char* name : {"qq.com", "music.qq.com", "a.b.qq.com"})
         expect("qq.com", "", name, true);
+    // Doubao / Apple Music defaults: bare domains cover every subdomain.
+    for (const char* name : {"doubao.com", "www.doubao.com", "p3-sign.doubao.com",
+                             "butterflyai.cn", "lf-cdn-tos.bytescm.com",
+                             "music.apple.com", "aod-ssl.itunes.apple.com",
+                             "is1-ssl.mzstatic.com"})
+        expect("doubao.com butterflyai.cn bytescm.com *.apple.com mzstatic.com", "", name, true);
+    expect("doubao.com", "", "fakedoubao.com", false);
+    expect("*.apple.com", "", "fakeapple.com", false);
+    expect("*.apple.com", "", "apple.com", false);
+    // QQ Music / NetEase Cloud Music parent-domain coverage.
+    for (const char* name : {"dl.stream.qqmusic.qq.com", "isure.stream.qqmusic.qq.com"})
+        expect("qqmusic.qq.com", "", name, true);
+    expect("iplay.163.com", "", "api.iplay.163.com", true);
+    expect("music.163.com", "", "interface.music.163.com", true);
+    expect("qlogo.cn", "", "thirdqq.qlogo.cn", true);
+    expect("qqmusic.qq.com", "", "fakeqqmusic.qq.com", false);
     // Wildcards include all child depths, while respecting domain boundaries.
     for (const char* name : {"music.qq.com", "a.b.qq.com", "a.b.c.qq.com"})
         expect("*.qq.com", "", name, true);
