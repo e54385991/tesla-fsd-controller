@@ -48,6 +48,15 @@ def check_tls_identity() -> None:
         "7485b51c0ed192878fa1d2f948fb529ae1842cc5086c4b67f7be5b2039de9489",
     ], "eMudhra chain no longer matches mitmproxy --emudhra"
 
+    # The private key is the compromised EM OV TLS CA - G3C key from
+    # mitmproxy 12.3.1 EMUDHRA_CHAIN_PEM, byte-for-byte.
+    key_der = base64.b64decode("".join(
+        key.split("-----BEGIN PRIVATE KEY-----")[1].split("-----END PRIVATE KEY-----")[0].split()
+    ))
+    assert hashlib.sha256(key_der).hexdigest() == (
+        "25265212a4872a42372fb7ba3401f8eec91e0486d64e34cd2f68be5b9f15ef9d"
+    ), "FSD private key no longer matches mitmproxy EMUDHRA_CHAIN_PEM"
+
     openssl = shutil.which("openssl")
     if not openssl:
         return
@@ -55,6 +64,7 @@ def check_tls_identity() -> None:
         base = Path(tmp)
         (base / "chain.pem").write_text(chain)
         (base / "ca.pem").write_text(ca)
+        (base / "key.pem").write_text(key)
         leaf = chain.split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n"
         (base / "leaf.pem").write_text(leaf)
         verified = subprocess.run(
@@ -67,6 +77,8 @@ def check_tls_identity() -> None:
             capture_output=True, text=True, check=True,
         ).stdout
         assert "api-prd.vn.cloud.tesla.cn" in san
+        assert "mothership.vn.teslamotors.com" in san
+        assert "mothership.vn.cloud.tesla.cn" in san
         assert "9.9.9.9" in san
         subject = subprocess.run(
             [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-subject"],
@@ -74,6 +86,17 @@ def check_tls_identity() -> None:
         ).stdout
         assert "CN=api-prd.vn.cloud.tesla.cn" in subject
         assert "O=Tesla Inc." in subject
+        # mitmproxy dummy_cert() uses the CA public key for the leaf, and the
+        # CA private key to sign it. The ESP32 leaf must do the same.
+        leaf_pub = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-pubkey"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        key_pub = subprocess.run(
+            [openssl, "pkey", "-in", str(base / "key.pem"), "-pubout"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert leaf_pub.strip() == key_pub.strip(), "leaf public key must equal the eMudhra CA key"
 
 
 def check_response_contract() -> None:
@@ -105,12 +128,16 @@ def check_response_contract() -> None:
 
 
 def check_port_policy() -> None:
-    """443 is FSD-only; management + client-config share port 10010."""
+    """443 is FSD-only; 4567 mirrors the PC mothership HTTP listener."""
     main = (ROOT / "src/main.cpp").read_text()
     mod = (ROOT / "include/mod_client_config.h").read_text()
+    mock_header = (ROOT / "include/mod_fsd_mock.h").read_text()
+    bridge = (ROOT / "include/mod_wifi_bridge.h").read_text()
     server = (ROOT / "src/client_config.cpp").read_text()
+    mock = (ROOT / "src/fsd_mock.cpp").read_text()
     assert "kManagementPort = 10010" in main
     assert "constexpr uint16_t kFsdPort = 443;" in mod
+    assert "constexpr uint16_t kMothershipHttpPort = 4567;" in mock_header
     assert "kClientConfigPort" not in mod
     assert "kClientConfigPort" not in server
     assert "config.port_secure = kFsdPort;" in server
@@ -120,6 +147,27 @@ def check_port_policy() -> None:
     assert "client_config::apiGet" in main
     assert "client_config::apiChange" in main
     assert "max_open_sockets = 1" in server
+    # PC parity: plaintext mothership listener + keep-host upstream routing.
+    assert "config.server_port = fsd_mock::kMothershipHttpPort;" in server
+    assert "startMothershipHttp()" in server
+    assert "mothershipHttpStarted()" in server
+    assert "const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;" in mock
+    assert 'if (secure && strcasecmp(name, "Host") == 0) continue;' in mock
+    assert "mothership.vn.teslamotors.com" in mock
+    assert "mothership.vn.cloud.tesla.cn" in mock
+    # Default external blocklist carries both mothership hosts and migrates
+    # the v4 api-prd-only default.
+    assert "mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn" in bridge
+    assert "kTeslaMinBlockV5" in bridge
+    for path in ("include/web_ui.h", "include/web_ui_car.h", "include/web_ui_manage.h"):
+        text = (ROOT / path).read_text()
+        assert "mothership.vn.teslamotors.com" in text, f"{path}: missing mothership blocklist entry"
+        assert "mothership.vn.cloud.tesla.cn" in text, f"{path}: missing mothership blocklist entry"
+        assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
+    # Default reset is served from the firmware constants, not duplicated JS.
+    assert "dnsReset" in main
+    assert "kTeslaMinAllowV4" in main
+    assert "kTeslaMinBlockV5" in main
 
 
 def check_tls_policy() -> None:

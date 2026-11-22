@@ -396,8 +396,8 @@ static inline void syncNATState() {
 //     可能改写 FSD 配置，需自行承担该风险；音乐软件恢复后应立刻移回黑名单
 //     或断开 Wi-Fi。
 //
-// ⚠️ 本常量必须与前端 DNS_PRESETS.tesla_min.allow (web_ui.h) 和
-//    DNS_PRESETS.tesla_min.allow (web_ui_car.h) 的内容保持完全一致。
+// ⚠️ 一键恢复默认通过 /api/wifi-bridge/set?dnsReset=allow|block|all 直接使用
+//    本文件的 kTeslaMinAllowV4 / kTeslaMinBlockV5，前端不再维护重复的预设常量。
 static const char* kTeslaMinAllowV4 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn";
 
@@ -413,8 +413,13 @@ static const char* kTeslaMinAllowV2 =
 static const char* kTeslaMinAllowV1 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com";
 
-// v4 默认黑名单：api-prd 是 Tesla 手机 App 控车 / 车辆配置端点。
-// 恢复出厂后的车机可能需要它完成初始化，届时应临时加入白名单放行。
+// v5 默认黑名单（外网）：api-prd 是 Tesla 手机 App 控车 / 车辆配置端点；
+// mothership.* 是车辆母舰配置端点。FSD 劫持开启时它们由本地 443/4567
+// 接管；劫持关闭时按黑名单阻断，避免车机直连外网被云端改写配置。
+static const char* kTeslaMinBlockV5 =
+    "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
+
+// v4 默认黑名单 — 仅用于识别未自定义过的配置并迁移
 static const char* kTeslaMinBlockV4 =
     "api-prd.vn.cloud.tesla.cn";
 
@@ -462,7 +467,7 @@ static inline void wifiBridgeLoadConfig() {
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
         wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
-        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV4);
+        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV5);
         Preferences p2;
         p2.begin("fsd", false);
         p2.putBool("ub_dnsEn", true);
@@ -474,23 +479,27 @@ static inline void wifiBridgeLoadConfig() {
     }
 
     // Migration: 老用户如果 allowlist 完全等于 v1 / v2 / v3 默认值（未自定义过），
-    // 自动升级到 v4（去掉 hermes-prd / signaling / api-prd，补充音乐与视频域名，
-    // 黑名单改为只保留 api-prd）。用户改过则不动，尊重用户选择；黑名单也仅在
-    // 仍等于旧默认值时才一起迁移，避免覆盖用户自定义规则。
+    // 自动升级到 v4（去掉 hermes-prd / signaling / api-prd，补充音乐与视频域名）。
+    // 黑名单只要仍是旧默认值（v3 的整段 tesla.* 或 v4 的仅 api-prd）就升级到 v5，
+    // 加入 mothership 母舰域名；用户改过则不动，尊重用户选择。
+    bool allowChanged = false;
+    bool blockChanged = false;
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV2) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV3) == 0) {
         wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV4);
-        bool migrateBlock = strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0;
-        if (migrateBlock) {
-            wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV4);
-        }
+        allowChanged = true;
+    }
+    if (strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0 ||
+        strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV4) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV5);
+        blockChanged = true;
+    }
+    if (allowChanged || blockChanged) {
         Preferences p3;
         p3.begin("fsd", false);
-        p3.putString("ub_allow", gDnsFilterCfg.allowlist);
-        if (migrateBlock) {
-            p3.putString("ub_block", gDnsFilterCfg.blocklist);
-        }
+        if (allowChanged) p3.putString("ub_allow", gDnsFilterCfg.allowlist);
+        if (blockChanged) p3.putString("ub_block", gDnsFilterCfg.blocklist);
         p3.end();
     }
 }

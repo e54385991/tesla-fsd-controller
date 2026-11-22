@@ -31,6 +31,7 @@ PREAMBLE = r'''
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 #include <string>
 #include <vector>
 struct String : std::string {
@@ -129,6 +130,21 @@ int main() {
     expect("example.com,*.qq.com; qpic.cn\n*.gtimg.com", "", "img.gtimg.com", true);
     expect("qq.com *.qq.com", "", "qq.com", true);
     expect("qq.com *.qq.com", "", "a.b.qq.com", true);
+    // Nonempty allowlist = default deny: every unmatched name is blocked.
+    expect("example.com", "", "example.com", true);
+    expect("example.com", "", "music.example.com", true);
+    expect("example.com", "", "other.com", false);
+    expect("example.com", "", "example.com.evil", false);
+    expect("*.example.com", "", "example.com", false);
+    expect("*.example.com", "", "a.example.com", true);
+    // Empty allowlist = blacklist-only mode; unmatched names stay allowed.
+    expect("", "blocked.com", "other.com", allowUnlisted);
+    expect("", "blocked.com", "sub.blocked.com", false);
+    // Disabling the filter bypasses both lists (normal mode). Strict allowlist
+    // builds are intentionally fail-closed even with filtering disabled.
+#ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
+    assert(dns.isAllowedDomain({false, "example.com", "blocked.com"}, "other.com"));
+#endif
     // Wildcard blacklists exclude the apex and allow unrelated domains.
     expect("", "*.qq.com", "qq.com", allowUnlisted);
     expect("", "*.qq.com", "music.qq.com", false);
@@ -202,6 +218,21 @@ int main() {
     resolveAndRememberDomain("music.qq.com");
     assert((WiFi.queries == std::vector<std::string>{"music.qq.com"}));
     assert((remembered == std::vector<std::string>{"music.qq.com"}));
+    // FSD hijack set: exact configured hosts plus PC arp_mitm's mothership.*
+    // prefix, regardless of whether the list names a concrete mothership host.
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "api-prd.vn.cloud.tesla.cn"));
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "API-PRD.VN.CLOUD.TESLA.CN"));
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "mothership.vn.teslamotors.com"));
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "mothership.vn.cloud.tesla.cn"));
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "mothership.anything.example"));
+    assert(!dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "xmothership.example"));
+    assert(!dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "api-prd.vn.cloud.tesla.cn.evil"));
+    assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn,mothership.vn.teslamotors.com; foo.example", "foo.example"));
+    assert(!dnsFsdRedirectMatchesHost("", "foo.example"));
+    // Default external blocklist also covers both mothership hosts; the FSD
+    // hijack decision above runs before this filter.
+    for (const char* name : {"mothership.vn.teslamotors.com", "mothership.vn.cloud.tesla.cn"})
+        expect("", "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn", name, false);
     std::printf("DNS policy: %u cases passed; disabled filter and IP refresh checks passed\n", checks);
 }
 '''
@@ -212,6 +243,7 @@ def main():
         "bool isWildcardDomainRule(", "bool domainMatchesRule(",
         "String normalizeDomainCstr(", "bool hasRules(",
         "bool getRuleByIndex(", "size_t countRules(",
+        "bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {",
         "static size_t longestRuleMatchLen(",
         "bool DNSWhitelistServer::hasDomainRules(",
         "bool DNSWhitelistServer::isAllowedDomain(",

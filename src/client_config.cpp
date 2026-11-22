@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <cJSON.h>
+#include <esp_http_server.h>
 #include <esp_https_server.h>
 #include <lwip/sockets.h>
 #include <cerrno>
@@ -32,6 +33,7 @@ namespace client_config {
 
 static nvs_handle_t storage;
 static httpd_handle_t fsdServer;
+static httpd_handle_t mothershipServer;
 
 static bool readState(ClientConfigState& state) {
     size_t length = sizeof(state);
@@ -221,6 +223,52 @@ static esp_err_t catchAll(httpd_req_t* request) {
     return fsd_mock::forwardPassthrough(request);
 }
 
+// PC TeslaDG runs a second mitmproxy listener on 4567:
+//   reverse:http://<mothership-ip>:4567 + keep_host_header=true
+// The car's plaintext mothership requests land there, /feature_configuration
+// is answered locally, and everything else is reverse-proxied. A plain HTTP
+// server is much cheaper than a second TLS context, so both listeners share
+// the same fsd_mock handlers.
+static bool startMothershipHttp() {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = fsd_mock::kMothershipHttpPort;
+    config.ctrl_port = 32770;  // 443 TLS server uses ESP_HTTPD_DEF_CTRL_PORT+1 (32769)
+    config.uri_match_fn = matchUri;
+    config.max_uri_handlers = 8;
+    config.core_id = 0;
+    config.stack_size = 8192;
+    config.max_open_sockets = 1;
+    config.backlog_conn = 1;
+    config.lru_purge_enable = true;
+    config.recv_wait_timeout = 3;
+    config.send_wait_timeout = 3;
+
+    if (httpd_start(&mothershipServer, &config) != ESP_OK) {
+        mothershipServer = nullptr;
+        return false;
+    }
+
+    const httpd_method_t methods[] = {
+        HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE, HTTP_HEAD, HTTP_OPTIONS, HTTP_PATCH,
+    };
+    for (httpd_method_t method : methods) {
+        httpd_uri_t endpoint = {};
+        endpoint.uri = "/*";
+        endpoint.method = method;
+        endpoint.handler = catchAll;
+        endpoint.user_ctx = nullptr;
+        if (httpd_register_uri_handler(mothershipServer, &endpoint) == ESP_OK) continue;
+        httpd_stop(mothershipServer);
+        mothershipServer = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool mothershipHttpStarted() {
+    return mothershipServer != nullptr;
+}
+
 // esp_https_server calls this only after a successful TLS handshake, with the
 // negotiated TLS context. It lets the dashboard show the same TLS state that
 // Windows mitmproxy prints in handshake.log.
@@ -262,6 +310,7 @@ bool start() {
     // plus the upstream esp_http_client TLS context can exhaust the ~80 KB
     // heap; lru_purge_enable closes the stale socket when the car reconnects.
     config.httpd.max_open_sockets = 1;
+    config.httpd.backlog_conn = 1;  // serialize reconnects; car uses one TLS socket
     config.httpd.recv_wait_timeout = 3;
     config.httpd.send_wait_timeout = 3;
 
@@ -287,8 +336,10 @@ bool start() {
         return false;
     }
 
-    // Only redirect api-prd after 443 is actually accepting connections.
+    // Only redirect api-prd/mothership after 443 is actually accepting
+    // connections. Port 4567 mirrors the PC mothership reverse listener.
     fsd_mock::begin();
+    startMothershipHttp();
     return true;
 }
 

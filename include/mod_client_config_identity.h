@@ -34,10 +34,8 @@ static void generateSecret(char (&token)[65]) {
 
 static bool generateIdentity() {
     mbedtls_pk_context key;
-    mbedtls_mpi serial;
     mbedtls_x509write_cert certificate;
     mbedtls_pk_init(&key);
-    mbedtls_mpi_init(&serial);
     mbedtls_x509write_crt_init(&certificate);
     mbedtls_x509write_crt_set_subject_key(&certificate, &key);
     mbedtls_x509write_crt_set_issuer_key(&certificate, &key);
@@ -52,8 +50,7 @@ static bool generateIdentity() {
     const bool ok =
         mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) == 0 &&
         mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key), fillRandom, nullptr) == 0 &&
-        mbedtls_mpi_read_binary(&serial, serialBytes, sizeof(serialBytes)) == 0 &&
-        mbedtls_x509write_crt_set_serial(&certificate, &serial) == 0 &&
+        mbedtls_x509write_crt_set_serial_raw(&certificate, serialBytes, sizeof(serialBytes)) == 0 &&
         mbedtls_x509write_crt_set_subject_name(&certificate, "CN=fsd.local") == 0 &&
         mbedtls_x509write_crt_set_issuer_name(&certificate, "CN=fsd.local") == 0 &&
         mbedtls_x509write_crt_set_validity(&certificate, "20240101000000", "20491231235959") == 0 &&
@@ -66,7 +63,6 @@ static bool generateIdentity() {
             sizeof(identity.privateKey)) == 0;
 
     mbedtls_x509write_crt_free(&certificate);
-    mbedtls_mpi_free(&serial);
     mbedtls_pk_free(&key);
     if (ok) {
         generateSecret(identity.adminToken);

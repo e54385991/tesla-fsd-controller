@@ -180,7 +180,7 @@ def integration_source():
     # The FSD-mock-only build registers its own compact /api/status first in
     # source order; anchor on the legacy body so the integration harness keeps
     # exercising the full CAN status payload.
-    legacy_status = 'server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {\n        const auto settings = captureCanControl().settings;'
+    legacy_status = 'server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {\n        if (rejectOnLowHeap(req, 12000)) return;\n        const auto settings = captureCanControl().settings;'
     status_offset = SOURCE.index(legacy_status)
     status = '        const auto settings = captureCanControl().settings;' + between(
         SOURCE[status_offset:], legacy_status, '\n    });')

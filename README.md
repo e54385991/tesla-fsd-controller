@@ -27,7 +27,7 @@
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
 | 默认白名单 | 41 条基础 / 地图 / 音乐域名（见下文） |
-| 默认黑名单 | `api-prd.vn.cloud.tesla.cn` |
+| 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` |
 | FSD 下发 | 默认开启，`reply` 模式 |
 
 > 首次启动、恢复出厂或执行 `erase_flash` 后，设备使用上述默认值。之后在面板里改过的配置会保存在 NVS，重启不会丢失。
@@ -172,9 +172,11 @@ play.itunes.apple.com
 
 ```text
 api-prd.vn.cloud.tesla.cn
+mothership.vn.teslamotors.com
+mothership.vn.cloud.tesla.cn
 ```
 
-### 两个特殊域名
+### 特殊域名
 
 **`hermes-prd.vn.cloud.tesla.cn`（默认不放行）**
 
@@ -190,6 +192,12 @@ api-prd.vn.cloud.tesla.cn
 - **音乐软件恢复后请立刻把它移回黑名单，或直接断开 Wi-Fi**，不要长期放行。
 - FSD 下发的劫持判断排在 DNS 黑白名单之前：只要「FSD 下发」开启，即使 `api-prd` 在黑名单中，`/feature_configuration` 仍会被本地劫持。
 
+**`mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn`（默认外网黑名单 / 本地劫持）**
+
+- 默认加入外网黑名单；FSD 下发关闭时，车机不能直连母舰，避免云端改写配置。
+- FSD 下发开启时按 Windows TeslaDG 的逻辑劫持：`mothership.*` 与 `api-prd` 都解析到 `9.9.9.9`，443（TLS）和 4567（明文 HTTP）上的 `/feature_configuration` 由本地回包，其余路径按原始 Host 反代。
+- 与 `api-prd` 一样，黑名单只影响劫持关闭后的直连，不影响 FSD 开启时的本地回包。
+
 ### 规则语义
 
 - 规则按空格、换行、逗号或分号分隔。
@@ -200,6 +208,7 @@ api-prd.vn.cloud.tesla.cn
 - 同时命中时，**更长、更具体的后缀优先**（`*.` 不计长度）；长度相同白名单优先。
 - 白名单非空时，未命中的域名默认拒绝（默认拒绝模式）。
 - 白名单为空时，未命中黑名单的域名默认放行（只黑名单模式）。
+- 白名单和黑名单旁各有「恢复默认」按钮：一键使用固件内置默认值并自动启用 DNS 过滤。对应 API：`/api/wifi-bridge/set?dnsReset=allow|block|all`。
 
 ### IP 层拦截（可选，默认关闭）
 
@@ -223,14 +232,14 @@ api-prd.vn.cloud.tesla.cn
 
 ### 工作流程
 
-1. **DNS 劫持**：AP 的 DNS 把 `api-prd.vn.cloud.tesla.cn` 解析为 `9.9.9.9`。A 查询返回 AP 地址，AAAA 和其他类型返回空答案。
-2. **443 回包**：车机请求任意路径中的 `/feature_configuration`（可带 VIN 前缀、结尾 `/`、`?` 或 `#`）时返回：
+1. **DNS 劫持**：AP 的 DNS 把 `api-prd.vn.cloud.tesla.cn` 和任意 `mothership.*`（含 `mothership.vn.teslamotors.com`、`mothership.vn.cloud.tesla.cn`）解析为 `9.9.9.9`。A 查询返回 AP 地址，AAAA 和其他类型返回空答案。
+2. **443 TLS / 4567 HTTP 回包**：车机请求任意路径中的 `/feature_configuration`（可带 VIN 前缀、结尾 `/`、`?` 或 `#`）时返回：
    - `200 OK`
    - `Content-Type: application/json`
    - `X-Checksum: md5(compact body)`
    - `Cache-Control: no-store`
    - body 为当前 compact JSON 载荷
-3. **其他路径**：转发到真实 `api-prd.vn.cloud.tesla.cn`，不会在本地返回 404。
+3. **其他路径**：443 反代到 `https://api-prd.vn.cloud.tesla.cn`（Host 重写为 api-prd）；4567 反代到 `http://mothership.vn.teslamotors.com:4567`（保留车机原始 Host），与 PC 版两个 reverse 监听一致。
 
 ### 回复 / 观察模式
 
@@ -250,11 +259,13 @@ api-prd.vn.cloud.tesla.cn
 
 默认载荷保存到 SPIFFS，重启保持。命中 / 握手日志只保存在 RAM，重启清空，不占闪存。
 
-### 443 端口与证书
+### 端口与证书
 
 - `10010`：管理面板、client-config、OTA、日志。
-- `443`：只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代）。
-- 443 使用与 Windows `--emudhra` 相同的 eMudhra 证书材料，而不是 mitmproxy 自签 CA。车机通常已信任 emSign 根，无需安装证书。
+- `443`：只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代）。证书 SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`mothership.vn.cloud.tesla.cn`。
+- `4567`：PC 版母舰明文 HTTP 反代（TeslaDG `svc/stack.py` 的 `reverse:http://<ip>:4567`）。命中 `/feature_configuration` 回包，其余路径转发到 `http://mothership.vn.teslamotors.com:4567`，并保留车机原始 Host（PC 的 `keep_host_header=true`）。
+- 443 使用与 Windows `--emudhra` 相同的 eMudhra 证书材料，而不是 mitmproxy 自签 CA。CA 链（EM OV TLS CA - G3C → emSign Root TLS CA - G3 → emSign ECC Root CA - G3，加 AAA 交叉签名）和私钥与 mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` 逐字节一致；车机通常已信任 emSign 根，无需安装证书。
+- Windows 版由 mitmproxy 按 SNI 动态生成短有效期叶子证书；ESP32 使用一张静态叶子证书（同样的 CA 私钥/公钥、issuer、EKU、AKI），有效期沿用 `certs2/mitmproxy-ca-cert.pem` 的 2026-11-07 → 2036-11-04，并一次覆盖 `api-prd` 和两个 `mothership` 域名。因此叶子证书不可能与 PC 每次动态生成的叶子逐字节相同，但链、密钥和校验结果一致。
 - 如果车机不信任，可通过串口 `client-config` 命令导出 `EM OV TLS CA - G3C` 中间 CA，装进车机信任库。
 - 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回 `502 {"error":"upstream_unavailable"}`。
 
@@ -416,7 +427,7 @@ PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-5.5.5/bin/pip i
 - 确认「FSD 下发」开关已开启，模式为 `reply`。
 - 确认车机确实使用 ESP32 的 DNS。
 - 查看 `/fsd` 看板的命中 / 握手记录。
-- `api-prd` 在黑名单中不影响 FSD 劫持；劫持判断优先于 DNS 规则。
+- `api-prd` / `mothership.*` 在黑名单中不影响 FSD 劫持；劫持判断优先于 DNS 规则。
 
 **OTA 报 `Wrong Magic Byte`？**
 

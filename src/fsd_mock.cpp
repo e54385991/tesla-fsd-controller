@@ -41,19 +41,34 @@ constexpr char kPayloadTempPath[] = "/fsd_payload.tmp";
 constexpr char kPayloadBackupPath[] = "/fsd_payload.bak";
 constexpr size_t kRequestCaptureBytes = 64;
 constexpr size_t kForwardBodyBytes = 4096;
+// TeslaDG hijack parity: api-prd (443 chain) plus the mothership hosts used
+// by the PC reverse/ARP chains. Any other mothership.* also matches through
+// dnsFsdRedirectMatchesHost(), so this list is mainly for display/persistence.
+constexpr char kDefaultHosts[] =
+    "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
+// PC reverse targets: start_hotspot/start_all use
+// reverse:https://api-prd.vn.cloud.tesla.cn@443, while the 4567 listener
+// resolves mothership.vn.teslamotors.com and uses http://<ip>:4567.
+constexpr char kApiPrdHost[] = "api-prd.vn.cloud.tesla.cn";
+constexpr char kMothershipUpstreamHost[] = "mothership.vn.teslamotors.com";
+// Before mothership support the persisted default was this single host. Only
+// that exact value is auto-migrated; user-edited host lists are left alone.
+constexpr char kLegacyDefaultHosts[] = "api-prd.vn.cloud.tesla.cn";
 
 struct Settings {
     uint32_t magic = kSettingsMagic;
     uint8_t enabled = 1;
     uint8_t mode = static_cast<uint8_t>(Mode::Reply);
     uint8_t reserved[2] = {};
-    char host[kHostCapacity] = "api-prd.vn.cloud.tesla.cn";
+    char host[kHostCapacity] =
+        "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
 };
 
 struct State {
     bool enabled = true;
     Mode mode = Mode::Reply;
-    char host[kHostCapacity] = "api-prd.vn.cloud.tesla.cn";
+    char host[kHostCapacity] =
+        "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
     char payload[kPayloadCapacity] = {};
     char md5[33] = {};
     size_t bytes = 0;
@@ -328,6 +343,24 @@ void clientAddress(httpd_req_t* request, char* out, size_t capacity) {
     socketAddress(httpd_req_to_sockfd(request), out, capacity);
 }
 
+// Local listener port for this request: 443 uses TLS + HTTPS upstream, 4567
+// is the PC-style plaintext mothership reverse listener. ESP-IDF's httpd keeps
+// one server per port, so getsockname() tells the callback which chain it is.
+uint16_t localPort(httpd_req_t* request) {
+    const int fd = httpd_req_to_sockfd(request);
+    if (fd < 0) return 0;
+    struct sockaddr_storage storage = {};
+    socklen_t length = sizeof(storage);
+    if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&storage), &length) != 0) return 0;
+    if (storage.ss_family == AF_INET) {
+        return ntohs(reinterpret_cast<struct sockaddr_in*>(&storage)->sin_port);
+    }
+    if (storage.ss_family == AF_INET6) {
+        return ntohs(reinterpret_cast<struct sockaddr_in6*>(&storage)->sin6_port);
+    }
+    return 0;
+}
+
 void extractVin(const char* uri, char out[18]) {
     out[0] = '\0';
     const char* marker = strstr(uri, "/vehicles/");
@@ -384,10 +417,11 @@ void parseRequestMeta(httpd_req_t* request, Hit& hit, Capture& capture) {
     char ctype[32] = {};
     copyHeader(request, "Content-Type", ctype, sizeof(ctype));
 
-    const char* uri = request->uri ? request->uri : "/";
+    const char* uri = request->uri;
     strlcpy(hit.method, httpMethodName(request->method), sizeof(hit.method));
     // fsd_mock.py logs flow.request.pretty_url (scheme://host/path?query).
-    strlcpy(hit.url, "https://", sizeof(hit.url));
+    // Port 4567 is the plaintext mothership listener, 443 is TLS.
+    strlcpy(hit.url, localPort(request) == kMothershipHttpPort ? "http://" : "https://", sizeof(hit.url));
     if (hostHeader[0]) strlcat(hit.url, hostHeader, sizeof(hit.url));
     strlcat(hit.url, uri, sizeof(hit.url));
     strlcpy(hit.host, hostHeader, sizeof(hit.host));
@@ -691,39 +725,36 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     hit.respCtype[0] = '\0';
     if (responseBody && responseCapacity) responseBody[0] = '\0';
 
-    char hostOnly[kHostCapacity] = {};
-    lockState();
-    const char* cursor = gState.host;
-    while (*cursor) {
-        while (*cursor && (isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
-        const char* begin = cursor;
-        while (*cursor && !(isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
-        if (cursor > begin) {
-            const size_t length = static_cast<size_t>(cursor - begin);
-            const size_t copy = length < sizeof(hostOnly) - 1 ? length : sizeof(hostOnly) - 1;
-            memcpy(hostOnly, begin, copy);
-            hostOnly[copy] = '\0';
-            break;
-        }
+    // TeslaDG reverse targets are fixed per listener:
+    //   443  -> https://api-prd.vn.cloud.tesla.cn  (keep_host_header=false)
+    //   4567 -> http://mothership.vn.teslamotors.com:4567 (keep_host_header=true)
+    // The FSD hit path never reaches this function; it is only used for
+    // observe mode and non-FSD passthrough.
+    const uint16_t port = localPort(request);
+    const bool secure = port != kMothershipHttpPort;
+    const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;
+    char authority[kHostCapacity + 8] = {};
+    if (secure) {
+        snprintf(authority, sizeof(authority), "%s", upstreamHost);
+    } else {
+        snprintf(authority, sizeof(authority), "%s:%u", upstreamHost, static_cast<unsigned>(port));
     }
-    unlockState();
-    if (hostOnly[0] == '\0') strlcpy(hostOnly, "api-prd.vn.cloud.tesla.cn", sizeof(hostOnly));
 
-    const size_t urlLength = strlen(hostOnly) + strlen(request->uri) + 16;
+    const size_t urlLength = strlen(authority) + strlen(request->uri) + 16;
     char* url = static_cast<char*>(malloc(urlLength));
     if (!url) {
         finishJsonError(request, hit, responseBody, 500, "{\"error\":\"no_memory\"}");
         return 500;
     }
-    snprintf(url, urlLength, "https://%s%s", hostOnly, request->uri);
+    snprintf(url, urlLength, "%s://%s%s", secure ? "https" : "http", authority, request->uri);
 
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = upstreamMethod(request->method);
     config.timeout_ms = 5000;
     config.disable_auto_redirect = true;
-    config.transport_type = HTTP_TRANSPORT_OVER_SSL;
-    config.skip_cert_common_name_check = true;
+    config.transport_type = secure ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
+    config.skip_cert_common_name_check = secure;
     config.buffer_size = 2048;
     config.buffer_size_tx = 2048;
 
@@ -735,12 +766,15 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     }
 
     static const char* const kForwardHeaders[] = {
-        "Authorization", "Content-Type", "Accept", "Accept-Encoding", "Accept-Language",
+        "Host", "Authorization", "Content-Type", "Accept", "Accept-Encoding", "Accept-Language",
         "User-Agent", "Cookie", "If-None-Match", "If-Modified-Since",
         "X-Tesla-User-Agent", "Tesla-User-Agent", "X-Tesla-Client",
         "X-Tesla-Protocol-Version", "X-Requested-With",
     };
     for (const char* name : kForwardHeaders) {
+        // 4567 keeps the car's Host (PC keep_host_header=true); 443 rewrites
+        // Host to api-prd, matching the default mitmproxy reverse mode.
+        if (secure && strcasecmp(name, "Host") == 0) continue;
         const size_t length = httpd_req_get_hdr_value_len(request, name);
         if (length == 0) continue;
         char* value = static_cast<char*>(malloc(length + 1));
@@ -989,6 +1023,7 @@ void begin() {
     unlockState();
 
     Preferences prefs;
+    bool migrateHost = false;
     if (prefs.begin("fsdmock", true)) {
         Settings settings;
         const size_t length = prefs.getBytesLength("cfg");
@@ -998,7 +1033,14 @@ void begin() {
             lockState();
             gState.enabled = settings.enabled != 0;
             gState.mode = settings.mode == static_cast<uint8_t>(Mode::Observe) ? Mode::Observe : Mode::Reply;
-            if (validHostList(settings.host)) strlcpy(gState.host, settings.host, sizeof(gState.host));
+            if (validHostList(settings.host)) {
+                if (strcasecmp(settings.host, kLegacyDefaultHosts) == 0) {
+                    strlcpy(gState.host, kDefaultHosts, sizeof(gState.host));
+                    migrateHost = true;
+                } else {
+                    strlcpy(gState.host, settings.host, sizeof(gState.host));
+                }
+            }
             unlockState();
         }
         prefs.end();
@@ -1024,6 +1066,7 @@ void begin() {
     }
     free(stored);
     free(compacted);
+    if (migrateHost) persistSettings();
     gActive = true;
     syncDnsRedirect();
 }

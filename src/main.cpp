@@ -130,6 +130,17 @@ static bool checkToken(AsyncWebServerRequest* req) {
     return false;
 }
 
+// Refuse memory-heavy pages/streams when the heap is already thin. A live
+// vehicle TLS session can hold ~25-30 KB; serving an 8-10 KB management page
+// concurrently previously pushed free heap below 2 KB under synthetic load.
+// Lightweight health endpoints (/api/wifi-bridge/status, /api/fsd-mock/payload)
+// stay available so monitoring and FSD delivery keep working.
+static bool rejectOnLowHeap(AsyncWebServerRequest* req, uint32_t minFree = 18000) {
+    if (ESP.getFreeHeap() >= minFree) return false;
+    req->send(503, "text/plain", "low_heap");
+    return true;
+}
+
 // ── Log macros — stripped from release builds ──────────────────────
 #ifdef DEBUG_MODE
 #define DLOG(fmt, ...)  Serial.printf(fmt, ##__VA_ARGS__)
@@ -806,6 +817,7 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
                   static_cast<unsigned>(SPIFFS.usedBytes()),
                   static_cast<unsigned>(SPIFFS.totalBytes()));
+    Serial.printf("[wifi-diag] fsdHttp4567=%d\n", client_config::mothershipHttpStarted() ? 1 : 0);
 #endif
 }
 #endif
@@ -823,6 +835,7 @@ void setupWebServer() {
     // in chunks; avoids the 60 KB contiguous heap allocation that AsyncBasicResponse
     // would need, which fails after WiFi starts and causes a memmove(NULL) crash.
     server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
 #ifdef FSD_MOCK_ONLY
         auto* r = req->beginResponse(200, "text/html", MANAGE_HTML_GZ, MANAGE_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
@@ -858,6 +871,7 @@ void setupWebServer() {
     // remain behind the authenticated API.
 #ifndef FSD_MOCK_ONLY
     server.on("/service", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", SERVICE_HTML_GZ, SERVICE_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store");
@@ -926,6 +940,7 @@ void setupWebServer() {
 
     // PC-style FSD dashboard + field editor (TeslaDG fsd_panel.py parity)
     server.on("/fsd", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", FSD_HTML_GZ, FSD_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -935,6 +950,7 @@ void setupWebServer() {
 #ifndef FSD_MOCK_ONLY
     // Dashboard page — instrument cluster view (token checked via JS)
     server.on("/dash", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", DASH_HTML_GZ, DASH_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -943,6 +959,7 @@ void setupWebServer() {
 
     // Performance test page
     server.on("/perf", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", PERF_HTML_GZ, PERF_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -952,6 +969,7 @@ void setupWebServer() {
     // Performance share card — token-free static page, params in query string.
     // Visit /perf-share?type=accel&ms=4320&hw=hw3&model=Model+Y+Performance&t=...
     server.on("/perf-share", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", PERF_SHARE_HTML_GZ, PERF_SHARE_HTML_GZ_LEN);
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "public, max-age=300");
@@ -1007,6 +1025,7 @@ void setupWebServer() {
     // Compact status for bridge/mock builds. The old CAN/telemetry payload is
     // intentionally gone; /api/wifi-bridge/status carries the full FSD info.
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req, 12000)) return;
         char buf[320];
         snprintf(buf, sizeof(buf),
                  "{\"uptime\":%u,\"freeHeap\":%u,\"safeMode\":%s,"
@@ -1027,6 +1046,7 @@ void setupWebServer() {
 #else
     // Status JSON — use %u for uint32_t on ESP32
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req, 12000)) return;
         const auto settings = captureCanControl().settings;
         uint32_t uptime = bootUptimeSeconds();
 
@@ -1393,6 +1413,7 @@ void setupWebServer() {
     // exact() required — default matcher would hijack /api/log/download (same HTTP method).
     server.on(AsyncURIMatcher::exact("/api/log"), HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
         AsyncResponseStream* resp = req->beginResponseStream("text/plain; charset=utf-8");
         uint16_t cnt = diagLogCount();
         if (cnt == 0) {
@@ -1685,6 +1706,25 @@ void setupWebServer() {
         // failed (UI would show 保存失败 then reload the old saved values).
         String allowVal, blockVal;
         bool hasAllow = false, hasBlock = false;
+        bool resetAllow = false, resetBlock = false;
+        if (req->hasParam("dnsReset")) {
+            String reset = req->getParam("dnsReset")->value();
+            reset.trim();
+            reset.toLowerCase();
+            if (reset == "allow" || reset == "whitelist") {
+                resetAllow = true;
+            } else if (reset == "block" || reset == "blacklist") {
+                resetBlock = true;
+            } else if (reset == "all" || reset == "both" || reset == "default") {
+                resetAllow = true;
+                resetBlock = true;
+            } else {
+                req->send(400, "text/plain", "invalid dnsReset");
+                return;
+            }
+            if (resetAllow) { allowVal = kTeslaMinAllowV4; hasAllow = true; }
+            if (resetBlock) { blockVal = kTeslaMinBlockV5; hasBlock = true; }
+        }
         if (req->hasParam("dnsAllow")) {
             allowVal = req->getParam("dnsAllow")->value(); allowVal.trim();
             if (allowVal.length() >= (int)sizeof(gDnsFilterCfg.allowlist)) {
@@ -1706,16 +1746,18 @@ void setupWebServer() {
             changed = true; wifiChanged = true;
         }
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-        if (req->hasParam("dnsEnable") || hasAllow || hasBlock) {
-            const bool enabled = req->hasParam("dnsEnable") ?
-                req->getParam("dnsEnable")->value().toInt() != 0 : gDnsFilterCfg.enabled;
+        if (req->hasParam("dnsEnable") || req->hasParam("dnsReset") || hasAllow || hasBlock) {
+            const bool enabled = (req->hasParam("dnsReset") || req->hasParam("dnsEnable")) ?
+                (req->hasParam("dnsReset") || req->getParam("dnsEnable")->value().toInt() != 0) :
+                gDnsFilterCfg.enabled;
             dnsStrictUpdateRules(gDnsFilterCfg, enabled, hasAllow ? allowVal.c_str() : nullptr,
                                  hasBlock ? blockVal.c_str() : nullptr);
             changed = true;
         }
 #else
-        if (req->hasParam("dnsEnable")) {
-            gDnsFilterCfg.enabled = req->getParam("dnsEnable")->value().toInt() != 0;
+        if (req->hasParam("dnsReset") || req->hasParam("dnsEnable")) {
+            gDnsFilterCfg.enabled = req->hasParam("dnsReset") ||
+                req->getParam("dnsEnable")->value().toInt() != 0;
             changed = true;
         }
         if (hasAllow) {
@@ -1785,6 +1827,7 @@ void setupWebServer() {
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     // ── Self-service client config (served on the 10010 management port) ──────
     server.on(AsyncURIMatcher::exact("/client-config"), HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (rejectOnLowHeap(req)) return;
         String html(client_config::dashboardHtml());
         auto* response = req->beginResponse(200, "text/html; charset=utf-8", html);
         response->addHeader("Cache-Control", "no-store");
@@ -1858,6 +1901,7 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/hits", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendHitsJsonl(*response);
@@ -1872,6 +1916,7 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/handshakes", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendHandshakesJsonl(*response);
@@ -1880,6 +1925,7 @@ void setupWebServer() {
 
     server.on("/api/fsd-mock/config-history", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendConfigHistoryJsonl(*response);
@@ -1889,6 +1935,7 @@ void setupWebServer() {
 
     server.on("/api/wifi-bridge/blocked-download", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
         uint32_t total = 0;
         // Heap: same reasoning as /status — capacity=50 × 136B would overflow
         // the AsyncTCP handler task stack.
@@ -2461,8 +2508,13 @@ void setup() {
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     const bool fsdHttpsAvailable = !safeModeActive && client_config::start();
     if (!safeModeActive) {
-        addDiagLog(fsdHttpsAvailable ? 0 : 1,
-            fsdHttpsAvailable ? "FSD HTTPS on 443 started" : "FSD HTTPS startup failed");
+        if (!fsdHttpsAvailable) {
+            addDiagLog(1, "FSD HTTPS startup failed");
+        } else if (client_config::mothershipHttpStarted()) {
+            addDiagLog(0, "FSD HTTPS 443 + mothership HTTP 4567 started");
+        } else {
+            addDiagLog(1, "FSD HTTPS 443 started; mothership HTTP 4567 failed");
+        }
     }
 #endif
 

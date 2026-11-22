@@ -66,7 +66,7 @@ textarea{height:300px;resize:vertical}
     <div class="card"><div class="k">车机状态</div><div class="v s" id="cCar">--</div></div>
     <div class="card"><div class="k">最后下发成功</div><div class="v s" id="cLastOk">--</div></div>
     <div class="card"><div class="k">车机请求总数</div><div class="v" id="cReqs">--</div></div>
-    <div class="card"><div class="k">api-prd DNS 重定向</div><div class="v s" id="cDns">--</div></div>
+    <div class="card"><div class="k">FSD DNS 重定向</div><div class="v s" id="cDns">--</div></div>
   </div>
 
   <section><h2>车机连接 &amp; 握手</h2>

@@ -60,11 +60,18 @@ void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t*
 #include <WiFiUdp.h>
 #include <cctype>
 #include <cstring>
+#include <strings.h>
 
 // FSD payload interception (TeslaDG dns_sink.py parity): answer these exact
 // host rules with the ESP32 AP address instead of forwarding upstream.
 void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer);
 void dnsGetFsdRedirectStats(uint32_t* total, char* lastDomain, size_t capacity);
+
+// Hijack matcher shared by the DNS sink and the reverse proxy. Explicit host
+// rules are space/comma/semicolon separated; in addition, TeslaDG
+// arp_mitm.py's REDIRECT_PREFIX ("mothership.") hijacks any mothership.*
+// hostname so both mothership.vn.teslamotors.com and newer variants work.
+bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain);
 
 // Buffer size for allow/block rule strings. 1024 was too small — user-customized
 // allowlists (full preset + extra domains) exceed 1024 and the /api/set handler
@@ -476,6 +483,31 @@ bool containsIpLocked(const CachedIpEntry* entries, size_t count, uint32_t ipHos
 }  // namespace
 
 // ── FSD redirect setters/getters (called from fsd_mock.cpp) ──────────────────
+bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {
+    if (hosts == nullptr || domain == nullptr || domain[0] == '\0') return false;
+
+    // TeslaDG arp_mitm.py: REDIRECT_PREFIX = ("mothership.",). Any host below
+    // the mothership label is hijacked, even if only api-prd is configured.
+    if (strncasecmp(domain, "mothership.", 11) == 0) return true;
+    if (hosts[0] == '\0') return false;
+
+    const size_t domainLength = strlen(domain);
+    const char* cursor = hosts;
+    while (*cursor) {
+        while (*cursor && (isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) {
+            ++cursor;
+        }
+        if (!*cursor) break;
+        const char* begin = cursor;
+        while (*cursor && !(isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) {
+            ++cursor;
+        }
+        const size_t length = static_cast<size_t>(cursor - begin);
+        if (length == domainLength && strncasecmp(begin, domain, length) == 0) return true;
+    }
+    return false;
+}
+
 void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer) {
     portENTER_CRITICAL(&gFsdRedirectMux);
     gFsdRedirectEnabled = enabled && hosts != nullptr && hosts[0] != '\0';
@@ -871,17 +903,9 @@ void DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
 
     bool fsdRedirect = false;
     if (fsdRedirectEnabled && !domain.isEmpty()) {
-        const char* cursor = fsdRedirectHosts;
-        while (*cursor && !fsdRedirect) {
-            while (*cursor && (isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
-            const char* begin = cursor;
-            while (*cursor && !(isspace(static_cast<unsigned char>(*cursor)) || *cursor == ',' || *cursor == ';')) ++cursor;
-            if (cursor > begin) {
-                // Windows dns_sink.py uses exact set membership for --redirect.
-                String rule(begin, static_cast<unsigned int>(cursor - begin));
-                if (domain == rule) fsdRedirect = true;
-            }
-        }
+        // Windows dns_sink.py uses exact set membership for --redirect; the
+        // mothership prefix follows arp_mitm.py's REDIRECT_PREFIX.
+        fsdRedirect = dnsFsdRedirectMatchesHost(fsdRedirectHosts, domain.c_str());
         if (fsdRedirect) {
             portENTER_CRITICAL(&gFsdRedirectMux);
             ++gFsdRedirectTotal;

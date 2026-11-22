@@ -78,16 +78,20 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 
   <section><h2>DNS 过滤 / 白名单</h2><div class="body">
     <label><input type="checkbox" id="dnsEn"> 启用 DNS 过滤</label>
-    <label>白名单（空格/换行分隔；为空表示不限制）</label>
+    <div class="dim" style="font-size:12px;margin-top:2px">当前模式：<b id="dnsMode" style="color:#d29922">--</b></div>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:2px">仅对经过本机 DNS（9.9.9.9）的查询生效。车机/手机开启私人 DNS（DoT/DoH）或使用硬编码 IP 会绕过本过滤。</div>
+    <label>白名单（空格/换行分隔）</label>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">白名单非空时启用「默认拒绝」：未列出的域名一律拦截；白名单为空时只按黑名单拦截。</div>
     <textarea id="dnsAllow" spellcheck="false"></textarea>
     <label>黑名单</label>
     <textarea id="dnsBlock" spellcheck="false"></textarea>
     <button class="primary" id="dnsSave">保存</button>
-    <button id="dnsTesla">Tesla 推荐白名单</button>
-    <button id="dnsClear">清空规则</button>
+    <button id="dnsResetAllow">白名单恢复默认</button>
+    <button id="dnsResetBlock">黑名单恢复默认</button>
     <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
       ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行：加入白名单可远程车控，但可能被封，谨慎使用。<br>
-      ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。
+      ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。<br>
+      ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。
     </div>
     <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
     <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">默认关闭。关闭可省去每包 lwIP 钩子开销；开启后才会拦截已拿到 IP、绕过 DNS 继续直连的黑名单流量（最多缓存 256 个 IP）。</div>
@@ -140,8 +144,6 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 'use strict';
 var token=''; try{token=sessionStorage.getItem('fsd_tok')||'';}catch(e){}
 var busy=false;
-var TESLA_ALLOW='connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn';
-var TESLA_BLOCK='api-prd.vn.cloud.tesla.cn';
 function q(u){return u+(token?(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token):'');}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function showPin(){document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
@@ -182,6 +184,10 @@ async function refresh(){
     if(!document.getElementById('dnsBlock').matches(':focus')) document.getElementById('dnsBlock').value=d.dnsBlock||'';
     document.getElementById('dnsEn').checked=!!d.dnsEnable;
     document.getElementById('ipBlkEn').checked=!!d.ipBlockerEnabled;
+    var allowCount=d.dnsAllowCount||0, modeEl=document.getElementById('dnsMode');
+    if(!d.dnsEnable){modeEl.textContent='过滤已关闭（全部放行）';modeEl.style.color='#8b949e';}
+    else if(allowCount>0){modeEl.textContent='默认拒绝：仅放行白名单（'+allowCount+' 条）';modeEl.style.color='#3fb950';}
+    else{modeEl.textContent='黑名单模式：未命中黑名单默认放行';modeEl.style.color='#d29922';}
     var blk=d.dnsBlockedRecent||[], blkTotal=d.dnsBlockedTotal||0;
     document.getElementById('dnsBlkCard').textContent=blkTotal+' 次 / '+blk.length+' 域名';
     document.getElementById('dnsBlkTotal').textContent=blkTotal;
@@ -215,6 +221,12 @@ async function saveBridge(){
     '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
     '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
   var r=await fetch(q('/api/wifi-bridge/set?'+qs)); setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok); if(r.status===403)showPin(); refresh();
+}
+async function resetDns(which){
+  var r=await fetch(q('/api/wifi-bridge/set?dnsReset='+which));
+  setMsg('dnsMsg',r.ok?(which==='allow'?'白名单已恢复默认':'黑名单已恢复默认'):'恢复默认失败',r.ok);
+  if(r.status===403)showPin();
+  if(r.ok)refresh();
 }
 async function saveIpBlk(){
   var v=document.getElementById('ipBlkEn').checked?1:0;
@@ -275,10 +287,10 @@ document.getElementById('apSave').onclick=saveAp;
 document.getElementById('netAdd').onclick=addNet;
 document.getElementById('netScan').onclick=scan;
 document.getElementById('dnsSave').onclick=saveBridge;
+document.getElementById('dnsResetAllow').onclick=function(){resetDns('allow');};
+document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
-document.getElementById('dnsTesla').onclick=function(){document.getElementById('dnsAllow').value=TESLA_ALLOW;document.getElementById('dnsBlock').value=TESLA_BLOCK;};
-document.getElementById('dnsClear').onclick=function(){document.getElementById('dnsAllow').value='';document.getElementById('dnsBlock').value='';};
 document.getElementById('fsdSave').onclick=saveFsd;
 document.getElementById('upEn').onchange=saveBridge;
 document.getElementById('dnsEn').onchange=saveBridge;

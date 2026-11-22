@@ -2,36 +2,42 @@
 
 // TLS identity for the port-443 feature_configuration reply.
 //
-// Byte-for-byte the same chain as mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM`
-// (TeslaDG start_hotspot.ps1 --emudhra), NOT the regular mitmproxy CA:
+// CA chain + private key are byte-for-byte the same as mitmproxy 12.3.1
+// `EMUDHRA_CHAIN_PEM` (TeslaDG start_hotspot.ps1/start_all.ps1 --emudhra),
+// NOT the regular mitmproxy CA:
 //   leaf  CN=api-prd.vn.cloud.tesla.cn, O=Tesla Inc., issuer EM OV TLS CA - G3C
 //   chain EM OV TLS CA - G3C -> emSign Root TLS CA - G3 -> emSign ECC Root CA - G3
 //   plus the AAA Certificate Services cross-sign, in mitmproxy's order.
-// The leaf is generated exactly like mitmproxy's dummy_cert(): it uses the
-// compromised EM OV TLS CA - G3C key pair, mirrors Tesla's subject/SANs,
-// carries only EKU + AKI + SAN, and uses the same validity window as
-// TeslaDG/app/certs2/mitmproxy-ca-cert.pem (2026-11-07 -> 2036-11-04).
+// The leaf uses the same CA key pair/public key, issuer, EKU, AKI and SAN
+// construction as mitmproxy's dummy_cert(). mitmproxy regenerates one short-lived
+// leaf per SNI at runtime; the ESP32 serves one static leaf for both Tesla hosts
+// (api-prd + mothership) and the local panel names, so a byte-identical dynamic
+// leaf is not possible. Its validity window follows
+// TeslaDG/app/certs2/mitmproxy-ca-cert.pem (2026-11-07 -> 2036-11-04) instead of
+// mitmproxy's 199-day leaf window so the device does not expire without a rebuild.
 // The car trusts the emSign root, so no certificate installation is required.
-// SANs additionally include mothership.vn.teslamotors.com, fsd.local, 9.9.9.9,
-// 127.0.0.1 for the ESP32 panel/client-config endpoint. Lab use only.
+// SANs include mothership.vn.teslamotors.com, mothership.vn.cloud.tesla.cn,
+// fsd.local, 9.9.9.9, 127.0.0.1 for the local panel/client-config endpoint.
+// Lab use only.
 
 static constexpr char kFsdTlsCertificate[] = R"PEM(-----BEGIN CERTIFICATE-----
-MIIC6DCCAm6gAwIBAgIUTVaWpuNDmkkTuX479NAcs3QycLQwCgYIKoZIzj0EAwIw
+MIIDCTCCAo+gAwIBAgIUTVaWpuNDmkkTuX479NAcs3QycLQwCgYIKoZIzj0EAwIw
 QDELMAkGA1UEBhMCVVMxFDASBgNVBAoMC2VNdWRocmEgSW5jMRswGQYDVQQDDBJF
 TSBPViBUTFMgQ0EgLSBHM0MwHhcNMjYxMTA3MjI1NDQ1WhcNMzYxMTA0MjI1NDQ1
 WjA5MSIwIAYDVQQDDBlhcGktcHJkLnZuLmNsb3VkLnRlc2xhLmNuMRMwEQYDVQQK
 DApUZXNsYSBJbmMuMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEE4JRzVKskpjByKrZ
 dzId65fnCb0LTKCspV3IrVHc/J0ViaFZfjpRIOHv1jHGPhg1ysrimGmmLhYx6KKB
-gatWYW3EXZGKvAnzqw5jz3kqpNztc4e+N7ulaVSfHAKycO1no4IBLjCCASowEwYD
+gatWYW3EXZGKvAnzqw5jz3kqpNztc4e+N7ulaVSfHAKycO1no4IBTzCCAUswEwYD
 VR0lBAwwCgYIKwYBBQUHAwEwHwYDVR0jBBgwFoAUNOrqDOvJCtr50MXi7Zt4yYee
-G2wwgfEGA1UdEQSB6TCB5oIZYXBpLXByZC52bi5jbG91ZC50ZXNsYS5jboIiYXBp
-LWNuLW5vcnRoLXByZC52bi5jbG91ZC50ZXNsYS5jboIjZGV2aWNlLWFwaS5wcmQu
-Y24udm4uY2xvdWQudGVzbGEuY26CJGRldmljZS1hcGkucHJkLmV1LnZuLmNsb3Vk
-LnRlc2xhLmNvbYIkZGV2aWNlLWFwaS5wcmQubmEudm4uY2xvdWQudGVzbGEuY29t
-gh1tb3RoZXJzaGlwLnZuLnRlc2xhbW90b3JzLmNvbYIJZnNkLmxvY2FshwQJCQkJ
-hwR/AAABMAoGCCqGSM49BAMCA2gAMGUCMEtkGxBw4LKOHlrLK0IWLMS2UdCxjHYc
-BAQeMi2tL6a9poNNuhWgUP0bKkAwm8dH5AIxAKduGPqWCq1zqQPKxU+kMxW1rWdI
-sZDzefdjJ8SoHQU2yd7VO95QKUedvNGIoZWtJA==
+G2wwggERBgNVHREEggEIMIIBBIIZYXBpLXByZC52bi5jbG91ZC50ZXNsYS5jboIi
+YXBpLWNuLW5vcnRoLXByZC52bi5jbG91ZC50ZXNsYS5jboIjZGV2aWNlLWFwaS5w
+cmQuY24udm4uY2xvdWQudGVzbGEuY26CJGRldmljZS1hcGkucHJkLmV1LnZuLmNs
+b3VkLnRlc2xhLmNvbYIkZGV2aWNlLWFwaS5wcmQubmEudm4uY2xvdWQudGVzbGEu
+Y29tgh1tb3RoZXJzaGlwLnZuLnRlc2xhbW90b3JzLmNvbYIcbW90aGVyc2hpcC52
+bi5jbG91ZC50ZXNsYS5jboIJZnNkLmxvY2FshwQJCQkJhwR/AAABMAoGCCqGSM49
+BAMCA2gAMGUCMHtesb0jz5nLgUg6Ebdm9jlaPVKQBi8I0QJyC/OzJzuluTNqEh6A
+7LP6FX18x+tGBgIxALc5Y93ltuK1GMgtRqV8l1m52CB4JAzgTSWzas3fz5wZJxz2
+7xs4HYTFi+dbiqMLIQ==
 -----END CERTIFICATE-----
 -----BEGIN CERTIFICATE-----
 MIIDaDCCAu6gAwIBAgIPKWkmwiejoVJjkrGUgqUEMAoGCCqGSM49BAMDMFYxCzAJ

@@ -467,26 +467,26 @@ select:focus{outline:none;border-color:#38bdf8}
     <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:8px;margin:6px 0 8px 0;font-size:11px;color:#94a3b8;line-height:1.6">
       <div>• 白名单 = 放行；黑名单 = 屏蔽；<span style="color:#cbd5e1">更具体的域名优先</span>（不计 *.；相同长度白名单优先）</div>
       <div>• <span style="color:#cbd5e1">qq.com</span> 匹配主域及所有子域；<span style="color:#cbd5e1">*.qq.com</span> 仅匹配所有层级子域，不含 qq.com 本身；黑白名单均支持</div>
-      <div>• 空格或换行分隔；<span style="color:#cbd5e1">点下方预设一键填入</span>，也可手动增删</div>
+      <div>• 空格或换行分隔；每个列表旁都有<span style="color:#cbd5e1">「恢复默认」</span>一键还原，也可手动增删</div>
       <div>• 手机若开启「私人 DNS (DoT)」或 DoH 会<span style="color:#f87171">绕过</span>本过滤，需在系统设置关闭</div>
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-      <button type="button" id="pstTesla" onclick="brApplyPreset('tesla_min')" style="height:28px;padding:0 10px;background:#065f46;color:#d1fae5;border:2px solid #34d399;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600">⭐ Tesla 推荐（实测）</button>
-      <button type="button" id="pstLean" onclick="brApplyPreset('tesla_lean')" style="height:28px;padding:0 10px;background:#1e3a8a;color:#dbeafe;border:none;border-radius:6px;font-size:11px;cursor:pointer">🔹 精简官方</button>
-      <button type="button" id="pstBl" onclick="brApplyPreset('bl_telemetry')" style="height:28px;padding:0 10px;background:#7c2d12;color:#fed7aa;border:none;border-radius:6px;font-size:11px;cursor:pointer">只屏蔽遥测</button>
-      <button type="button" id="pstClr" onclick="brApplyPreset('clear')" style="height:28px;padding:0 10px;background:#334155;color:#cbd5e1;border:none;border-radius:6px;font-size:11px;cursor:pointer">清空所有规则</button>
-    </div>
-    <div id="dnsPresetStat" style="font-size:11px;color:#94a3b8;margin:-4px 0 8px 0">当前：—</div>
     <div style="background:#451a03;border:1px solid #b45309;border-radius:6px;padding:8px 10px;margin:0 0 10px 0;font-size:11px;color:#fde68a;line-height:1.65">
       <div>⚠️ <b>hermes-prd.vn.cloud.tesla.cn</b> 默认不放行：手动加入白名单可启用远程车控，但可能触发 Tesla 风控甚至封禁，谨慎使用。</div>
       <div style="margin-top:4px">⛔ <b>api-prd.vn.cloud.tesla.cn</b> 默认在黑名单。车机恢复出厂后，如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先把它加入白名单（同长度时白名单优先）；放行后 Tesla 云端可能改写 FSD 配置，风险自担。音乐软件恢复后请立刻移回黑名单，或直接断开 Wi-Fi。</div>
+      <div style="margin-top:4px">⛔ <b>mothership.vn.teslamotors.com</b> / <b>mothership.vn.cloud.tesla.cn</b> 默认在外网黑名单；FSD 下发开启时按 Windows 版逻辑劫持到本机（443 TLS / 4567 HTTP），关闭后阻断直连。</div>
     </div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
-      <span class="row-label" style="font-size:11px;color:#34d399">📥 白名单（放行，空格/换行分隔）</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px">
+        <span class="row-label" style="font-size:11px;color:#34d399">📥 白名单（放行，空格/换行分隔）</span>
+        <button type="button" onclick="brResetDns('allow')" style="height:24px;padding:0 9px;background:#334155;color:#cbd5e1;border:1px solid #475569;border-radius:6px;font-size:10px;cursor:pointer">恢复默认</button>
+      </div>
       <textarea id="brDnsAllow" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: connman.vn.cloud.tesla.cn *.qq.com"></textarea>
     </div>
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px">
-      <span class="row-label" style="font-size:11px;color:#f87171">🚫 黑名单（屏蔽，空格/换行分隔）</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px">
+        <span class="row-label" style="font-size:11px;color:#f87171">🚫 黑名单（屏蔽，空格/换行分隔）</span>
+        <button type="button" onclick="brResetDns('block')" style="height:24px;padding:0 9px;background:#334155;color:#cbd5e1;border:1px solid #475569;border-radius:6px;font-size:10px;cursor:pointer">恢复默认</button>
+      </div>
       <textarea id="brDnsBlock" class="text-input" maxlength="1023" rows="4" style="font-family:monospace;font-size:11px" placeholder="例: tesla.cn tesla.com"></textarea>
     </div>
     <button class="save-btn" onclick="brSet()" style="margin-top:10px">保存 DNS 配置</button>
@@ -515,7 +515,7 @@ select:focus{outline:none;border-color:#38bdf8}
         <option value="observe">observe（只观察并转发）</option>
       </select></div>
     <div style="font-size:11px;color:#94a3b8;margin:6px 0;line-height:1.6">
-      与 Windows 一致：DNS 把 <code style="color:#cbd5e1">api-prd.vn.cloud.tesla.cn</code> 指到 9.9.9.9，
+      与 Windows 一致：DNS 把 <code style="color:#cbd5e1">api-prd.vn.cloud.tesla.cn</code> 和 <code style="color:#cbd5e1">mothership.*</code> 指到 9.9.9.9（443 TLS / 4567 HTTP），
       <code style="color:#cbd5e1">/feature_configuration</code> 返回 200 + compact JSON，<code style="color:#cbd5e1">X-Checksum</code> 为 md5(body)。<br>
       当前：<span id="fsdInfoP">—</span> · 命中 <span id="fsdHitsP">0</span> 次 · DNS 劫持 <span id="fsdDnsP">0</span> 次<br>
       TLS 握手：<span id="fsdTlsP">—</span> · 成功 <span id="fsdTlsOkP">0</span> / 失败 <span id="fsdTlsFailP">0</span>
@@ -1183,7 +1183,7 @@ function brInit(){
       var el=document.getElementById(id);
       if(el){
         el.addEventListener('input',function(){
-          if(id==='fsdPayloadP') fsdDirtyP=true; else { brDirty=true; brHighlightPreset(); }
+          if(id==='fsdPayloadP') fsdDirtyP=true; else { brDirty=true; }
         });
       }
     });
@@ -1220,7 +1220,6 @@ function brPoll(){
       document.getElementById('brDnsAllow').value=d.dnsAllow||'';
       document.getElementById('brDnsBlock').value=d.dnsBlock||'';
     }
-    brHighlightPreset();
     document.getElementById('brBlkTot').textContent=d.dnsBlockedTotal;
     document.getElementById('brIpDrops').textContent=(d.ipBlockDrops!=null?d.ipBlockDrops:0);
     document.getElementById('brIpCache').textContent=(d.ipCacheCount!=null?d.ipCacheCount:0);
@@ -1348,58 +1347,17 @@ function brSet(){
   fetch('/api/wifi-bridge/set?'+qs+(token?'&token='+token:''))
     .then(function(r){brDirty=false;msg('brMsg',r.ok?'已保存':'保存失败',r.ok);});
 }
-var DNS_PRESETS={
-  tesla_min:{
-    name:'⭐ Tesla 推荐（实测）',btnId:'pstTesla',
-    allow:'connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com api.map.baidu.com lc.map.baidu.com newvector.map.baidu.com route.map.baidu.com newclient.map.baidu.com tracknavi.baidu.com itsmap3.baidu.com app.navi.baidu.com mapapip0.bdimg.com mapapisp0.bdimg.com automap0.bdimg.com baidunavi.cdn.bcebos.com lbsnavi.cdn.bcebos.com enlargeroad-view.su.bcebos.com qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn music.163.com music.126.net aod-ssl.itunes.apple.com api.music.apple.com is1-ssl.mzstatic.com play.itunes.apple.com isure6-stream-xyy6.tencentmusic.com www.baidu.com www.qq.com *.tencentmusic.com www.tesla.cn',
-    block:'api-prd.vn.cloud.tesla.cn'
-  },
-  tesla_lean:{
-    name:'🔹 精简官方',btnId:'pstLean',
-    allow:'connman.vn.cloud.tesla.cn www.tesla.cn nav-prd-maps.tesla.cn maps-cn-prd.go.tesla.services hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn api-prd.vn.cloud.tesla.cn media-server-me.tesla.cn',
-    block:'tesla.cn tesla.com teslamotors.com tesla.services'
-  },
-  bl_telemetry:{
-    name:'只屏蔽遥测',btnId:'pstBl',
-    allow:'',
-    block:'apigateway-x2-trigger.tesla.cn telemetry-prd.vn.cloud.tesla.cn hermes-stream-prd.vn.cloud.tesla.cn'
-  },
-  clear:{name:'清空所有规则',btnId:'pstClr',allow:'',block:''}
-};
-function dnsNormList(s){return String(s||'').trim().split(/\s+/).filter(Boolean).sort().join(' ');}
-function detectActivePreset(allow,block){
-  var a=dnsNormList(allow),b=dnsNormList(block);
-  for(var k in DNS_PRESETS){
-    if(dnsNormList(DNS_PRESETS[k].allow)===a && dnsNormList(DNS_PRESETS[k].block)===b) return k;
-  }
-  return null;
-}
-function brHighlightPreset(){
-  var allow=document.getElementById('brDnsAllow').value;
-  var block=document.getElementById('brDnsBlock').value;
-  var active=detectActivePreset(allow,block);
-  for(var k in DNS_PRESETS){
-    var el=document.getElementById(DNS_PRESETS[k].btnId);
-    if(el) el.style.boxShadow=(k===active)?'0 0 0 3px #fbbf24':'none';
-  }
-  var stat=document.getElementById('dnsPresetStat');
-  if(!stat) return;
-  if(active){
-    stat.innerHTML='当前：<span style="color:#34d399">'+DNS_PRESETS[active].name+'</span>';
-  } else {
-    var aw=String(allow||'').trim().split(/\s+/).filter(Boolean).length;
-    var bk=String(block||'').trim().split(/\s+/).filter(Boolean).length;
-    stat.innerHTML='当前：<span style="color:#fbbf24">✍️ 自定义</span>（白名单 '+aw+' · 黑名单 '+bk+'）';
-  }
-}
-function brApplyPreset(key){
-  var p=DNS_PRESETS[key];if(!p)return;
-  document.getElementById('brDnsAllow').value=p.allow;
-  document.getElementById('brDnsBlock').value=p.block;
-  if(key!=='clear'){document.getElementById('brDnsEn').checked=true;}
-  brDirty=true;
-  brHighlightPreset();
-  msg('brMsg','已载入「'+p.name+'」，点「保存 DNS 配置」生效',true);
+function brResetDns(which){
+  fetch('/api/wifi-bridge/set?dnsReset='+which+(token?'&token='+token:''))
+    .then(function(r){
+      if(r.ok){
+        brDirty=false;
+        brPoll();
+        msg('brMsg',which==='allow'?'白名单已恢复默认':'黑名单已恢复默认',true);
+      }else{
+        msg('brMsg','恢复默认失败',false);
+      }
+    });
 }
 function brAdd(){
   var ssid=document.getElementById('brAddSsid').value.trim();

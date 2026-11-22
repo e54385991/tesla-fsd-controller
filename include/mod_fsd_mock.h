@@ -21,6 +21,10 @@ struct esp_tls;
 
 namespace fsd_mock {
 
+// PC TeslaDG chain: 443 is the TLS FSD listener; 4567 is the plaintext
+// mothership reverse listener (svc/stack.py reverse:http://<ip>:4567).
+constexpr uint16_t kMothershipHttpPort = 4567;
+
 constexpr size_t kPayloadCapacity = 2049;   // compact payload limit (Windows UI sends 602/476/282 B)
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted

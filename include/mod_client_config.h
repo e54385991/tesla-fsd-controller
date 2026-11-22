@@ -14,6 +14,7 @@ constexpr uint16_t kFsdPort = 443;
 enum class Change : uint8_t { Publish, Rollback, Acknowledge };
 
 bool start();
+bool mothershipHttpStarted();
 bool apiGet(const char* authorization, String& response, int& status);
 bool apiChange(const char* authorization, const char* body, size_t length,
                Change change, String& response, int& status);
