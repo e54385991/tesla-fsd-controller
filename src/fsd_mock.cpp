@@ -40,7 +40,11 @@ constexpr char kPayloadPath[] = "/fsd_payload.json";
 constexpr char kPayloadTempPath[] = "/fsd_payload.tmp";
 constexpr char kPayloadBackupPath[] = "/fsd_payload.bak";
 constexpr size_t kRequestCaptureBytes = 64;
-constexpr size_t kForwardBodyBytes = 4096;
+constexpr size_t kMaxForwardBodyBytes = 65536;     // streaming cap for observe/passthrough request bodies
+constexpr size_t kUpstreamBufferRxBytes = 2048;    // upstream HTTP response read buffer
+constexpr size_t kUpstreamBufferTxBytes = 4096;    // upstream HTTP request TX buffer (large JWT/Cookie safe)
+constexpr size_t kMaxForwardedRespHeaders = 14;    // fits inside httpd max_resp_headers = 16
+constexpr size_t kMaxRespHeaderTotalBytes = 2048;  // heap guard for captured upstream response headers
 // TeslaDG hijack parity: api-prd (443 chain) plus the mothership hosts used
 // by the PC reverse/ARP chains. Any other mothership.* also matches through
 // dnsFsdRedirectMatchesHost(), so this list is mainly for display/persistence.
@@ -403,10 +407,19 @@ esp_http_client_method_t upstreamMethod(int method) {
 }
 
 void copyHeader(httpd_req_t* request, const char* name, char* out, size_t capacity) {
+    if (!out || capacity == 0) return;
     out[0] = '\0';
-    const size_t length = httpd_req_get_hdr_value_len(request, name);
-    if (length == 0 || length + 1 > capacity) return;
-    httpd_req_get_hdr_value_str(request, name, out, capacity);
+    // Truncate long headers (e.g. browser/Tesla User-Agent, Content-Type with
+    // charset) instead of discarding them to an empty string.
+    const esp_err_t err = httpd_req_get_hdr_value_str(request, name, out, capacity);
+    if (err != ESP_OK && err != ESP_ERR_HTTPD_RESULT_TRUNC) out[0] = '\0';
+}
+
+bool isChunkedRequest(httpd_req_t* request) {
+    char te[48] = {};
+    copyHeader(request, "Transfer-Encoding", te, sizeof(te));
+    for (char* p = te; *p; ++p) *p = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
+    return strstr(te, "chunked") != nullptr;
 }
 
 void parseRequestMeta(httpd_req_t* request, Hit& hit, Capture& capture) {
@@ -574,9 +587,28 @@ bool persistSettings() {
 
 // ── request body ────────────────────────────────────────────────────────────
 
-bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity,
-                      size_t& bodyLength, Capture& capture) {
-    bodyLength = 0;
+void captureBodyHead(const char* chunk, size_t receivedSize, Capture& capture, size_t& captured) {
+    if (captured >= kRequestCaptureBytes || receivedSize == 0) return;
+    const size_t headCopy = (kRequestCaptureBytes - captured) < receivedSize
+        ? (kRequestCaptureBytes - captured) : receivedSize;
+    if (capture.head[0] == '\0' && headCopy > 0) {
+        const bool text = strstr(capture.ctype, "json") || strstr(capture.ctype, "text") ||
+            chunk[0] == '{' || chunk[0] == '[';
+        if (text) {
+            copyText(chunk, headCopy, capture.head, sizeof(capture.head));
+        } else {
+            size_t written = 0;
+            for (size_t i = 0; i < headCopy && written + 2 < sizeof(capture.head); ++i) {
+                snprintf(capture.head + written, sizeof(capture.head) - written,
+                         "%02x", static_cast<unsigned>(static_cast<uint8_t>(chunk[i])));
+                written += 2;
+            }
+        }
+    }
+    captured += headCopy;
+}
+
+bool drainRequestBody(httpd_req_t* request, Capture& capture) {
     capture.requestBytes = static_cast<uint32_t>(request->content_len);
     capture.head[0] = '\0';
     capture.requestMd5[0] = '\0';
@@ -598,35 +630,7 @@ bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity,
         if (received <= 0) return false;
         const size_t receivedSize = static_cast<size_t>(received);
         esp_rom_md5_update(&md5, chunk, static_cast<uint32_t>(received));
-
-        // Copy the complete body for observe/passthrough forwarding. Only the
-        // first kRequestCaptureBytes are mirrored into the RAM log preview.
-        if (body && bodyLength + 1 < bodyCapacity) {
-            size_t copy = receivedSize;
-            if (bodyLength + copy >= bodyCapacity) copy = bodyCapacity - 1 - bodyLength;
-            memcpy(body + bodyLength, chunk, copy);
-            bodyLength += copy;
-        }
-
-        if (captured < kRequestCaptureBytes) {
-            const size_t headCopy = (kRequestCaptureBytes - captured) < receivedSize
-                ? (kRequestCaptureBytes - captured) : receivedSize;
-            if (capture.head[0] == '\0' && headCopy > 0) {
-                const bool text = strstr(capture.ctype, "json") || strstr(capture.ctype, "text") ||
-                    chunk[0] == '{' || chunk[0] == '[';
-                if (text) {
-                    copyText(chunk, headCopy, capture.head, sizeof(capture.head));
-                } else {
-                    size_t written = 0;
-                    for (size_t i = 0; i < headCopy && written + 2 < sizeof(capture.head); ++i) {
-                        snprintf(capture.head + written, sizeof(capture.head) - written,
-                                 "%02x", static_cast<unsigned>(static_cast<uint8_t>(chunk[i])));
-                        written += 2;
-                    }
-                }
-            }
-            captured += headCopy;
-        }
+        captureBodyHead(chunk, receivedSize, capture, captured);
         remaining -= receivedSize;
     }
     uint8_t digest[16];
@@ -634,7 +638,6 @@ bool drainRequestBody(httpd_req_t* request, char* body, size_t bodyCapacity,
     for (size_t i = 0; i < sizeof(digest); ++i) {
         snprintf(capture.requestMd5 + i * 2, 3, "%02x", static_cast<unsigned>(digest[i]));
     }
-    if (body && bodyLength < bodyCapacity) body[bodyLength] = '\0';
     return true;
 }
 
@@ -662,36 +665,40 @@ bool discardRequestBody(httpd_req_t* request, size_t limit) {
 
 // ── responses / forwarding ──────────────────────────────────────────────────
 
-void setStatusLine(httpd_req_t* request, int code) {
-    const char* text = "";
+const char* formatStatusLine(int code, char buffer[32]) {
     switch (code) {
-        case 200: text = "OK"; break;
-        case 201: text = "Created"; break;
-        case 204: text = "No Content"; break;
-        case 301: text = "Moved Permanently"; break;
-        case 302: text = "Found"; break;
-        case 304: text = "Not Modified"; break;
-        case 400: text = "Bad Request"; break;
-        case 401: text = "Unauthorized"; break;
-        case 403: text = "Forbidden"; break;
-        case 404: text = "Not Found"; break;
-        case 409: text = "Conflict"; break;
-        case 413: text = "Payload Too Large"; break;
-        case 429: text = "Too Many Requests"; break;
-        case 500: text = "Internal Server Error"; break;
-        case 502: text = "Bad Gateway"; break;
-        case 503: text = "Service Unavailable"; break;
-        default: text = ""; break;
+        case 200: return "200 OK";
+        case 201: return "201 Created";
+        case 202: return "202 Accepted";
+        case 204: return "204 No Content";
+        case 206: return "206 Partial Content";
+        case 301: return "301 Moved Permanently";
+        case 302: return "302 Found";
+        case 304: return "304 Not Modified";
+        case 307: return "307 Temporary Redirect";
+        case 308: return "308 Permanent Redirect";
+        case 400: return "400 Bad Request";
+        case 401: return "401 Unauthorized";
+        case 403: return "403 Forbidden";
+        case 404: return "404 Not Found";
+        case 405: return "405 Method Not Allowed";
+        case 409: return "409 Conflict";
+        case 413: return "413 Payload Too Large";
+        case 429: return "429 Too Many Requests";
+        case 500: return "500 Internal Server Error";
+        case 502: return "502 Bad Gateway";
+        case 503: return "503 Service Unavailable";
+        case 504: return "504 Gateway Timeout";
+        default:
+            snprintf(buffer, 32, "%d", code);
+            return buffer;
     }
-    static char line[32];
-    if (text[0]) snprintf(line, sizeof(line), "%d %s", code, text);
-    else snprintf(line, sizeof(line), "%d", code);
-    httpd_resp_set_status(request, line);
 }
 
 void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
                      int status, const char* json) {
-    setStatusLine(request, status);
+    char statusLine[32];
+    httpd_resp_set_status(request, formatStatusLine(status, statusLine));
     httpd_resp_set_type(request, "application/json");
     // Requests that fail before their body is drained must not reuse the
     // socket; the car would otherwise keep a half-read request open.
@@ -711,19 +718,110 @@ bool upstreamReady() {
         static_cast<uint32_t>(WiFi.localIP()) != 0;
 }
 
-int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
-                   Hit& hit, char* responseBody, size_t responseCapacity) {
-    if (!upstreamReady()) {
-        discardRequestBody(request, 8192);
-        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
-        return 502;
+// Captures upstream HTTP response headers via HTTP_EVENT_ON_HEADER.
+// Note: esp_http_client_get_header() only inspects outgoing *request* headers,
+// not upstream response headers; and httpd_resp_set_hdr()/set_type() retain
+// raw pointers until httpd_resp_send* completes, so this object must outlive
+// the response transmission.
+struct UpstreamResponseHeaders {
+    struct Entry {
+        char* key = nullptr;
+        char* value = nullptr;
+    };
+    char* contentType = nullptr;
+    Entry entries[kMaxForwardedRespHeaders];
+    size_t count = 0;
+    size_t totalBytes = 0;
+
+    ~UpstreamResponseHeaders() {
+        free(contentType);
+        for (size_t i = 0; i < count; ++i) {
+            free(entries[i].key);
+            free(entries[i].value);
+        }
     }
+
+    static bool isHopByHop(const char* key) {
+        return strcasecmp(key, "Transfer-Encoding") == 0 ||
+               strcasecmp(key, "Content-Length") == 0 ||
+               strcasecmp(key, "Connection") == 0 ||
+               strcasecmp(key, "Keep-Alive") == 0 ||
+               strcasecmp(key, "Proxy-Connection") == 0 ||
+               strcasecmp(key, "Upgrade") == 0 ||
+               strcasecmp(key, "Trailer") == 0 ||
+               strcasecmp(key, "TE") == 0;
+    }
+
+    static bool hasCrlf(const char* text) {
+        return text && strpbrk(text, "\r\n") != nullptr;
+    }
+
+    void add(const char* key, const char* value) {
+        if (!key || !*key || !value) return;
+        if (hasCrlf(key) || hasCrlf(value)) return;
+        const size_t keyLen = strlen(key);
+        const size_t valLen = strlen(value);
+        if (strcasecmp(key, "Content-Type") == 0) {
+            if (valLen > 128) return;
+            char* dup = static_cast<char*>(malloc(valLen + 1));
+            if (!dup) return;
+            memcpy(dup, value, valLen + 1);
+            free(contentType);
+            contentType = dup;
+            return;
+        }
+        if (isHopByHop(key)) return;
+        if (count >= kMaxForwardedRespHeaders) return;
+        if (totalBytes + keyLen + valLen + 2 > kMaxRespHeaderTotalBytes) return;
+        char* keyDup = static_cast<char*>(malloc(keyLen + 1));
+        char* valDup = static_cast<char*>(malloc(valLen + 1));
+        if (!keyDup || !valDup) {
+            free(keyDup);
+            free(valDup);
+            return;
+        }
+        memcpy(keyDup, key, keyLen + 1);
+        memcpy(valDup, value, valLen + 1);
+        entries[count].key = keyDup;
+        entries[count].value = valDup;
+        ++count;
+        totalBytes += keyLen + valLen + 2;
+    }
+};
+
+esp_err_t upstreamEventHandler(esp_http_client_event_t* event) {
+    if (event && event->event_id == HTTP_EVENT_ON_HEADER && event->user_data) {
+        auto* headers = static_cast<UpstreamResponseHeaders*>(event->user_data);
+        headers->add(event->header_key, event->header_value);
+    }
+    return ESP_OK;
+}
+
+int forwardRequest(httpd_req_t* request, Capture& capture,
+                   Hit& hit, char* responseBody, size_t responseCapacity) {
     hit.status = 0;
     hit.bytes = 0;
     hit.md5[0] = '\0';
     hit.respHead[0] = '\0';
     hit.respCtype[0] = '\0';
     if (responseBody && responseCapacity) responseBody[0] = '\0';
+
+    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
+    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
+    hit.reqBytes = static_cast<uint32_t>(request->content_len);
+
+    if (!upstreamReady()) {
+        discardRequestBody(request, 8192);
+        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
+        return 502;
+    }
+
+    const size_t bodyLength = request->content_len;
+    if (bodyLength > kMaxForwardBodyBytes) {
+        discardRequestBody(request, 8192);
+        finishJsonError(request, hit, responseBody, 413, "{\"error\":\"request_too_large\"}");
+        return 413;
+    }
 
     // TeslaDG reverse targets are fixed per listener:
     //   443  -> https://api-prd.vn.cloud.tesla.cn  (keep_host_header=false)
@@ -732,6 +830,7 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     // observe mode and non-FSD passthrough.
     const uint16_t port = localPort(request);
     const bool secure = port != kMothershipHttpPort;
+    const bool chunkedReq = isChunkedRequest(request);
     const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;
     char authority[kHostCapacity + 8] = {};
     if (secure) {
@@ -743,11 +842,13 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     const size_t urlLength = strlen(authority) + strlen(request->uri) + 16;
     char* url = static_cast<char*>(malloc(urlLength));
     if (!url) {
+        discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 500, "{\"error\":\"no_memory\"}");
         return 500;
     }
     snprintf(url, urlLength, "%s://%s%s", secure ? "https" : "http", authority, request->uri);
 
+    UpstreamResponseHeaders respHeaders;
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = upstreamMethod(request->method);
@@ -755,21 +856,30 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     config.disable_auto_redirect = true;
     config.transport_type = secure ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
     config.skip_cert_common_name_check = secure;
-    config.buffer_size = 2048;
-    config.buffer_size_tx = 2048;
+    config.buffer_size = kUpstreamBufferRxBytes;
+    config.buffer_size_tx = kUpstreamBufferTxBytes;
+    config.event_handler = upstreamEventHandler;
+    config.user_data = &respHeaders;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
         free(url);
+        discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_init\"}");
         return 502;
     }
+    // Remove ESP-IDF's default "ESP32 HTTP Client/1.0" User-Agent so upstream
+    // only sees what the vehicle sent (mitmproxy parity).
+    esp_http_client_delete_header(client, "User-Agent");
 
     static const char* const kForwardHeaders[] = {
         "Host", "Authorization", "Content-Type", "Accept", "Accept-Encoding", "Accept-Language",
-        "User-Agent", "Cookie", "If-None-Match", "If-Modified-Since",
+        "User-Agent", "Cookie", "Origin", "Referer",
+        "Cache-Control", "Pragma", "Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Range",
         "X-Tesla-User-Agent", "Tesla-User-Agent", "X-Tesla-Client",
-        "X-Tesla-Protocol-Version", "X-Requested-With",
+        "X-Tesla-Protocol", "X-Tesla-Protocol-Version", "X-Tesla-App-Version",
+        "X-Tesla-Vehicle-Id", "X-Tesla-Signature", "X-Tesla-Timestamp",
+        "X-Checksum", "X-Request-Id", "X-Correlation-Id", "X-Requested-With",
     };
     for (const char* name : kForwardHeaders) {
         // 4567 keeps the car's Host (PC keep_host_header=true); 443 rewrites
@@ -784,23 +894,75 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
         }
         free(value);
     }
+
     // Do NOT use esp_http_client_perform() here: it reads and discards the
-    // response body internally. Open/write/fetch/read lets us stream the real
-    // upstream bytes back to the car (mitmproxy reverse-mode behavior).
+    // response body internally. Open/write/fetch/read streams both request and
+    // response bodies in bounded chunks without a 4 KB heap buffer (mitmproxy
+    // reverse-mode parity).
+    capture.requestBytes = static_cast<uint32_t>(bodyLength);
+    capture.head[0] = '\0';
+    capture.requestMd5[0] = '\0';
+    bool clientReadFailed = false;
     gInUpstreamRequest = true;
-    esp_err_t error = esp_http_client_open(client, bodyLength);
+    esp_err_t error = esp_http_client_open(client, static_cast<int>(bodyLength));
     if (error == ESP_OK && bodyLength > 0) {
-        const int written = esp_http_client_write(client, body, static_cast<int>(bodyLength));
-        if (written != static_cast<int>(bodyLength)) error = ESP_FAIL;
+        md5_context_t reqMd5;
+        esp_rom_md5_init(&reqMd5);
+        char reqChunk[512];
+        size_t remaining = bodyLength;
+        size_t captured = 0;
+        int timeouts = 0;
+        while (remaining > 0) {
+            const size_t want = remaining < sizeof(reqChunk) ? remaining : sizeof(reqChunk);
+            const int received = httpd_req_recv(request, reqChunk, want);
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                if (++timeouts > 3) {
+                    clientReadFailed = true;
+                    error = ESP_FAIL;
+                    break;
+                }
+                continue;
+            }
+            if (received <= 0) {
+                clientReadFailed = true;
+                error = ESP_FAIL;
+                break;
+            }
+            const size_t receivedSize = static_cast<size_t>(received);
+            esp_rom_md5_update(&reqMd5, reqChunk, static_cast<uint32_t>(received));
+            captureBodyHead(reqChunk, receivedSize, capture, captured);
+            const int written = esp_http_client_write(client, reqChunk, received);
+            if (written != received) {
+                error = ESP_FAIL;
+                break;
+            }
+            remaining -= receivedSize;
+        }
+        if (error == ESP_OK) {
+            uint8_t digest[16];
+            esp_rom_md5_final(digest, &reqMd5);
+            for (size_t i = 0; i < sizeof(digest); ++i) {
+                snprintf(capture.requestMd5 + i * 2, 3, "%02x", static_cast<unsigned>(digest[i]));
+            }
+        }
     }
     if (error == ESP_OK && esp_http_client_fetch_headers(client) < 0) {
         error = ESP_FAIL;
     }
     gInUpstreamRequest = false;
+
+    strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
+    strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
+
     if (error != ESP_OK) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         free(url);
+        if (bodyLength > 0) discardRequestBody(request, 8192);
+        if (clientReadFailed) {
+            finishJsonError(request, hit, responseBody, 400, "{\"error\":\"request_read_failed\"}");
+            return 400;
+        }
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_failed\"}");
         return 502;
     }
@@ -808,52 +970,57 @@ int forwardRequest(httpd_req_t* request, const char* body, size_t bodyLength,
     int status = esp_http_client_get_status_code(client);
     if (status <= 0) status = 502;
     hit.status = static_cast<uint16_t>(status);
-    setStatusLine(request, status);
+    char statusLine[32];
+    httpd_resp_set_status(request, formatStatusLine(status, statusLine));
 
-    char* contentType = nullptr;
-    if (esp_http_client_get_header(client, "Content-Type", &contentType) == ESP_OK && contentType) {
-        httpd_resp_set_type(request, contentType);
-        strlcpy(hit.respCtype, contentType, sizeof(hit.respCtype));
+    if (respHeaders.contentType) {
+        httpd_resp_set_type(request, respHeaders.contentType);
+        strlcpy(hit.respCtype, respHeaders.contentType, sizeof(hit.respCtype));
     }
-    static const char* const kResponseHeaders[] = {
-        "Cache-Control", "Content-Encoding", "Location", "ETag", "Vary",
-        "Set-Cookie",
-    };
-    for (const char* name : kResponseHeaders) {
-        char* value = nullptr;
-        if (esp_http_client_get_header(client, name, &value) == ESP_OK && value) {
-            httpd_resp_set_hdr(request, name, value);
-        }
+    for (size_t i = 0; i < respHeaders.count; ++i) {
+        httpd_resp_set_hdr(request, respHeaders.entries[i].key, respHeaders.entries[i].value);
+    }
+    if (chunkedReq) {
+        // esp_http_server does not de-chunk incoming Transfer-Encoding: chunked
+        // bodies, so close after replying to keep framing aligned.
+        httpd_resp_set_hdr(request, "Connection", "close");
     }
 
+    const bool noBodyResponse = (request->method == HTTP_HEAD || status == 204 || status == 304);
     md5_context_t md5;
     esp_rom_md5_init(&md5);
     char buffer[512];
     size_t total = 0;
     size_t preview = 0;
     size_t bodyStored = 0;
-    int read = 0;
-    while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
-        esp_rom_md5_update(&md5, buffer, static_cast<uint32_t>(read));
-        if (preview < sizeof(hit.respHead) - 1) {
-            const size_t copy = (sizeof(hit.respHead) - 1 - preview) < static_cast<size_t>(read)
-                ? (sizeof(hit.respHead) - 1 - preview) : static_cast<size_t>(read);
-            copyPrintable(reinterpret_cast<const uint8_t*>(buffer), copy,
-                          hit.respHead + preview, sizeof(hit.respHead) - preview);
-            preview += copy;
+    if (!noBodyResponse) {
+        int read = 0;
+        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
+            esp_rom_md5_update(&md5, buffer, static_cast<uint32_t>(read));
+            if (preview < sizeof(hit.respHead) - 1) {
+                const size_t copy = (sizeof(hit.respHead) - 1 - preview) < static_cast<size_t>(read)
+                    ? (sizeof(hit.respHead) - 1 - preview) : static_cast<size_t>(read);
+                copyPrintable(reinterpret_cast<const uint8_t*>(buffer), copy,
+                              hit.respHead + preview, sizeof(hit.respHead) - preview);
+                preview += copy;
+            }
+            if (responseBody && responseCapacity && bodyStored + 1 < responseCapacity) {
+                const size_t copy = (responseCapacity - 1 - bodyStored) < static_cast<size_t>(read)
+                    ? (responseCapacity - 1 - bodyStored) : static_cast<size_t>(read);
+                memcpy(responseBody + bodyStored, buffer, copy);
+                bodyStored += copy;
+                responseBody[bodyStored] = '\0';
+            }
+            const esp_err_t sent = httpd_resp_send_chunk(request, buffer, read);
+            total += static_cast<size_t>(read);
+            if (sent != ESP_OK) break;
         }
-        if (responseBody && responseCapacity && bodyStored + 1 < responseCapacity) {
-            const size_t copy = (responseCapacity - 1 - bodyStored) < static_cast<size_t>(read)
-                ? (responseCapacity - 1 - bodyStored) : static_cast<size_t>(read);
-            memcpy(responseBody + bodyStored, buffer, copy);
-            bodyStored += copy;
-            responseBody[bodyStored] = '\0';
-        }
-        const esp_err_t sent = httpd_resp_send_chunk(request, buffer, read);
-        total += static_cast<size_t>(read);
-        if (sent != ESP_OK) break;
     }
-    httpd_resp_send_chunk(request, nullptr, 0);
+    if (total > 0) {
+        httpd_resp_send_chunk(request, nullptr, 0);
+    } else {
+        httpd_resp_send(request, nullptr, 0);
+    }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     free(url);
@@ -1101,54 +1268,28 @@ esp_err_t handleRequest(httpd_req_t* request) {
     strlcpy(hit.kind, observe ? "OBSERVE" : "HIT", sizeof(hit.kind));
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
-    if (observe && !upstreamReady()) {
-        discardRequestBody(request, 8192);
-        strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
-        strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
-        hit.reqBytes = static_cast<uint32_t>(request->content_len);
-        const char* errorBody = "{\"error\":\"upstream_unavailable\"}";
-        finishJsonError(request, hit, nullptr, 502, errorBody);
-        recordHit(hit, errorBody);
+    if (observe) {
+        char responseBody[kLastResponseCapacity];
+        forwardRequest(request, capture, hit, responseBody, sizeof(responseBody));
+        recordHit(hit, responseBody);
         return ESP_OK;
     }
 
-    if (observe && request->content_len > kForwardBodyBytes) {
-        discardRequestBody(request, 8192);
-        const char* errorBody = "{\"error\":\"request_too_large\"}";
-        finishJsonError(request, hit, nullptr, 413, errorBody);
-        recordHit(hit, errorBody);
-        return ESP_OK;
-    }
-
-    char* forwarded = nullptr;
-    if (observe) forwarded = static_cast<char*>(malloc(kForwardBodyBytes + 1));
-    size_t forwardedLength = 0;
-    const bool bodyOk = drainRequestBody(request, forwarded, kForwardBodyBytes + 1,
-                                           forwardedLength, capture);
+    const bool bodyOk = drainRequestBody(request, capture);
     strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
     strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
     strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
     hit.reqBytes = capture.requestBytes;
     strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
     if (!bodyOk) {
-        free(forwarded);
         const char* errorBody = "{\"error\":\"request_read_failed\"}";
         finishJsonError(request, hit, nullptr, 400, errorBody);
         recordHit(hit, errorBody);
         return ESP_OK;
     }
 
-    if (observe) {
-        char responseBody[kLastResponseCapacity];
-        forwardRequest(request, forwarded, forwardedLength, hit, responseBody, sizeof(responseBody));
-        free(forwarded);
-        recordHit(hit, responseBody);
-        return ESP_OK;
-    }
-
     char* body = static_cast<char*>(malloc(kPayloadCapacity));
     if (!body) {
-        free(forwarded);
         const char* errorBody = "{\"error\":\"no_memory\"}";
         finishJsonError(request, hit, nullptr, 500, errorBody);
         recordHit(hit, errorBody);
@@ -1162,11 +1303,20 @@ esp_err_t handleRequest(httpd_req_t* request) {
     strlcpy(checksum, gState.md5, sizeof(checksum));
     unlockState();
 
-    setStatusLine(request, 200);
+    char statusLine[32];
+    httpd_resp_set_status(request, formatStatusLine(200, statusLine));
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "X-Checksum", checksum);
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    const esp_err_t result = httpd_resp_send(request, body, bytes);
+    if (isChunkedRequest(request)) {
+        // esp_http_server does not de-chunk incoming Transfer-Encoding: chunked
+        // bodies, so close after replying to keep framing aligned.
+        httpd_resp_set_hdr(request, "Connection", "close");
+    }
+    // RFC 9110 / mitmproxy parity: HEAD gets Content-Length: <bytes> with no body.
+    const esp_err_t result = request->method == HTTP_HEAD
+        ? httpd_resp_send(request, nullptr, static_cast<ssize_t>(bytes))
+        : httpd_resp_send(request, body, static_cast<ssize_t>(bytes));
 
     hit.status = 200;
     hit.bytes = static_cast<uint32_t>(bytes);
@@ -1175,7 +1325,6 @@ esp_err_t handleRequest(httpd_req_t* request) {
     copyPrintable(reinterpret_cast<const uint8_t*>(body), bytes, hit.respHead, sizeof(hit.respHead));
     recordHit(hit, body);
     free(body);
-    free(forwarded);
     return result;
 }
 
@@ -1185,45 +1334,10 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     parseRequestMeta(request, hit, capture);
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
-    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
-    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
-    hit.reqBytes = static_cast<uint32_t>(request->content_len);
 
-    if (!upstreamReady()) {
-        discardRequestBody(request, 8192);
-        const char* errorBody = "{\"error\":\"upstream_unavailable\"}";
-        finishJsonError(request, hit, nullptr, 502, errorBody);
-        recordHit(hit, errorBody);
-        return ESP_OK;
-    }
-
-    if (request->content_len > kForwardBodyBytes) {
-        discardRequestBody(request, 8192);
-        const char* errorBody = "{\"error\":\"request_too_large\"}";
-        finishJsonError(request, hit, nullptr, 413, errorBody);
-        recordHit(hit, errorBody);
-        return ESP_OK;
-    }
-
-    char* body = static_cast<char*>(malloc(kForwardBodyBytes + 1));
-    size_t bodyLength = 0;
-    if (!drainRequestBody(request, body, kForwardBodyBytes + 1, bodyLength, capture)) {
-        free(body);
-        const char* errorBody = "{\"error\":\"request_read_failed\"}";
-        finishJsonError(request, hit, nullptr, 400, errorBody);
-        recordHit(hit, errorBody);
-        return ESP_OK;
-    }
-    strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
-    strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
-    strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
-    hit.reqBytes = capture.requestBytes;
-    strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
-
-    char responseBody[kLastResponseCapacity];
-    forwardRequest(request, body, bodyLength, hit, responseBody, sizeof(responseBody));
-    free(body);
-    recordHit(hit, responseBody);
+    // FLOW records do not overwrite gLastResponse, so avoid a stack buffer.
+    forwardRequest(request, capture, hit, nullptr, 0);
+    recordHit(hit, nullptr);
     return ESP_OK;
 }
 

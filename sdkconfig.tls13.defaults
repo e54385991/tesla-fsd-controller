@@ -46,7 +46,13 @@ CONFIG_LWIP_IPV4_NAPT=y
 #    max unbounded). mbedTLS 3.6 has no TLS 1.0/1.1 options; 1.2 is the floor.
 # The FSD mock needs the HTTPS server component for the 443 vehicle listener;
 # the 4567 mothership listener uses the plain httpd component.
+# Tesla JWT/cookie and browser headers routinely exceed IDF's 1024 B default
+# (causing 431 "Header fields are too long" before fsd_mock runs). In IDF 5.5
+# httpd scratch buffers are realloc'd on demand per request and freed on exit,
+# so 8192 B adds zero idle RAM overhead.
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=8192
+CONFIG_HTTPD_MAX_URI_LEN=1024
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=6144
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096

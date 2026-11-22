@@ -46,7 +46,7 @@ from pathlib import Path
 SNI_MAIN = "api-prd.vn.cloud.tesla.cn"
 SNI_ALT = "mothership.vn.teslamotors.com"
 FSD_MD5 = "bd262907ff9fb2709bb54f9d3e78d07d"
-FSD_LEN = 653
+FSD_LEN = 654
 VIN = "5YJ3E1EA7KF000001"
 
 FSD_PATHS = [
@@ -109,7 +109,9 @@ TESLA_HEADERS = {
     "X-Tesla-Client": "vehicle",
     "X-Tesla-Protocol": "1.0",
     "Cookie": "tesla_auth=probe; vin=" + VIN,
-    "Authorization": "Bearer PROBE-TOKEN",
+    # Realistic ~1.2 KB JWT Authorization header so the stress suite exercises
+    # headers well past ESP-IDF's old 1024 B default (regression guard for HTTP 431).
+    "Authorization": "Bearer " + ("eyJhbGciOiJSUzI1NiJ9." + "A" * 1150 + ".sig"),
 }
 
 
@@ -515,7 +517,7 @@ class Stress:
                 tls.close()
                 self.log("malformed", True, mkind=kind, note="partial HTTP closed")
             elif kind == "huge_header":
-                extra = {"X-Filler": "B" * 4096}
+                extra = {"X-Filler": "B" * 10240}
                 res = self.tls_request("GET", "/connectivity", extra_headers=extra, timeout=8)
                 self.log("malformed", True, mkind=kind, soft=not res.get("ok"),
                          status=res.get("status"), error=res.get("error"))

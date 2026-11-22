@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-CANONICAL_LEN = 653
+CANONICAL_LEN = 654
 CANONICAL_MD5 = "bd262907ff9fb2709bb54f9d3e78d07d"
 CANONICAL_FIELDS = 22
 SNI = "api-prd.vn.cloud.tesla.cn"

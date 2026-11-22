@@ -100,24 +100,38 @@ def check_tls_identity() -> None:
 
 
 def check_response_contract() -> None:
-    """TeslaDG/app/fsd_mock.py reply contract + RAM-only logging."""
+    """TeslaDG/app/fsd_mock.py reply contract + RAM-only logging + HTTP parity."""
     source = (ROOT / "src/fsd_mock.cpp").read_text()
+    mock_header = (ROOT / "include/mod_fsd_mock.h").read_text()
     for needle in (
         'httpd_resp_set_type(request, "application/json")',
         'httpd_resp_set_hdr(request, "X-Checksum", checksum)',
         'httpd_resp_set_hdr(request, "Cache-Control", "no-store")',
-        'setStatusLine(request, 200)',
+        'formatStatusLine(200, statusLine)',
         'const bool observe = mode() == Mode::Observe',
         'strlcpy(hit.kind, observe ? "OBSERVE" : "HIT"',
         'gHits[gHitWrite] = hit',
         'Handshake& handshake = gHandshakes[gHandshakeWrite]',
-        'esp_http_client_open(client, bodyLength)',
+        'esp_http_client_open(client, static_cast<int>(bodyLength))',
+        'esp_http_client_delete_header(client, "User-Agent")',
         'upstream_unavailable',
-        'constexpr size_t kForwardBodyBytes = 4096;',
+        'constexpr size_t kMaxForwardBodyBytes = 65536;',
+        'constexpr size_t kUpstreamBufferTxBytes = 4096;',
+        'HTTP_EVENT_ON_HEADER',
         'esp_http_client_fetch_headers(client)',
         'httpd_resp_send_chunk(request, buffer, read)',
+        'ESP_ERR_HTTPD_RESULT_TRUNC',
+        'isChunkedRequest(request)',
     ):
         assert needle in source, f"missing reply contract: {needle}"
+    # esp_http_client_get_header() reads outgoing request headers, not response headers.
+    code_lines = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("//"))
+    assert 'esp_http_client_get_header(' not in code_lines, (
+        "must capture upstream response headers via HTTP_EVENT_ON_HEADER, not esp_http_client_get_header()"
+    )
+    # Last-response preview must hold the full 654 B default payload without truncation.
+    m = re.search(r"kLastResponseCapacity\s*=\s*(\d+)", mock_header)
+    assert m and int(m.group(1)) >= 655, "kLastResponseCapacity too small for 654 B default payload"
     # Only removal of the old persisted logs is allowed; no append handles.
     assert 'open("/fsd_hits.jsonl"' not in source
     assert 'open("/fsd_handshake.log"' not in source
@@ -125,6 +139,88 @@ def check_response_contract() -> None:
     assert source.count('SPIFFS.remove("/fsd_handshake.log")') == 1
     # perform() consumes and discards the response body; must use streaming.
     assert 'esp_http_client_perform(client)' not in source
+
+
+def _extract_block(source: str, signature: str) -> str:
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 1
+    end = brace + 1
+    while depth:
+        depth += (source[end] == "{") - (source[end] == "}")
+        end += 1
+    if end < len(source) and source[end] == ";":
+        end += 1
+    return source[start:end]
+
+
+def check_upstream_header_capture() -> None:
+    """Compile and run UpstreamResponseHeaders + formatStatusLine under ASan/UBSan."""
+    cxx = shutil.which("c++")
+    if not cxx:
+        return
+    source = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted = "\n".join((
+        _extract_block(source, "const char* formatStatusLine("),
+        _extract_block(source, "struct UpstreamResponseHeaders {"),
+    ))
+    harness = r'''
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
+constexpr size_t kMaxForwardedRespHeaders = 14;
+constexpr size_t kMaxRespHeaderTotalBytes = 2048;
+''' + extracted + r'''
+int main() {
+    char buf[32];
+    assert(std::strcmp(formatStatusLine(200, buf), "200 OK") == 0);
+    assert(std::strcmp(formatStatusLine(204, buf), "204 No Content") == 0);
+    assert(std::strcmp(formatStatusLine(431, buf), "431") == 0);
+
+    UpstreamResponseHeaders h;
+    h.add("Content-Type", "application/json; charset=utf-8");
+    h.add("X-Checksum", "bd262907ff9fb2709bb54f9d3e78d07d");
+    h.add("Content-Encoding", "gzip");
+    h.add("Set-Cookie", "a=1; Path=/");
+    h.add("Set-Cookie", "b=2; Path=/");
+    // Hop-by-hop & framing headers must be skipped.
+    h.add("Transfer-Encoding", "chunked");
+    h.add("Content-Length", "123");
+    h.add("Connection", "keep-alive");
+    h.add("Keep-Alive", "timeout=5");
+    // CRLF header injection must be rejected.
+    h.add("X-Evil", "ok\r\nInjected: 1");
+    h.add("Bad\nName", "val");
+    assert(h.contentType && std::strcmp(h.contentType, "application/json; charset=utf-8") == 0);
+    assert(h.count == 4);
+    assert(std::strcmp(h.entries[0].key, "X-Checksum") == 0);
+    assert(std::strcmp(h.entries[1].key, "Content-Encoding") == 0);
+    assert(std::strcmp(h.entries[2].key, "Set-Cookie") == 0);
+    assert(std::strcmp(h.entries[3].value, "b=2; Path=/") == 0);
+
+    // Count cap must hold cleanly without leaks.
+    for (int i = 0; i < 30; ++i) {
+        char k[16];
+        std::snprintf(k, sizeof(k), "X-H-%d", i);
+        h.add(k, "value");
+    }
+    assert(h.count == kMaxForwardedRespHeaders);
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="fsd-hdr-") as tmp:
+        cpp = Path(tmp) / "hdr.cpp"
+        exe = Path(tmp) / "hdr"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        subprocess.run([str(exe)], check=True)
 
 
 def check_port_policy() -> None:
@@ -198,8 +294,15 @@ def check_tls_policy() -> None:
             f"{path.name}: IDF 4.4 has no TLS 1.3 option"
         )
     for path in tls13:
-        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" in path.read_text(), (
+        text = path.read_text()
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" in text, (
             f"{path.name}: TLS 1.3 must stay enabled"
+        )
+        assert "CONFIG_HTTPD_MAX_REQ_HDR_LEN=8192" in text, (
+            f"{path.name}: httpd header limit must stay >= 8192 to avoid HTTP 431 on JWT/browser headers"
+        )
+        assert "CONFIG_HTTPD_MAX_URI_LEN=1024" in text, (
+            f"{path.name}: httpd URI limit must stay >= 1024"
         )
 
     platformio = (ROOT / "platformio.ini").read_text()
@@ -209,6 +312,11 @@ def check_tls_policy() -> None:
     server = (ROOT / "src/client_config.cpp").read_text()
     mock = (ROOT / "src/fsd_mock.cpp").read_text()
     assert "config.user_cb = tlsUserCallback;" in server
+    assert "kFsdMaxReqHdrLen = 8192" in server
+    assert "config.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
+    assert "config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
+    assert "config.max_resp_headers = kFsdMaxRespHeaders;" in server
+    assert "config.httpd.max_resp_headers = kFsdMaxRespHeaders;" in server
     assert "mbedtls_ssl_get_version" in mock
 
 
@@ -275,6 +383,7 @@ def main() -> None:
     check_tls_identity()
     check_tls_policy()
     check_response_contract()
+    check_upstream_header_capture()
     check_port_policy()
     print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "
           f"TLS chain + reply contract + 443/10010 policy OK")

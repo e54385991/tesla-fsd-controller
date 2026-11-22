@@ -70,6 +70,20 @@ Logging differs in shape (PC logs FLOW for every request, then HIT/OBSERVE;
 ESP32 logs HIT for FSD hits and FLOW for passthrough), but the vehicle-visible
 response is the same.
 
+## HTTP parser, headers & body forwarding
+
+| Item | PC (`mitmproxy 12.3.1`) | ESP32-S3 |
+|---|---|---|
+| Request header total limit | 16 KB (`h11`) | 8 KB (`CONFIG_HTTPD_MAX_REQ_HDR_LEN=8192` + `max_req_hdr_len`, dynamic per-request realloc/free, 0 idle RAM) |
+| URI length limit | 16 KB shared | 1024 B (`CONFIG_HTTPD_MAX_URI_LEN=1024`) |
+| Upstream TX header buffer | unbounded | 4 KB (`kUpstreamBufferTxBytes=4096`) |
+| Upstream `User-Agent` | passes client header only | ESP-IDF default `ESP32 HTTP Client/1.0` stripped; forwards client header only |
+| Upstream response headers | all headers forwarded | all non-hop-by-hop headers captured via `HTTP_EVENT_ON_HEADER` (up to 14 headers / 2 KB, `max_resp_headers=16`) + `Content-Type` |
+| Request body forwarding | streamed | streamed in 512 B chunks up to 64 KB (`kMaxForwardBodyBytes=65536`) with no 4 KB heap copy |
+| `HEAD` / `204` / `304` framing | headers only, no body | `HEAD` on FSD reply sends `Content-Length: <bytes>` + 0 body bytes; upstream `HEAD`/`204`/`304`/empty sends clean `Content-Length: 0` |
+| Incoming `Transfer-Encoding: chunked` | de-chunked | replies normally and sets `Connection: close` so unconsumed chunk bytes cannot desync keep-alive |
+| Concurrency | multi-connection | `max_open_sockets=1`, `backlog_conn=1` (intentional ESP32-S3 RAM guard) |
+
 ## Certificates
 
 Verified with hashes and OpenSSL against mitmproxy 12.3.1

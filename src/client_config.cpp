@@ -225,6 +225,13 @@ static esp_err_t catchAll(httpd_req_t* request) {
     return fsd_mock::forwardPassthrough(request);
 }
 
+// Request/response limits shared by 443 and 4567 (TeslaDG mitmproxy parity).
+// IDF's default 1024 B header cap rejects real Tesla JWT/cookie headers and
+// browser probes with HTTP 431 ("Header fields are too long") before catchAll.
+static constexpr size_t kFsdMaxReqHdrLen = 8192;
+static constexpr size_t kFsdMaxUriLen = 1024;
+static constexpr size_t kFsdMaxRespHeaders = 16;
+
 // PC TeslaDG runs a second mitmproxy listener on 4567:
 //   reverse:http://<mothership-ip>:4567 + keep_host_header=true
 // The car's plaintext mothership requests land there, /feature_configuration
@@ -237,6 +244,9 @@ static bool startMothershipHttp() {
     config.ctrl_port = 32770;  // 443 TLS server uses ESP_HTTPD_DEF_CTRL_PORT+1 (32769)
     config.uri_match_fn = matchUri;
     config.max_uri_handlers = 8;
+    config.max_req_hdr_len = kFsdMaxReqHdrLen;
+    config.max_uri_len = kFsdMaxUriLen;
+    config.max_resp_headers = kFsdMaxRespHeaders;
     config.core_id = 0;
     config.stack_size = 8192;
     config.max_open_sockets = 1;
@@ -305,6 +315,9 @@ static bool startFsdHttps() {
     config.user_cb = tlsUserCallback;
     config.httpd.uri_match_fn = matchUri;
     config.httpd.max_uri_handlers = 8;
+    config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;
+    config.httpd.max_uri_len = kFsdMaxUriLen;
+    config.httpd.max_resp_headers = kFsdMaxRespHeaders;
     config.httpd.core_id = 0;
     config.httpd.stack_size = 10240;
     // One vehicle TLS socket at a time. A second concurrent car connection
