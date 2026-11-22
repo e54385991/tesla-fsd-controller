@@ -45,12 +45,10 @@
 
 | 环境 | 板子 / 用途 | 合并固件 | 说明 |
 |---|---|---|---|
-| `esp32` | 标准 ESP32 + SN65HVD230 | `esp32_v1.4.35.bin` | 仅 CAN，单路 TWAI |
-| `esp32-wifi` | 标准 ESP32 + Wi-Fi 桥接 | `esp32_wifi_v1.4.35.bin` | CAN + 桥接，完整 Web UI，无 443 FSD mock |
-| `esp32s3-waveshare` | Waveshare ESP32-S3-RS485-CAN | `esp32s3_waveshare_v1.4.35.bin` | 仅 CAN，S3 版 |
-| **`esp32s3-waveshare-wifi`** | **Waveshare ESP32-S3 Wi-Fi 桥接** | **`esp32s3_waveshare_wifi_v1.4.35.bin`** | **当前主力：桥接 + FSD 下发，不含 CAN 注入** |
+| `esp32-wifi` | 标准 ESP32 Wi-Fi 桥接 | `esp32_wifi_v1.4.35.bin` | 纯 Wi-Fi 桥接 + DNS 过滤，精简管理 UI，无 443 FSD 下发 |
+| **`esp32s3-waveshare-wifi`** | **Waveshare ESP32-S3 Wi-Fi 桥接** | **`esp32s3_waveshare_wifi_v1.4.35.bin`** | **主力固件：Wi-Fi 桥接 + DNS 过滤 + FSD 下发（TLS 1.3）** |
 
-> `esp32s3-waveshare-wifi` 定义了 `FSD_MOCK_ONLY`，不编译 TWAI、CAN 注入、BMS、灯光、空调、遥测、性能测试和服务模式，只保留 Wi-Fi 热点/上游、DNS 过滤、FSD 下发、`/fsd` 看板、client-config、OTA 与日志。
+> 仓库已完全移除历史 CAN 注入、TWAI 驱动、BMS/灯光/空调/GPS/性能遥测、服务模式及对应大体积页面，所有构建均专注 Wi-Fi 桥接、DNS 过滤、OTA 与日志（ESP32-S3 版另含按需启停的 FSD 下发与 client-config）。
 
 ---
 
@@ -292,10 +290,9 @@ mothership.vn.cloud.tesla.cn
 
 | 页面 | 路径 | 说明 |
 |---|---|---|
-| 管理页 | `/` | 精简版：AP、上游、DNS、FSD、OTA、日志 |
-| PC 风格 FSD 看板 | `/fsd` | 命中 / 握手 / 时间线 / 载荷字段编辑 |
-| 车机客户端配置 | `/client-config` | client-config JSON 发布 / 回滚 / 确认 |
-| 手机 / 车机完整 UI | `/`、`/car` | 仅 `esp32-wifi` / CAN 完整版 |
+| 管理页 | `/` | 精简版：AP、上游、DNS、FSD（S3）、OTA、日志 |
+| PC 风格 FSD 看板 | `/fsd` | 仅 S3 版：命中 / 握手 / 时间线 / 载荷字段编辑 |
+| 车机客户端配置 | `/client-config` | 仅 S3 版：client-config JSON 发布 / 回滚 / 确认 |
 
 ---
 
@@ -441,57 +438,37 @@ PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-5.5.5/bin/pip i
 
 ---
 
-## CAN 版本（历史 / 海外）
-
-CAN 版本仍保留在仓库中，适用于海外车辆或研究用途。
-
-> 🚫 不要接 OBD2：OBD2 经过网关隔离，修改后的报文到不了 Autopilot 电脑。必须接车辆内部 CAN（Model 3 / Y 常见为 X179 Pin 13/14，旧款 Model 3 为 X652 Pin 1/2）。
->
-> ⚠️ 接线位置仅对已验证的 Model 3 / Model Y 有效；其他车型必须查阅 Tesla 服务手册。
->
-> ⚠️ Waveshare ESP32-S3-RS485-CAN 的 120Ω 跳线默认在 `ON`，装车必须改到 `NC`，否则总线变 60Ω，会持续 bus-off。
-
-- 标准 ESP32 + SN65HVD230：CAN TX GPIO5，CAN RX GPIO4。
-- Waveshare ESP32-S3-RS485-CAN：CAN TX GPIO15，CAN RX GPIO16，支持 7–36V 供电。
-- 接线图：`images/wiring.svg`、`images/wiring_x652.svg`、`images/wiring_waveshare.svg`。
-- LEGACY 发帧细节：[docs/legacy-can.md](docs/legacy-can.md)。
-
----
-
 ## 项目结构
 
 ```text
 src/
-  main.cpp                入口：Wi-Fi AP/STA、Web 服务、OTA、CAN 任务
-  client_config.cpp       client-config 辅助实现
+  main.cpp                入口：Wi-Fi AP/STA、DNS 任务、Web 服务、OTA
+  client_config.cpp       client-config 与按需 443/4567 监听管理
   fsd_mock.cpp            FSD mock 状态 / 证书 / 回包实现
 
 include/
   fsd_version.h           固件版本
-  mod_wifi_bridge.h       STA↔AP 桥接、NAT、上游管理
-  mod_dns.h               DNS 黑白名单、IP 拦截缓存
+  mod_wifi_bridge.h       STA↔AP 桥接、NAT、事件驱动重连与上游管理
+  mod_dns.h               DNS 黑白名单、LRU 缓存、IP 拦截缓存
   mod_fsd_mock.h          FSD 下发状态与接口
   mod_client_config.h     client-config 发布 / 回滚
   mod_ota.h               在线 OTA
   mod_log.h               RAM / SPIFFS 日志
-  mod_thermal.h           S3 温度监控
+  mod_thermal.h           芯片温度监控与热回退
   lwip_hooks.h            lwIP 转发钩子
   fsd_tls_identity.h      443 证书链
-  web_ui.h                手机 / 桌面完整 UI
-  web_ui_car.h            车机大字号 UI（/car）
   web_ui_manage.h         Wi-Fi 精简管理页
-  web_ui_fsd.h            PC 风格 FSD 看板（/fsd）
+  web_ui_fsd.h            PC 风格 FSD 看板（/fsd，S3）
+  web_ui_client_config.h  client-config 页面（S3）
   web_ui_gz.h             构建时自动生成的 gzip 页面
-  handlers.h              CAN 报文分发（完整版）
-  mod_fsd.h / mod_bms.h / mod_telemetry.h / ...  CAN 遥测与注入模块
-  drivers/                TWAI 驱动
 
-platformio.ini            构建环境
+platformio.ini            构建环境（esp32-wifi / esp32s3-waveshare-wifi）
+idf_o2_compat.cmake       ESP-IDF 5.5 -O2 上游 esp-modbus 兼容钩子
 min_spiffs.csv            分区表
 compress_html.py          构建前压缩 HTML
 merge_firmware.py         构建后生成合并 / OTA 固件
 tools/client-config/      client-config 客户端脚本
-tests/                    DNS / CAN / UI 回归测试
+tests/                    DNS / Wi-Fi 桥接 / FSD 载荷回归测试
 ```
 
 ---

@@ -1,9 +1,7 @@
 #pragma once
 // ── Module: Diagnostic log ────────────────────────────────────────────────────
 // Circular text buffer, 80 entries × 96 chars = ~7.5 KB.
-// Written from canTask (Core1) and web task (Core0). Each addDiagLog call is a
-// single snprintf + two integer increments — no compound operation, safe on
-// ESP32 Xtensa without a mutex.
+// Written from Core 0/Core 1 tasks under diagMux critical section.
 //
 // Usage:
 //   addDiagLog(uptime_s, "FSD triggered");   // plain string

@@ -37,22 +37,22 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 <header>
   <h1>FSD Wi-Fi Bridge</h1>
   <span class="badge" id="bUp">上游：--</span>
-  <span class="badge" id="bFsd">FSD：--</span>
+  <span class="badge fsd-only" id="bFsd">FSD：--</span>
   <span class="dim" id="bHeap"></span>
-  <a class="btn" href="/fsd">PC 风格 FSD 看板</a>
-  <a class="btn" href="/client-config">车机客户端配置</a>
+  <a class="btn fsd-only" href="/fsd">PC 风格 FSD 看板</a>
+  <a class="btn fsd-only" href="/client-config">车机客户端配置</a>
   <a class="btn" href="/api/log" target="_blank">系统日志</a>
 </header>
 <div class="wrap">
   <div class="card" style="margin-bottom:12px;border-color:#238636">
-    <div class="k">ESP32-S3 Wi-Fi 桥接版</div>
-    <div style="font-size:13px;margin-top:4px">本固件只保留 Wi-Fi 热点/上游、DNS 过滤与 FSD 下发。旧 CAN 注入、DAS/灯光/空调/BMS/GPS/性能遥测及对应页面已从固件中移除。</div>
+    <div class="k">Wi-Fi 桥接版</div>
+    <div style="font-size:13px;margin-top:4px">本固件专注 Wi-Fi 热点/上游桥接、DNS 过滤、OTA 与日志（ESP32-S3 版含按需启停的 FSD 下发与客户端配置）。CAN 注入功能已完全移除。</div>
   </div>
   <div class="grid">
     <div class="card"><div class="k">AP</div><div class="v s"><span id="apSsid">--</span><br><span class="dim"><span id="apIp">--</span> · 信道 <span id="apCh">--</span> · <span id="apSta">0</span> 客户端</span></div></div>
     <div class="card"><div class="k">上游</div><div class="v s"><span id="upSsid">--</span><br><span class="dim" id="upIp">--</span></div></div>
-    <div class="card"><div class="k">FSD 载荷</div><div class="v s" id="fsdPayload">--</div></div>
-    <div class="card"><div class="k">FSD 命中 / DNS 重定向</div><div class="v" id="fsdHits">--</div></div>
+    <div class="card fsd-only"><div class="k">FSD 载荷</div><div class="v s" id="fsdPayload">--</div></div>
+    <div class="card fsd-only"><div class="k">FSD 命中 / DNS 重定向</div><div class="v" id="fsdHits">--</div></div>
     <div class="card"><div class="k">DNS 拦截</div><div class="v s" id="dnsBlkCard">--</div></div>
     <div class="card"><div class="k">Heap / Min</div><div class="v s" id="heapCard">--</div></div>
     <div class="card"><div class="k">Reset reason</div><div class="v s" id="resetCard">--</div></div>
@@ -109,7 +109,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="msg" id="dnsMsg"></div>
   </div></section>
 
-  <section><h2>FSD 下发</h2><div class="body">
+  <section class="fsd-only"><h2>FSD 下发</h2><div class="body">
     <label><input type="checkbox" id="fsdEn"> 启用 FSD mock（/feature_configuration）</label>
     <label>模式</label><select id="fsdMode"><option value="reply">reply（本地回包）</option><option value="observe">observe（只记录并转发）</option></select>
     <button class="primary" id="fsdSave">保存 FSD 设置</button>
@@ -153,7 +153,8 @@ async function getJson(u){return JSON.parse(await getText(u));}
 async function refresh(){
   if(document.hidden||busy)return;busy=true;
   try{
-    var d=await getJson('/api/wifi-bridge/status'), f=d.fsdMock||{};
+    var d=await getJson('/api/wifi-bridge/status'), hasFsd=!!d.fsdMock, f=d.fsdMock||{};
+    document.querySelectorAll('.fsd-only').forEach(function(el){el.style.display=hasFsd?'':'none';});
     document.getElementById('bUp').textContent='上游：'+(d.upstreamConnected?(d.upstreamSSID||'已连接'):'未启用');
     document.getElementById('bUp').className='badge '+(d.upstreamConnected?'ok':'');
     document.getElementById('bFsd').textContent='FSD：'+(f.enabled?'开':'关')+' / '+(f.mode||'--');

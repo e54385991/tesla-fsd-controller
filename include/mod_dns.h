@@ -1,9 +1,8 @@
 #pragma once
 // ── DNS whitelist/blacklist module ────────────────────────────────────────────
 // Compiled only when WIFI_BRIDGE_ENABLED. Single-TU: main.cpp defines
-// MOD_DNS_IMPLEMENTATION before including this (via handlers.h in CAN builds,
-// or directly in FSD_MOCK_ONLY builds) so the definition compiles exactly
-// once in main.cpp's TU.
+// MOD_DNS_IMPLEMENTATION before including this so the definition compiles
+// exactly once in main.cpp's TU.
 //
 // This header is ALSO included from IDF lwIP C code via lwip_hooks.h — from
 // that side only the extern "C" declarations are visible (no Arduino/WiFi.h).
@@ -148,7 +147,7 @@ class DNSWhitelistServer {
 #endif // __cplusplus
 
 // ── Implementation ────────────────────────────────────────────────────────────
-// Defined once in the main TU (handlers.h sets MOD_DNS_IMPLEMENTATION before
+// Defined once in the main TU (main.cpp sets MOD_DNS_IMPLEMENTATION before
 // including this header). All internal helpers are `static` to keep linkage
 // private to this TU.
 #ifdef MOD_DNS_IMPLEMENTATION
@@ -1349,19 +1348,11 @@ void dnsFilterUpdateConfig(DNSFilterConfig& cfg, bool hasEnable, bool enabled,
 }
 #endif
 
-// The IP-blocker gate used to read the injected CAN settings struct. In the
-// Wi-Fi/FSD-mock build that struct no longer exists, so keep a local flag
-// there (default OFF) and defer to cfg in full CAN builds.
-#ifdef FSD_MOCK_ONLY
-// The FSD-mock build has no FSDConfig struct. Keep the flag here instead;
-// Wi-Fi bridge config load/save persists it as NVS key "ub_ipBlk".
+// Runtime IP-layer blocker gate (default OFF for hot-path throughput).
+// Wi-Fi bridge config load/save persists this flag as NVS key "ub_ipBlk".
 static volatile bool gDnsIpBlockerEnabled = false;
 static inline bool dnsIpBlockerEnabled() { return gDnsIpBlockerEnabled; }
 static inline void dnsIpBlockerSetEnabled(bool enabled) { gDnsIpBlockerEnabled = enabled; }
-#else
-static inline bool dnsIpBlockerEnabled() { return cfg.ipBlockerEnabled; }
-static inline void dnsIpBlockerSetEnabled(bool enabled) { cfg.ipBlockerEnabled = enabled; }
-#endif
 
 // ── C-linkage entry points (visible to lwIP hook) ────────────────────────────
 extern "C" void dnsIpPolicyService(const char* allowlistRules, const char* blocklistRules, int rulesEnabled, int upstreamReady) {

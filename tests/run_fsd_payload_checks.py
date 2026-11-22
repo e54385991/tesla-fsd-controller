@@ -159,7 +159,7 @@ def check_port_policy() -> None:
     # the v4 api-prd-only default.
     assert "mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn" in bridge
     assert "kTeslaMinBlockV5" in bridge
-    for path in ("include/web_ui.h", "include/web_ui_car.h", "include/web_ui_manage.h"):
+    for path in ("include/web_ui_manage.h",):
         text = (ROOT / path).read_text()
         assert "mothership.vn.teslamotors.com" in text, f"{path}: missing mothership blocklist entry"
         assert "mothership.vn.cloud.tesla.cn" in text, f"{path}: missing mothership blocklist entry"

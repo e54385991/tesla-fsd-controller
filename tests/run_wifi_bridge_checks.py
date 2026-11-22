@@ -51,6 +51,9 @@ def check_static_contracts() -> None:
 
     pio = (ROOT / "platformio.ini").read_text()
     assert pio.count("-DIP_NAPT_TIMEOUT_MS_UDP=30000") == 4, "All 4 bridge envs must set 30s NAPT UDP timeout"
+    assert "TWAI_" not in pio, "CAN TWAI pins must be removed from platformio.ini"
+    assert "[env:esp32]" not in pio and "[env:esp32s3-waveshare]" not in pio, "CAN-only envs must be removed"
+    assert "DNSServer" not in MAIN_SRC and "driver/twai.h" not in MAIN_SRC and "canTask" not in MAIN_SRC
 
     s3_cfg = (ROOT / "sdkconfig.esp32s3-waveshare-wifi").read_text()
     for needle in (
@@ -67,6 +70,9 @@ def check_static_contracts() -> None:
         "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y",
     ):
         assert needle in s3_cfg, f"sdkconfig.esp32s3-waveshare-wifi missing {needle}"
+
+    esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
+    assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"
 
 
 PREAMBLE = r'''

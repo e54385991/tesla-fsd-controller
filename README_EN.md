@@ -2,466 +2,60 @@
 
 <p align="right">English | <a href="README.md">中文</a></p>
 
-> ## 🚫 Notice: This project no longer works on China-region vehicles
->
-> Since approximately **March 31, 2026 at 9 PM**, Tesla remotely pushed a low-level configuration to China-region vehicles that disables FSD-related functionality at the chip level. **CAN bus modifications can no longer bypass this restriction — this project no longer works on China-region vehicles.**
->
-> Note: Your **FSD account authorization is not affected**. Any purchased or subscribed FSD entitlement remains valid; only this mod is ineffective.
->
-> Vehicles outside China are currently unaffected. The codebase is preserved for educational, research, and international use.
+## Overview
+
+This firmware turns an ESP32 or ESP32-S3 into a dedicated **Wi-Fi Bridge + DNS Filter** (plus an on-demand **FSD `/feature_configuration` mock server** on ESP32-S3):
+
+1. **Wi-Fi Bridge (AP + STA + NAPT)**: Connects to a phone hotspot or router (STA) and creates a dedicated AP (`fsd-esp32`, `9.9.9.9/24`) for the vehicle.
+2. **DNS Allowlist / Blocklist + LRU Cache**: Advertises `9.9.9.9` via DHCP DNS, enforces allowlist/blocklist policy with a 32-entry LRU cache, and optionally drops blocked IPs at the lwIP forwarding hook.
+3. **On-Demand FSD Delivery (ESP32-S3)**: Disabled by default to maximize heap headroom for Wi-Fi/NAPT; toggle ON from the web UI (`/`) or `/fsd` panel to start the 443 HTTPS (TLS 1.2/1.3) and 4567 HTTP listeners without rebooting.
+
+> Legacy CAN bus injection, TWAI drivers, vehicle telemetry dashboards, and CAN-only build environments have been completely removed from this repository to save Flash/RAM and dedicate Core 1 to lwIP + DNS.
 
 ---
 
-ESP32 + WiFi web panel build based on [ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools) (formerly tesla-open-can-mod).
+## Firmware Builds
 
-After flashing, the ESP32 creates a WiFi hotspot. Connect with your phone and control all parameters in real time from a browser — **no reprogramming required**.
+Each environment produces two files in the repository root:
 
----
+- **`<env>_v1.4.35.bin`** — merged binary (bootloader + partitions + app) for first-time USB flashing at `0x0`.
+- **`<env>_v1.4.35_ota.bin`** — app-only binary for Web OTA upload or GitHub Releases pull updates.
 
-## vs. Commercial Closed-Source Modules
-
-Closed-source FSD activation modules sell for around ¥500. Here's the full comparison:
-
-### Feature Comparison
-
-| Feature | Commercial Module | This Project |
-|---------|------------------|--------------|
-| FSD activation (HW3 / HW4 / Legacy) | ✅ | ✅ |
-| Speed offset | ✅ | ✅ |
-| Driving mode adjustment | ✅ | ✅ |
-| Scroll wheel speed control | ✅ | ✅ |
-| Force Activate mode | ✅ | ✅ |
-| Web control panel | ❌ | ✅ |
-| OTA firmware update | ❌ | ✅ |
-| Open source / auditable | ❌ | ✅ |
-| Affected by 2026.2.9 ban | Same | Same |
-
-### Other Differences
-
-| | Commercial Module | This Project |
-|--|--|--|
-| **Cost** | ¥500 | ¥30–99 (hardware only) |
-| **Source code** | Closed black box, unverifiable | Fully open source, GPL |
-| **Runtime configuration** | Usually requires reflashing | Web panel, persists across reboots |
-| **Per-vehicle lock** | Yes (repurchase if you change cars) | No, universal firmware |
-| **Chip** | Proprietary, opaque | Standard ESP32, public specs |
-| **Installation** | Plug and play | Self-wiring + flashing required |
-
-> This project is free and fully open. If you're willing to do it yourself, total hardware cost is under ¥100.
+| Environment | Target | Merged Binary | Notes |
+|---|---|---|---|
+| `esp32-wifi` | Standard ESP32 | `esp32_wifi_v1.4.35.bin` | Pure Wi-Fi bridge + DNS filter, lean web UI (port `80`), no 443 FSD mock |
+| **`esp32s3-waveshare-wifi`** | **Waveshare ESP32-S3** | **`esp32s3_waveshare_wifi_v1.4.35.bin`** | **Primary build: Wi-Fi bridge + DNS filter + on-demand FSD mock (TLS 1.3), management on port `10010`** |
 
 ---
 
-## ⚡ Quick Flash (Recommended — no software install needed)
+## Quick Start
 
-> Uses a pre-built binary. Done entirely in the browser in under 5 minutes.
-
-### Step 1: Download the firmware for your board
-
-> Two firmware files are provided per board — use the right one for the right purpose:
-> - **`<env>_v1.4.35.bin`** (merged binary) → first-time flash via ESP Web Flasher at address `0x0`
-> - **`<env>_v1.4.35_ota.bin`** (OTA binary) → wireless updates via the web panel "OTA Update" card, or let the device pull from GitHub automatically
->
-> For the newest assets, see the [**releases page**](../../releases/latest).
-
-| Board | Merged firmware | OTA firmware | Notes |
-|-------|----------|----------|-------|
-| Standard ESP32 + SN65HVD230 | `esp32_v1.4.35.bin` | `esp32_v1.4.35_ota.bin` | CAN only, 5V USB |
-| **Waveshare ESP32-S3-RS485-CAN** | `esp32s3_waveshare_v1.4.35.bin` | `esp32s3_waveshare_v1.4.35_ota.bin` | CAN only, **7–36V direct** |
-| ESP32 CAN + Wi-Fi bridge | `esp32_wifi_v1.4.35.bin` | `esp32_wifi_v1.4.35_ota.bin` | CAN + bridge, full web UI |
-| **Waveshare ESP32-S3 Wi-Fi bridge** | `esp32s3_waveshare_wifi_v1.4.35.bin` | `esp32s3_waveshare_wifi_v1.4.35_ota.bin` | **Current main build: bridge + FSD delivery, no CAN** |
-
-### Step 2: Flash the firmware
-
-1. Open [ESP Web Flasher](https://esp.huhn.me/) in **Chrome or Edge**
-2. Connect the board via **Type-C** → click **Connect** and select the serial port
-3. Click **Add File**, select the downloaded firmware, set address to `0x0`
-4. Click **Program** and wait for completion
-5. Connect to the `fsd-esp32` WiFi hotspot (password: `88888888`), then open `9.9.9.9`
-
-> ⚠️ Safari does not support WebUSB. Use Chrome or Edge.
->
-> **Waveshare ESP32-S3 — entering flash mode:** Hold the **BOOT** button, press and release **RST**, then release BOOT. Click Connect and select the port from the popup. The board will reboot automatically after flashing.
-
-<p align="center">
-  <img src="images/screenshot_zh.jpg" width="45%" alt="Web UI - Chinese">
-  &nbsp;&nbsp;
-  <img src="images/screenshot_en.jpg" width="45%" alt="Web UI - English">
-</p>
+1. Flash `esp32s3_waveshare_wifi_v1.4.35.bin` at `0x0` via [ESP Web Flasher](https://esp.huhn.me/) or `esptool`.
+2. Connect to Wi-Fi **`fsd-esp32`** (default password **`88888888`**).
+3. Open **`http://9.9.9.9:10010/`** (or `http://fsd.local:10010/`; port `80` on `esp32-wifi`).
+4. Add your phone hotspot / router under **Upstream Wi-Fi**, verify the status turns **Connected**, then connect the vehicle to `fsd-esp32`.
 
 ---
 
-## ⚠️ Important Disclaimer (Read before use)
+## Building from Source
 
-1. **FSD purchase required** — This device only unlocks a CAN-level restriction. A valid FSD authorization on your Tesla account is required; without it the device has no effect.
-2. **Use at your own risk** — The CAN bus connects directly to critical vehicle systems. Incorrect frames could cause unexpected behavior or damage to electronic components. This project is for educational and testing purposes only. The author accepts no liability for vehicle damage, personal injury, or any other loss resulting from use.
-3. **Warranty void** — Modifying your vehicle's CAN bus may void the Tesla factory warranty. The user bears all associated risks.
-4. **Comply with local laws** — Use of driver-assistance features on public roads must comply with local traffic regulations. Some features may be legally restricted in certain regions.
-5. **Accident liability** — Any traffic accidents occurring while using this device — including collisions, property damage, or personal injury — are the sole responsibility of the driver. The author and contributors accept no liability. Always remain attentive, keep hands on the wheel, and be ready to take control at any time.
-6. **Test privately first** — On first use, test in a private location to confirm correct operation before driving on public roads.
+```sh
+# Primary ESP32-S3 Wi-Fi Bridge + FSD Mock
+pio run -e esp32s3-waveshare-wifi
 
----
+# Standard ESP32 Wi-Fi Bridge
+pio run -e esp32-wifi
 
-## Hardware Required
-
-### Option A: Standard ESP32 Dev Board (entry-level)
-
-| Component | Notes | Approx. Cost |
-|-----------|-------|--------------|
-| ESP32 Dev Board | Search "ESP32-DevKitC" or "ESP32 38-pin dev board" | $3–6 |
-| SN65HVD230 Module | CAN transceiver — **must be the 3.3V version** | $1–3 |
-| Dupont wires (F-F) | Female-to-female, 20 cm, get a pack | $1 |
-| USB cable | Micro-USB or Type-C depending on your ESP32 model, for flashing | Usually on hand |
-
-> **Why ESP32?** Built-in WiFi and native CAN (TWAI) controller — no extra chips needed, lowest cost.
-
-### Option B: Waveshare ESP32-S3-RS485-CAN (recommended for permanent in-car install)
-
-| Component | Notes | Approx. Cost |
-|-----------|-------|--------------|
-| **Waveshare ESP32-S3-RS485-CAN** | [Taobao link](https://m.tb.cn/h.iGU3p56) — integrated CAN transceiver, DIN rail enclosure, 7–36V wide-voltage input | ~$14 |
-| Type-C USB cable | For flashing or USB-C in-car power | Usually on hand |
-
-> **Why this board?** Two power options: **connect directly to car 12V** (7–36V wide-voltage terminal, no buck converter needed) or **power via USB-C**. CAN transceiver built-in (TJA1051T), screw terminal connections (no Dupont wires), DIN rail enclosure for hidden in-car mounting. 120Ω termination resistor is NC by default — no action needed.
-
----
-
-## Wiring
-
-> 🚫 **Do NOT use the OBD2 port.** The OBD2 diagnostic port connects to a separate diagnostic CAN bus that is isolated by the vehicle's gateway ECU. Modified frames will **never reach the Autopilot computer**. You must connect directly to the internal CAN bus via the X179 or X652 connector.
->
-> ⚠️ **The connector locations below are verified for Model 3 / Model Y only.** Model S, Model X, Model 3 Highland, Model Y Juniper, Cybertruck, and other variants use different connectors — do not assume they are the same. Always consult the official Tesla service manual for your vehicle.
->
-> - **Model 3 / Model Y (2021 and later):** <a href="https://service.tesla.com/docs/Model3/ElectricalReference/prog-233/connector/x179/" target="_blank" rel="noopener">X179 connector</a> — Pin 13 (CAN-H) / Pin 14 (CAN-L)
-> - **Model 3 (2020 and earlier):** <a href="https://service.tesla.com/docs/Model3/ElectricalReference/prog-187/connector/x652/" target="_blank" rel="noopener">X652 connector</a> — Pin 1 (CAN-H) / Pin 2 (CAN-L)
->
-> When in doubt, consult the Tesla service manual before touching any wiring.
-
----
-
-### Option A: Standard ESP32 + SN65HVD230
-
-**Model 3 / Model Y 2021 and later (X179):**
-![Wiring diagram X179](images/wiring.svg)
-
-**Model 3 2020 and earlier (X652):**
-![Wiring diagram X652](images/wiring_x652.svg)
-
-#### ESP32 ↔ SN65HVD230
-
-```
-ESP32 GPIO 5  →  SN65HVD230 TX  (may be labeled CTX or D)
-ESP32 GPIO 4  →  SN65HVD230 RX  (may be labeled CRX or R)
-ESP32 3.3V    →  SN65HVD230 VCC
-ESP32 GND     →  SN65HVD230 GND
+# Host regression tests
+python3 tests/run_dns_checks.py
+python3 tests/run_wifi_bridge_checks.py
+python3 tests/run_fsd_payload_checks.py
 ```
 
-#### SN65HVD230 ↔ Vehicle CAN Bus
-
-```
-SN65HVD230 CANH  →  Vehicle CAN-H  (typically white/brown wire)
-SN65HVD230 CANL  →  Vehicle CAN-L  (typically blue/green wire)
-```
-
----
-
-### Option B: Waveshare ESP32-S3-RS485-CAN (recommended for permanent in-car install)
-
-![Wiring diagram Waveshare](images/wiring_waveshare.svg)
-
-Only 4 wires, all screw-terminal connections:
-
-```
-Car 12V (fuse box ACC circuit)  →  Board left terminal VCC+
-Car GND                         →  Board left terminal GND
-Vehicle CAN-H (X179 Pin 13)    →  Board right terminal CAN H
-Vehicle CAN-L (X179 Pin 14)    →  Board right terminal CAN L
-```
-
-> - **No** SN65HVD230 module needed — CAN transceiver is integrated (TJA1051T)
-> - **No** termination resistor action needed — 120Ω is NC by default
-> - **No** USB power in car — connect directly to vehicle 12V ACC (cuts off with ignition)
-
----
-
-## Step 1: Install Software
-
-![Compile and flash steps](images/compile-steps.svg)
-
-### 1.1 Install VS Code
-
-1. Go to [https://code.visualstudio.com](https://code.visualstudio.com), download and install.
-2. Open VS Code after installation.
-
-### 1.2 Install the PlatformIO Extension
-
-1. Click the **Extensions** icon in the left sidebar (four squares).
-2. Search for `PlatformIO IDE` and click **Install**.
-3. After installation a house icon appears in the bottom status bar (you may need to restart VS Code).
-
-> **Slow install?** PlatformIO downloads the ESP32 toolchain on first launch (~200–500 MB). Keep your network connection stable and wait.
-
----
-
-## Step 2: Download and Open the Project
-
-1. Click the green **Code** button at the top of this page and select **Download ZIP**.
-2. Extract to any folder, e.g. `C:\tesla-fsd`.
-3. In VS Code, go to **File → Open Folder** and select the extracted folder.
-4. If prompted "Do you trust the authors?", click **Yes, I trust the authors**.
-
----
-
-## Step 3: Configuration
-
-> **No code changes required before flashing.** WiFi name/password and hardware version can both be changed after flashing via the web panel. Settings are saved automatically.
-
-### 3.1 Change WiFi Hotspot Name and Password
-
-**Recommended (change via web panel after flashing):**
-
-1. After flashing, connect to the default hotspot `fsd-esp32` (password `88888888`).
-2. Open `9.9.9.9` in your browser. Go to the **WiFi Settings** card, enter a new name and password.
-3. Click **Save & Restart**. Reconnect using the new credentials.
-
-**Alternative (edit source before flashing):**
-
-Open `src/main.cpp` and find lines 20–21:
-
-```cpp
-static char apSSID[33] = "fsd-esp32";
-static char apPass[64] = "88888888";
-```
-
-Change the quoted values to your preferred name and password (minimum 8 characters).
-
-### 3.2 Know Your Hardware Version
-
-**No code changes needed.** After flashing, select the hardware version from the **Hardware** dropdown in the web panel. The setting is saved to flash and persists across reboots.
-
-Identify your version before connecting so you can select it immediately:
-
-| Display in car | Firmware version | FSD version | Panel selection |
-|----------------|-----------------|-------------|-----------------|
-| HW4.x | 2026.2.9.x or newer | V14 | `HW4` |
-| HW4.x | 2026.8.x or older | V13 | `HW3` ⚠️ |
-| HW3.x | Any | — | `HW3` |
-| HW2.5 or older | Any | — | `LEGACY` |
-
-> ⚠️ **HW4 hardware + V13 firmware must use `HW3` mode.** HW4 mode is designed for FSD V14 and causes intermittent behavior on V13 firmware. Check your firmware version under **Controls → Software** in the car.
-
-> **How to tell HW2.5 from HW3?** Go to **Software → Additional Vehicle Information** in the car. If you see "Full Self-Driving Computer" listed → HW3. If not → HW2.5, select `LEGACY`. Most vehicles from mid-2019 onward are HW3, but HW2.5 also exists for the same year — always check the car's display to be sure.
-
----
-
-## Step 4: Flash Firmware
-
-### Connect the ESP32
-
-Connect the ESP32 to your computer with a USB cable.
-
-### Flash via VS Code
-
-1. Click **✓ Build** in the bottom status bar to compile and confirm no errors.
-2. Click **→ Upload** to flash.
-3. The terminal will show `success` when complete.
-
-> **Upload failed?**
-> - Check that your USB cable supports data transfer (charge-only cables won't work).
-> - Click the port selector in the status bar and confirm the correct COM port is selected.
-> - Some ESP32 boards require holding the **BOOT** button until the upload progress bar appears.
-
----
-
-## Step 5: Using the Control Panel
-
-### 5.1 Connect to WiFi
-
-1. Power the ESP32 (USB power bank or any USB power source).
-2. On your phone, find `fsd-esp32` (or your custom name) in WiFi settings and connect.
-3. Open `9.9.9.9` in your phone's browser.
-
-For the Waveshare ESP32-S3 Wi-Fi bridge firmware built from the current source, open the control panel at `http://9.9.9.9:10010/` or `http://fsd.local:10010/`. The previous home page address redirects to the new port.
-
-### 5.2 Control Panel Reference
-
-| Setting | Description |
-|---------|-------------|
-| **FSD Enable** | Stops FSD and Legacy speed-limit/offset rewrites at the next input-frame boundary when off; high-beam control is independent |
-| **Hardware** | Match to your vehicle hardware (can be changed at runtime) |
-| **Speed Profile** | Controls how aggressively FSD drives — see table below |
-| **Profile Source** | Auto (Stalk) = follow-distance stalk controls the profile; Manual = fixed to the dropdown selection |
-| **ISA Chime Suppress** | Suppresses ISA speed-limit chime (HW4 only) |
-| **Emergency Detection** | Enables emergency vehicle detection (HW4 FSD V14 only) |
-| **Force Activate** | Required for regions where "Traffic Light and Stop Sign Control" is hidden in the car UI (China, Japan, etc.). Without this, the trigger condition (`UI_fsdStopsControlEnabled` bit) is always 0 and the device has no effect. Enabling this bypasses the check and activates FSD directly. |
-| **WiFi Settings** | Change the hotspot SSID and password. Click Save & Restart — the device reboots with the new credentials. |
-
-### 5.3 Speed Profile Reference
-
-| Profile | HW3 display | HW4 display |
-|---------|-------------|-------------|
-| Chill | ❄️ Chill | ❄️ Chill |
-| Default | 🟢 Normal | 🟢 Normal |
-| Moderate | ⚡ Hurry | ⚡ Hurry |
-| Aggressive | — | 🔥 Max (fastest) |
-| Maximum | — | 🐢 Sloth (slowest) |
-
-> Follow-distance stalk: lower number = more aggressive; higher number = more conservative.
-
-### 5.4 Status Monitor
-
-The status card updates in real time:
-- **Modified** — CAN frames modified since boot (> 0 means the device is working)
-- **Received** — total CAN frames received
-- **Errors** — CAN bus error count (should be 0)
-- **Uptime** — time since last boot
-- **CAN Bus** — OK means successfully connected to the vehicle CAN bus
-- **FSD Triggered** — Yes means FSD has been activated
-
-### 5.5 FSD Payload Delivery (feature_configuration)
-
-The `esp32s3-waveshare-wifi` build implements the same hotspot chain as the TeslaDG Windows package, enabled by default:
-
-1. **DNS**: `api-prd.vn.cloud.tesla.cn` and any `mothership.*` host (including `mothership.vn.teslamotors.com` and `mothership.vn.cloud.tesla.cn`) resolve to the ESP32 AP address `9.9.9.9` (A record; AAAA and other types return an empty answer), matching `dns_sink.py --redirect` plus arp_mitm.py's `mothership.` prefix.
-2. **Port 443 TLS / 4567 HTTP**: any request path matching `/feature_configuration` (optional trailing slash, query, or fragment; optional VIN prefix) returns `200 OK` with `Content-Type: application/json`, `X-Checksum: md5(compact body)`, `Cache-Control: no-store`, and the current payload.
-3. **Other paths** are reverse-proxied exactly like the PC listeners: 443 → `https://api-prd.vn.cloud.tesla.cn` (Host rewritten to api-prd), 4567 → `http://mothership.vn.teslamotors.com:4567` (car's Host preserved).
-
-The default payload is byte-for-byte `TeslaDG/app/payload.json` (602 B, md5 `241cb01b81a2b9c8b9f389a471bcbc94`, 20 fields). The panel also offers `payload-16f.json` (476 B, `b61035d9dea38e737fbf8195ccb39f2c`) and `payload-282b.json` (282 B, `c212a75ca858750ac302093c138991f2`). Note: `fsd_mock.py`'s built-in `DEFAULT_PAYLOAD` has the same 9 fields in a different order (md5 `104ccde7d817ab00667f2d98326259ec`); the Windows launcher always loads `payload.json`, so the 602 B file is the effective default.
-
-**Ports**: the management panel and the optional client-config page/API stay on `http://9.9.9.9:10010/` (`/client-config`, `/api/client-config`); port `443` is reserved for FSD delivery over TLS (the catch-all replies to `/feature_configuration` and reverse-proxies every other vehicle path to `https://api-prd.vn.cloud.tesla.cn`). Port `4567` mirrors TeslaDG `svc/stack.py`'s plaintext mothership reverse listener: `/feature_configuration` is answered locally, everything else is forwarded to `http://mothership.vn.teslamotors.com:4567` while keeping the car's Host header. Keeping client-config on the management server avoids a second HTTPS task/socket (~40 KB heap). Only one vehicle TLS socket is kept on 443; when the upstream is offline, non-FSD paths return `502 {"error":"upstream_unavailable"}` and close immediately instead of allocating a second upstream TLS context. Disabling upstream also forces the AP back to fixed channel 1.
-
-**Certificates**: port 443 uses the same eMudhra material as Windows `--emudhra`, not the self-signed mitmproxy CA. The three intermediate/root certificates and the private key in `include/fsd_tls_identity.h` are byte-for-byte identical to mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` (`EM OV TLS CA - G3C` → `emSign Root TLS CA - G3` → `emSign ECC Root CA - G3`, including the AAA Certificate Services cross-sign). Windows mitmproxy generates a short-lived leaf per SNI at runtime; the ESP32 serves one static leaf built the same way (`dummy_cert()`: compromised `EM OV TLS CA - G3C` key pair/public key, `CN=api-prd.vn.cloud.tesla.cn, O=Tesla Inc.`, EKU/AKI, SANs) with the `certs2` validity window (2026-11-07 → 2036-11-04). The SAN set includes both `mothership.vn.teslamotors.com` and `mothership.vn.cloud.tesla.cn`, plus `fsd.local`, `9.9.9.9`, and `127.0.0.1`; a byte-identical dynamic leaf is not possible on the static server, but the chain, key, and validation result match. The car normally trusts the emSign root, so no certificate installation is needed; if it does not, install the exported `EM OV TLS CA - G3C` intermediate. The leaf private key is public in this repository (compromised eMudhra intermediate), lab use only.
-
-**TLS version**: TeslaDG's vehicle-facing listener is mitmproxy 12.3.1, whose defaults are `tls_version_client_min=TLS1_2` (the upstream side uses the same TLS1_2 floor via `tls_version_server_min`) with an unbounded maximum, so it negotiates **TLS 1.3** whenever the car offers it (the "TLS1.3 + HTTP/2" label in `fsd_panel.py` is a fixed HTTP/2-based assumption; read the `tls` field in the handshake log for the real version). The Waveshare ESP32-S3 Wi-Fi build now uses **Arduino 3.3.12 / ESP-IDF 5.5.5 / mbedTLS 3.6**; `sdkconfig.tls13.defaults` enables both `CONFIG_MBEDTLS_SSL_PROTO_TLS1_2` and `CONFIG_MBEDTLS_SSL_PROTO_TLS1_3`. The floor is TLS 1.2, so the car negotiates **TLS 1.3** when it supports it and falls back to TLS 1.2 otherwise, matching TeslaDG's 1.2–1.3 range. The certificate chain and `feature_configuration` reply are unchanged. The standard ESP32 Wi-Fi build (`esp32-wifi`) remains on ESP-IDF 4.4 / mbedTLS 2.28 and supports TLS 1.2 only.
-
-> **TLS 1.1 note**: TLS 1.1 and TLS 1.3 cannot coexist in one mbedTLS build — mbedTLS 3.6 (IDF 5.5) removed TLS 1.0/1.1 and keeps TLS 1.2/1.3, while mbedTLS 2.28 (IDF 4.4) has 1.0/1.1/1.2 but no 1.3. TeslaDG's own floor is TLS 1.2, and modern car firmware negotiates 1.3/1.2 directly, so this firmware targets **TLS 1.2 + 1.3**. A client that truly requires TLS 1.1 must use the older IDF 4.4 build and give up TLS 1.3.
-
-> **TLS 1.3 build note**: the first build of this env downloads the Arduino 3.3.12 / ESP-IDF 5.5.5 toolchain. If PlatformIO's ESP-IDF Python env setup fails (Python 3.15 with an older pydantic-core), run:
->
-> ```sh
-> PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-5.5.5/bin/pip install \
->   idf-component-manager -r ~/.platformio/packages/framework-espidf/tools/requirements/requirements.core.txt
-> ```
->
-> then rerun `pio run -e esp32s3-waveshare-wifi`. The `esp32-wifi` and CAN builds are unaffected.
-
-**Modes**: `reply` returns the ESP32 payload; `observe` records the request and forwards it upstream, matching `mode.json`. Switch it in the DNS tab of the control panel.
-
-**PC-style dashboard**: `http://9.9.9.9:10010/fsd` mirrors `TeslaDG/app/web/fsd_panel.py` (cards, handshake table, delivery timeline, recent requests, API distribution, config history, current payload) and includes a field editor with add/remove, Chinese notes, restore-default (22 fields / 653 B, `enable_eu_fsd_behavior:false`, `autoshift_dr:true` last), presets, and raw JSON.
-
-**API**: `fsdMock` in `/api/wifi-bridge/status` (mode, host, payload size/md5/fields, hit/observe/flow/DNS counters, handshake summary, last response, and the latest 3 FSD hits (FLOW stays in the JSONL log)); `GET /api/fsd-mock/payload` returns the compact JSON; `POST /api/fsd-mock/payload` writes a JSON object (max 2048 B); `GET /api/fsd-mock/set?enabled=1&mode=reply&host=...&preset=default|16f|282b`; `POST /api/fsd-mock/hits-clear`; `POST /api/fsd-mock/handshakes-clear`; `GET /api/fsd-mock/hits` and `GET /api/fsd-mock/handshakes` export RAM logs as JSONL.
-
-**RAM-only logs**: hits/handshakes are kept in fixed RAM rings (16 hits, 8 handshakes) and are lost on reboot. Nothing is appended to SPIFFS; old `/fsd_hits.jsonl` and `/fsd_handshake.log` files are removed at boot so payload storage cannot be starved by logs.
-
-**Serial recovery** (115200, newline-terminated): `fsd-payload` prints the current compact JSON; `fsd-default` / `fsd-16f` / `fsd-282b` load a preset into SPIFFS. `net-test` checks upstream DNS + TCP to `api-prd`; `wifi-diag` reports payload/hit/handshake counters, heap, PSRAM, and SPIFFS usage.
-
-> Non-FSD passthrough disables upstream certificate verification, matching Windows `--set ssl_insecure=true` (Tesla `api-prd` uses a private CA that is not in the public bundle). Endpoints that require a vehicle client certificate will return Tesla's real `400 No required SSL certificate was sent`, exactly as default mitmproxy does without a configured client cert; the ESP32 cannot present the car's private key.
-
-> Difference from Windows: observe/passthrough forwards common Tesla headers (Authorization, Content-Type, Accept, Accept-Encoding, User-Agent, Cookie, conditional requests, etc.) and relays Content-Encoding/Location/Set-Cookie response headers, with a 4 KB request-body cap; mitmproxy has no such limits. The log preview keeps 64 request-body bytes (Windows keeps 256) to save RAM. ESP-IDF's `esp_https_server` only implements HTTP/1.1, not HTTP/2; clients that do not negotiate h2 fall back to HTTP/1.1. Normal feature_configuration delivery is unaffected.
-
-### 5.6 Wi-Fi Bridge DNS Rules
-
-Both allowlists and blocklists accept `*.qq.com`: it matches `music.qq.com` and `a.b.qq.com` at any depth, but excludes `qq.com` itself and unrelated names such as `fakeqq.com`. A bare `qq.com` continues to match both the apex and all subdomains. Separate rules with spaces, newlines, commas, or semicolons.
-
-The longest matching domain suffix wins, excluding the `*.` prefix from its length; equal lengths favor the allowlist. For example, an allowlist entry `*.qq.com` does not override a blocklist entry `a.qq.com`. A nonempty allowlist denies unmatched domains by default.
-
-Both the allowlist and blocklist have a one-click **Restore Default** button: it writes the firmware's current default for that list and enables DNS filtering. API: `/api/wifi-bridge/set?dnsReset=allow|block|all`.
-
-The first-boot preset allows navigation, maps, and common music services (QQ Music, NetEase Cloud Music, Apple Music), and blocks `api-prd.vn.cloud.tesla.cn` plus `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` by default. Because a nonempty allowlist already denies unlisted names, the whole `tesla.cn` parent domain no longer needs to be in the blocklist.
-
-**Special hosts in the default preset**
-
-- `hermes-prd.vn.cloud.tesla.cn` is **not** allowlisted by default. Adding it enables remote vehicle control, but it may trigger Tesla risk controls or even an account/vehicle ban; use it with caution.
-- `api-prd.vn.cloud.tesla.cn` is blocked by default. After a factory reset, QQ Music may fail to show its login QR code or NetEase Cloud Music may misbehave; if so, try adding this host to the allowlist first. Equal-length entries favor the allowlist, so the blocklist entry can stay. Allowing it means Tesla's cloud may rewrite the FSD configuration — accept that risk. Once the music apps work again, put the host back on the blocklist immediately (or disconnect Wi-Fi) instead of leaving it allowed.
-- `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` are on the external blocklist by default. While FSD delivery is enabled they are hijacked to the ESP32 exactly like the PC chain (443 TLS and 4567 HTTP); when it is disabled the blocklist prevents direct mothership access so the cloud cannot rewrite the configuration.
-
-Wildcard rules are not hostnames and are skipped during IP-cache pre-resolution. A concrete subdomain can still enter the optional IP block cache when its DNS query is blocked.
-
----
-
-## Step 6: OTA Firmware Update
-
-After modifying and rebuilding the firmware, you can update wirelessly — no USB needed:
-
-1. Build in VS Code (click **Build**).
-2. The build script auto-generates a matching **`<env>_v<ver>_ota.bin`** in the project root (e.g. `esp32s3_waveshare_v1.4.35_ota.bin`).
-3. In the web panel, find the **OTA Update** card, click **Choose File**, select the **`_ota.bin`** file.
-4. Click **Upload Firmware** and wait for the progress bar. The device restarts automatically.
-
-> ⚠️ **OTA requires the `_ota.bin` file.** Do not upload the merged `<env>_v<ver>.bin` — it contains the bootloader and will fail with "Wrong Magic Byte".
-
----
-
-## FAQ
-
-**Q: Browser can't open 9.9.9.9 after connecting to WiFi?**
-> Some phones automatically disconnect from WiFi networks with no internet. In your phone's WiFi settings, find the hotspot and disable "Auto-switch to better network" or "Smart WiFi".
-
-**Q: CAN Bus shows ERROR?**
-> Check that CANH/CANL wiring is correct and that the vehicle is powered on (at least in standby). The CAN bus only carries signals when the vehicle is on.
-
-**Q: FSD Triggered shows No?**
-> Confirm that "Traffic Light and Stop Sign Control" is enabled under **Controls → Autopilot** in the car. This is the trigger condition.
-
-**Q: Do I need to remove the 120Ω termination resistor from the CAN module?**
-> Tesla's CAN bus already has built-in termination at both ends. Adding another 120Ω resistor will degrade signal quality and cause communication failures — **make sure the module's 120Ω resistor is disconnected**.
-> - **SN65HVD230 module**: The chip itself has no termination resistor, but some manufacturers add one to the PCB, controlled by a jumper or solder bridge. Check the back of your module for a **120R** marking — if the jumper is connected or the solder bridge is closed, disconnect it (remove the jumper cap or cut the solder bridge with a blade).
-> - **MCP2515 blue module**: **Must remove** the R1/R2 resistors or cut the J1 jumper.
-
-**Q: Modified count stays at 0, device has no effect? (China, Japan, etc.)**
-> Enable **Force Activate** in the control panel. In these regions the car UI hides the "Traffic Light and Stop Sign Control" option due to a regional restriction, so the trigger bit (`UI_fsdStopsControlEnabled`) is always 0 and the mod never fires. Force Activate bypasses this check.
-
-**Q: Device appears to work but FSD still doesn't activate?**
-> Check that your Tesla account has a valid FSD authorization (purchased or subscribed). The device operates at the CAN level only and cannot bypass Tesla's server-side authorization.
-
-**Q: Speed profile setting has no effect?**
-> Make sure **Profile Source** is set to **Manual**. If set to Auto (Stalk), the stalk position overrides the dropdown.
-
-**Q: Flash error "A fatal error occurred: Failed to connect to ESP32"?**
-> Hold the **BOOT** button on the dev board while flashing. Release it once the upload progress bar appears.
-
----
-
-## 🧪 Help build the compatibility matrix
-
-Activation success varies a lot by firmware × HW chip × protocol (V13/V14) × region. We're still collecting samples — **whether activation worked or not, please take 1 minute to file an anonymous report**:
-
-➡️ **[New compatibility report](../../issues/new?template=compat-report.yml)** — pick the "Compatibility Report" template
-
-Only firmware version, HW chip, selected protocol, activation result, and region. **Do not include VIN, license plate, or account info.** Aggregated results will feed back into the README compatibility table.
-
----
-
-## Project Structure (for developers)
-
-```
-src/
-  main.cpp              ← Entry point: WiFi AP + web server + CAN task (dual-core)
-include/
-  handlers.h            ← CAN frame processing (Legacy / HW3 / HW4)
-  can_helpers.h         ← Bit manipulation helpers
-  can_frame_types.h     ← CAN frame data structures
-  web_ui.h              ← Embedded web UI (HTML/CSS/JS)
-  drivers/
-    can_driver.h        ← Driver abstraction base class
-    twai_driver.h       ← ESP32 TWAI driver
-platformio.ini          ← Build config (ESP32 + ESPAsyncWebServer)
-```
-
----
-
-## Credits
-
-This project is built on top of the following open-source work. Core CAN frame handling logic is derived directly from ev-open-can-tools; the others are used as cross-references for signal definitions, bit positions, and feature extensions:
-
-| Project | Use | Link | License |
-|---------|-----|------|---------|
-| ev-open-can-tools | Upstream — core CAN frame injection logic | [github.com/ev-open-can-tools/ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools) (formerly tesla-open-can-mod, migrated off GitLab) | GPLv3 |
-| ev-open-can-tools-plugins | Feature plugin library (basis for v1.4.32 HW4 offset cap and TLSSC bypass) | [github.com/ev-open-can-tools/ev-open-can-tools-plugins](https://github.com/ev-open-can-tools/ev-open-can-tools-plugins) | GPLv3 |
-| opendbc | Authoritative Tesla DBC definitions (bit positions, width, factor, checksum) | [github.com/commaai/opendbc](https://github.com/commaai/opendbc) | MIT |
-| flipper-tesla-fsd | Flipper Zero FSD injection — bit extraction / checksum cross-check | [github.com/hypery11/flipper-tesla-fsd](https://github.com/hypery11/flipper-tesla-fsd) | GPLv3 |
+For full documentation (default DNS allowlist/blocklist rules, FSD presets, serial recovery commands, and troubleshooting), see [README.md](README.md).
 
 ---
 
 ## License
 
-GPLv3 — derived from [ev-open-can-tools](https://github.com/ev-open-can-tools/ev-open-can-tools) (formerly tesla-open-can-mod, GPLv3).
+GPLv3
