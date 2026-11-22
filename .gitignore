@@ -5,7 +5,6 @@ dependencies.lock
 __pycache__/
 *.pyc
 mock_server.py
-*_v*.bin
 include/web_ui_gz.h
 refs/
 mockup_tesla_car.html
