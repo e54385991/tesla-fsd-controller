@@ -55,9 +55,11 @@ void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t*
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <WiFi.h>
 #include <lwip/sockets.h>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <strings.h>
 
@@ -111,12 +113,15 @@ class DNSWhitelistServer {
     void clearCache();
     void getPerfStats(uint32_t* cacheHits, uint32_t* cacheMisses,
                       uint32_t* forwardOk, uint32_t* forwardTimeouts) const;
+    uint32_t rebindCount() const { return rebindCount_; }
     size_t copyBlockedDomains(DNSBlockedDomainStatEntry* dest, size_t maxEntries, uint32_t& totalBlockedCount);
     void clearBlockedRequests();
 
   private:
     int listenSock_ = -1;
     int upstreamSock_ = -1;
+    uint16_t port_ = 53;
+    uint32_t lastRebindAttemptMs_ = 0;
     struct sockaddr_in lastClientAddr_ = {};
     bool started_ = false;
     DNSBlockedDomainStatEntry blockedDomains_[kDnsBlockedDomainCapacity];
@@ -126,6 +131,7 @@ class DNSWhitelistServer {
     mutable uint32_t cacheMisses_ = 0;
     mutable uint32_t forwardOk_ = 0;
     mutable uint32_t forwardTimeouts_ = 0;
+    mutable uint32_t rebindCount_ = 0;
 
     bool openUpstreamSocket();
     void sendRawReply(const uint8_t* data, size_t length);
@@ -666,8 +672,11 @@ bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {
 }
 
 void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer) {
+    // Reject 0.0.0.0 as a redirect answer so a misconfigured/uninitialized AP IP
+    // can never masquerade as a blocked response (ERR_ADDRESS_INVALID).
+    const bool validAnswer = static_cast<uint32_t>(answer) != 0;
     portENTER_CRITICAL(&gFsdRedirectMux);
-    gFsdRedirectEnabled = enabled && hosts != nullptr && hosts[0] != '\0';
+    gFsdRedirectEnabled = enabled && validAnswer && hosts != nullptr && hosts[0] != '\0';
     if (hosts != nullptr) {
         strlcpy(gFsdRedirectHosts, hosts, sizeof(gFsdRedirectHosts));
     } else {
@@ -712,6 +721,7 @@ void DNSWhitelistServer::sendRawReply(const uint8_t* data, size_t length) {
 }
 
 bool DNSWhitelistServer::begin(uint16_t port) {
+    port_ = port;
     stop();
     int s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0) return false;
@@ -750,14 +760,37 @@ void DNSWhitelistServer::stop() {
 }
 
 bool DNSWhitelistServer::waitForRequest(uint32_t timeoutMs) {
-    if (!started_ || listenSock_ < 0) return false;
+    // Self-heal if :53 failed to bind at boot or the lwIP socket broke later,
+    // and never busy-spin the priority-2 DNSFilter task on Core 1.
+    if (!started_ || listenSock_ < 0) {
+        const uint32_t sleepMs = timeoutMs > 0 ? timeoutMs : 50;
+        vTaskDelay(pdMS_TO_TICKS(sleepMs));
+        const uint32_t now = millis();
+        if (lastRebindAttemptMs_ == 0 || now - lastRebindAttemptMs_ >= 1000) {
+            lastRebindAttemptMs_ = now;
+            if (begin(port_)) {
+                ++rebindCount_;
+            }
+        }
+        return false;
+    }
     fd_set rfds;
     FD_ZERO(&rfds);
     FD_SET(listenSock_, &rfds);
     struct timeval tv = {};
     tv.tv_sec = static_cast<long>(timeoutMs / 1000);
     tv.tv_usec = static_cast<long>((timeoutMs % 1000) * 1000);
-    return select(listenSock_ + 1, &rfds, nullptr, nullptr, &tv) > 0;
+    const int ready = select(listenSock_ + 1, &rfds, nullptr, nullptr, &tv);
+    if (ready > 0) return true;
+    if (ready < 0 && errno != EINTR) {
+        stop();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        lastRebindAttemptMs_ = millis();
+        if (begin(port_)) {
+            ++rebindCount_;
+        }
+    }
+    return false;
 }
 
 void DNSWhitelistServer::clearCache() {
@@ -1161,7 +1194,13 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     socklen_t clientLen = sizeof(lastClientAddr_);
     const int read = recvfrom(listenSock_, query, sizeof(query), 0,
                               reinterpret_cast<struct sockaddr*>(&lastClientAddr_), &clientLen);
-    if (read <= 0) return false;
+    if (read <= 0) {
+        if (read < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            // Broken listening socket: force waitForRequest() to rebind :53.
+            stop();
+        }
+        return false;
+    }
     if (read < static_cast<int>(kDnsHeaderSize)) return true;
 
     uint16_t requestFlags = readU16(query + 2);

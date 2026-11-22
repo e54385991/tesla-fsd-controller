@@ -30,21 +30,26 @@
 #include <time.h>
 
 #include "fsd_payload.h"
+#include "mod_client_config.h"
 #include "mod_dns.h"
 
 namespace fsd_mock {
 namespace {
 
 constexpr uint32_t kSettingsMagic = 0x46444D32;  // "FDM2"
+constexpr uint8_t kSettingFlagAutoOffSet = 0x01;
 constexpr char kPayloadPath[] = "/fsd_payload.json";
 constexpr char kPayloadTempPath[] = "/fsd_payload.tmp";
 constexpr char kPayloadBackupPath[] = "/fsd_payload.bak";
 constexpr size_t kRequestCaptureBytes = 64;
-constexpr size_t kMaxForwardBodyBytes = 65536;     // streaming cap for observe/passthrough request bodies
-constexpr size_t kUpstreamBufferRxBytes = 2048;    // upstream HTTP response read buffer
-constexpr size_t kUpstreamBufferTxBytes = 4096;    // upstream HTTP request TX buffer (large JWT/Cookie safe)
-constexpr size_t kMaxForwardedRespHeaders = 14;    // fits inside httpd max_resp_headers = 16
-constexpr size_t kMaxRespHeaderTotalBytes = 2048;  // heap guard for captured upstream response headers
+constexpr size_t kMaxFsdRequestBodyBytes = 65536;     // body cap on /feature_configuration
+constexpr size_t kMaxForwardBodyBytes = 65536;        // streaming cap for observe/passthrough request bodies
+constexpr size_t kMaxForwardResponseBytes = 262144;   // streaming cap so huge FLOW responses cannot wedge 443
+constexpr uint32_t kMaxForwardDurationMs = 15000;     // wall-clock cap per upstream passthrough stream
+constexpr size_t kUpstreamBufferRxBytes = 2048;       // upstream HTTP response read buffer
+constexpr size_t kUpstreamBufferTxBytes = 4096;       // upstream HTTP request TX buffer (large JWT/Cookie safe)
+constexpr size_t kMaxForwardedRespHeaders = 14;       // fits inside httpd max_resp_headers = 16
+constexpr size_t kMaxRespHeaderTotalBytes = 2048;     // heap guard for captured upstream response headers
 // TeslaDG hijack parity: api-prd (443 chain) plus the mothership hosts used
 // by the PC reverse/ARP chains. Any other mothership.* also matches through
 // dnsFsdRedirectMatchesHost(), so this list is mainly for display/persistence.
@@ -63,13 +68,16 @@ struct Settings {
     uint32_t magic = kSettingsMagic;
     uint8_t enabled = 0;  // Default OFF to preserve RAM/network headroom; user toggles ON in UI
     uint8_t mode = static_cast<uint8_t>(Mode::Reply);
-    uint8_t reserved[2] = {};
+    uint8_t flags = kSettingFlagAutoOffSet;
+    uint8_t autoOffOnHit = 1;  // Default ON: auto-disable FSD mock once delivery succeeds
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
 };
+static_assert(sizeof(Settings) == 4 + 4 + kHostCapacity, "Settings NVS layout must stay stable");
 
 struct State {
     bool enabled = false;
+    bool autoOffOnHit = true;
     Mode mode = Mode::Reply;
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
@@ -107,6 +115,7 @@ portMUX_TYPE gHitMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t gHitTotal = 0;
 uint32_t gObserveTotal = 0;
 uint32_t gFlowTotal = 0;
+uint32_t gAutoDisabledTotal = 0;
 
 ConfigChange gConfigHistory[kConfigHistoryCapacity];
 size_t gConfigCount = 0;
@@ -616,6 +625,8 @@ bool persistSettings() {
     lockState();
     settings.enabled = gState.enabled ? 1 : 0;
     settings.mode = static_cast<uint8_t>(gState.mode);
+    settings.flags = kSettingFlagAutoOffSet;
+    settings.autoOffOnHit = gState.autoOffOnHit ? 1 : 0;
     strlcpy(settings.host, gState.host, sizeof(settings.host));
     unlockState();
 
@@ -839,7 +850,9 @@ esp_err_t upstreamEventHandler(esp_http_client_event_t* event) {
 }
 
 int forwardRequest(httpd_req_t* request, Capture& capture,
-                   Hit& hit, char* responseBody, size_t responseCapacity) {
+                   Hit& hit, char* responseBody, size_t responseCapacity,
+                   bool& closeConnection) {
+    closeConnection = false;
     hit.status = 0;
     hit.bytes = 0;
     hit.md5[0] = '\0';
@@ -852,6 +865,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     hit.reqBytes = static_cast<uint32_t>(request->content_len);
 
     if (!upstreamReady()) {
+        closeConnection = true;
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
         return 502;
@@ -859,6 +873,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
 
     const size_t bodyLength = request->content_len;
     if (bodyLength > kMaxForwardBodyBytes) {
+        closeConnection = true;
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 413, "{\"error\":\"request_too_large\"}");
         return 413;
@@ -872,6 +887,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const uint16_t port = localPort(request);
     const bool secure = port != kMothershipHttpPort;
     const bool chunkedReq = isChunkedRequest(request);
+    if (chunkedReq) closeConnection = true;
     const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;
     char authority[kHostCapacity + 8] = {};
     if (secure) {
@@ -883,6 +899,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const size_t urlLength = strlen(authority) + strlen(request->uri) + 16;
     char* url = static_cast<char*>(malloc(urlLength));
     if (!url) {
+        closeConnection = true;
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 500, "{\"error\":\"no_memory\"}");
         return 500;
@@ -904,6 +921,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
+        closeConnection = true;
         free(url);
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_init\"}");
@@ -996,6 +1014,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
 
     if (error != ESP_OK) {
+        closeConnection = true;
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         free(url);
@@ -1034,6 +1053,9 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     size_t total = 0;
     size_t preview = 0;
     size_t bodyStored = 0;
+    bool sendOk = true;
+    bool streamCapped = false;
+    const uint32_t streamStartMs = millis();
     if (!noBodyResponse) {
         int read = 0;
         while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
@@ -1054,13 +1076,27 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
             const esp_err_t sent = httpd_resp_send_chunk(request, buffer, read);
             total += static_cast<size_t>(read);
-            if (sent != ESP_OK) break;
+            if (sent != ESP_OK) {
+                sendOk = false;
+                closeConnection = true;
+                break;
+            }
+            // Hard wall-clock & byte bounds keep a slow/huge upstream FLOW from
+            // monopolizing the single-threaded 443 server.
+            if (millis() - streamStartMs >= kMaxForwardDurationMs ||
+                total >= kMaxForwardResponseBytes) {
+                streamCapped = true;
+                closeConnection = true;
+                break;
+            }
         }
     }
-    if (total > 0) {
-        httpd_resp_send_chunk(request, nullptr, 0);
-    } else {
-        httpd_resp_send(request, nullptr, 0);
+    if (sendOk && !streamCapped) {
+        if (total > 0) {
+            if (httpd_resp_send_chunk(request, nullptr, 0) != ESP_OK) closeConnection = true;
+        } else {
+            if (httpd_resp_send(request, nullptr, 0) != ESP_OK) closeConnection = true;
+        }
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -1240,6 +1276,9 @@ void begin() {
             settings.magic == kSettingsMagic) {
             lockState();
             gState.enabled = settings.enabled != 0;
+            gState.autoOffOnHit = (settings.flags & kSettingFlagAutoOffSet) != 0
+                ? (settings.autoOffOnHit != 0)
+                : true;
             gState.mode = settings.mode == static_cast<uint8_t>(Mode::Observe) ? Mode::Observe : Mode::Reply;
             if (validHostList(settings.host)) {
                 if (strcasecmp(settings.host, kLegacyDefaultHosts) == 0) {
@@ -1286,6 +1325,16 @@ void setListenersReady(bool ready) {
     syncDnsRedirect();
 }
 
+void resyncDnsRedirect() {
+    syncDnsRedirect();
+}
+
+void noteAutoDisabled() {
+    portENTER_CRITICAL(&gHitMux);
+    ++gAutoDisabledTotal;
+    portEXIT_CRITICAL(&gHitMux);
+}
+
 bool isFeatureConfigurationUri(const char* uri) {
     if (!uri) return false;
     const char* found = strstr(uri, "/feature_configuration");
@@ -1311,9 +1360,19 @@ esp_err_t handleRequest(httpd_req_t* request) {
 
     if (observe) {
         char responseBody[kLastResponseCapacity];
-        forwardRequest(request, capture, hit, responseBody, sizeof(responseBody));
+        bool closeConnection = false;
+        forwardRequest(request, capture, hit, responseBody, sizeof(responseBody), closeConnection);
         recordHit(hit, responseBody);
-        return ESP_OK;
+        return closeConnection ? ESP_FAIL : ESP_OK;
+    }
+
+    if (request->content_len > kMaxFsdRequestBodyBytes) {
+        const char* errorBody = "{\"error\":\"request_too_large\"}";
+        finishJsonError(request, hit, nullptr, 413, errorBody);
+        recordHit(hit, errorBody);
+        // Return ESP_FAIL so esp_http_server closes the socket immediately
+        // instead of purging megabytes 32 B at a time in httpd_req_delete().
+        return ESP_FAIL;
     }
 
     const bool bodyOk = drainRequestBody(request, capture);
@@ -1326,7 +1385,7 @@ esp_err_t handleRequest(httpd_req_t* request) {
         const char* errorBody = "{\"error\":\"request_read_failed\"}";
         finishJsonError(request, hit, nullptr, 400, errorBody);
         recordHit(hit, errorBody);
-        return ESP_OK;
+        return ESP_FAIL;
     }
 
     char* body = static_cast<char*>(malloc(kPayloadCapacity));
@@ -1334,22 +1393,26 @@ esp_err_t handleRequest(httpd_req_t* request) {
         const char* errorBody = "{\"error\":\"no_memory\"}";
         finishJsonError(request, hit, nullptr, 500, errorBody);
         recordHit(hit, errorBody);
-        return ESP_OK;
+        return ESP_FAIL;
     }
     char checksum[33];
     size_t bytes = 0;
+    bool autoOff = false;
     lockState();
     bytes = gState.bytes;
     memcpy(body, gState.payload, bytes + 1);
     strlcpy(checksum, gState.md5, sizeof(checksum));
+    autoOff = gState.autoOffOnHit;
     unlockState();
 
+    const bool chunked = isChunkedRequest(request);
+    const bool triggerAutoOff = autoOff && request->method != HTTP_HEAD;
     char statusLine[32];
     httpd_resp_set_status(request, formatStatusLine(200, statusLine));
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "X-Checksum", checksum);
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    if (isChunkedRequest(request)) {
+    if (chunked) {
         // esp_http_server does not de-chunk incoming Transfer-Encoding: chunked
         // bodies, so close after replying to keep framing aligned.
         httpd_resp_set_hdr(request, "Connection", "close");
@@ -1366,7 +1429,10 @@ esp_err_t handleRequest(httpd_req_t* request) {
     copyPrintable(reinterpret_cast<const uint8_t*>(body), bytes, hit.respHead, sizeof(hit.respHead));
     recordHit(hit, body);
     free(body);
-    return result;
+    if (result == ESP_OK && triggerAutoOff) {
+        client_config::scheduleAutoOff();
+    }
+    return (result != ESP_OK || chunked) ? ESP_FAIL : ESP_OK;
 }
 
 esp_err_t forwardPassthrough(httpd_req_t* request) {
@@ -1377,14 +1443,22 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
 
     // FLOW records do not overwrite gLastResponse, so avoid a stack buffer.
-    forwardRequest(request, capture, hit, nullptr, 0);
+    bool closeConnection = false;
+    forwardRequest(request, capture, hit, nullptr, 0, closeConnection);
     recordHit(hit, nullptr);
-    return ESP_OK;
+    return closeConnection ? ESP_FAIL : ESP_OK;
 }
 
 bool enabled() {
     lockState();
     const bool value = gState.enabled;
+    unlockState();
+    return value;
+}
+
+bool autoOffOnHit() {
+    lockState();
+    const bool value = gState.autoOffOnHit;
     unlockState();
     return value;
 }
@@ -1442,6 +1516,13 @@ bool setEnabled(bool value) {
     gState.enabled = value;
     unlockState();
     syncDnsRedirect();
+    return persistSettings();
+}
+
+bool setAutoOffOnHit(bool value) {
+    lockState();
+    gState.autoOffOnHit = value;
+    unlockState();
     return persistSettings();
 }
 
@@ -1614,11 +1695,19 @@ uint32_t dnsRedirectCount() {
     return total;
 }
 
+uint32_t autoDisabledCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gAutoDisabledTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
 static bool readRecentHit(size_t index, Hit& out);
 static bool readRecentHandshake(size_t index, Handshake& out);
 
 void appendStatusJson(String& out) {
     bool enabledNow;
+    bool autoOffNow;
     Mode modeNow;
     char hostNow[kHostCapacity];
     char md5Now[33];
@@ -1626,6 +1715,7 @@ void appendStatusJson(String& out) {
     size_t fieldsNow;
     lockState();
     enabledNow = gState.enabled;
+    autoOffNow = gState.autoOffOnHit;
     modeNow = gState.mode;
     strlcpy(hostNow, gState.host, sizeof(hostNow));
     strlcpy(md5Now, gState.md5, sizeof(md5Now));
@@ -1641,6 +1731,15 @@ void appendStatusJson(String& out) {
     out += "\"nowMs\":"; out += String(static_cast<unsigned long>(millis()));
     out += ",\"active\":"; out += gActive ? "true" : "false";
     out += ",\"enabled\":"; out += enabledNow ? "true" : "false";
+    out += ",\"autoOffOnHit\":"; out += autoOffNow ? "true" : "false";
+    out += ",\"autoOffPending\":"; out += client_config::autoOffPending() ? "true" : "false";
+    out += ",\"autoOffRemainingSec\":"; out += String(static_cast<unsigned long>(client_config::autoOffRemainingSec()));
+    out += ",\"autoDisabledCount\":"; out += String(static_cast<unsigned long>(autoDisabledCount()));
+    out += ",\"fsd443\":"; out += client_config::fsdHttpsStarted() ? "true" : "false";
+    out += ",\"fsd4567\":"; out += client_config::mothershipHttpStarted() ? "true" : "false";
+    out += ",\"safeMode\":"; out += client_config::safeModeBypassed() ? "true" : "false";
+    out += ",\"recoveries\":"; out += String(static_cast<unsigned long>(client_config::recoveryCount()));
+    out += ",\"lastError\":\""; jsonEscape(out, client_config::lastListenerError()); out += "\"";
     out += ",\"mode\":\""; out += (modeNow == Mode::Observe ? "observe" : "reply"); out += "\"";
     out += ",\"host\":\""; jsonEscape(out, hostNow); out += "\"";
     out += ",\"bytes\":"; out += String(static_cast<unsigned>(bytesNow));

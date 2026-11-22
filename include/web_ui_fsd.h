@@ -51,6 +51,7 @@ textarea{height:300px;resize:vertical}
 <body>
 <header>
   <h1>FSD 拦截实况 · PC 风格</h1>
+  <span class="badge" id="fsdBadge">FSD：--</span>
   <span class="badge" id="hsBadge">握手：--</span>
   <span class="badge" id="linkBadge">链路：--</span>
   <span class="dim" id="nowText"></span>
@@ -58,6 +59,11 @@ textarea{height:300px;resize:vertical}
   <a class="btn" href="#config">填写配置</a>
 </header>
 <div class="wrap">
+  <section><div class="toolbar" style="align-items:center">
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdEn"> 启用 FSD mock（默认关闭）</label>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭</label>
+    <span class="dim" id="fsdHealth" style="font-size:12px">443/4567：--</span>
+  </div></section>
   <div class="grid">
     <div class="card"><div class="k">拦截次数 feature_configuration</div><div class="v" id="cHits">--</div></div>
     <div class="card"><div class="k">最后拦截时间</div><div class="v s" id="cLastHit">--</div></div>
@@ -191,6 +197,21 @@ async function refresh(){
 function render(st,hits,hs,cfg,payloadText){
   var fm=st.fsdMock||{}; var now=new Date();
   document.getElementById('nowText').textContent=now.toLocaleString();
+  var fsdBadge=document.getElementById('fsdBadge');
+  if(fm.safeMode){ fsdBadge.textContent='FSD：安全模式暂停'; fsdBadge.className='badge bad'; }
+  else if(fm.enabled && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
+  else if(fm.enabled && fm.autoOffPending){ fsdBadge.textContent='FSD：已下发 · '+(fm.autoOffRemainingSec||0)+'s 后自动关闭'; fsdBadge.className='badge warn'; }
+  else if(fm.enabled){ fsdBadge.textContent='FSD：开 / '+(fm.mode||'reply'); fsdBadge.className='badge ok'; }
+  else { fsdBadge.textContent='FSD：关'+(fm.autoDisabledCount?'（已自动关闭）':''); fsdBadge.className='badge'; }
+  document.getElementById('fsdEn').checked=!!fm.enabled;
+  document.getElementById('fsdAutoOff').checked=fm.autoOffOnHit!==false;
+  var fh='443:'+(fm.fsd443?'监听中':'未监听')+' · 4567:'+(fm.fsd4567?'监听中':'未监听')+
+    (fm.autoOffPending?(' · 倒计时:'+(fm.autoOffRemainingSec||0)+'s'):'')+
+    (fm.recoveries?(' · 自复:'+fm.recoveries+'次'):'')+
+    (fm.lastError?(' · 异常:'+fm.lastError):'');
+  var fhEl=document.getElementById('fsdHealth');
+  fhEl.textContent=fh;
+  fhEl.style.color=(fm.safeMode||(fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
   var hsOk=fm.handshake?fm.handshake.ok||0:0, hsFail=fm.handshake?fm.handshake.fail||0:0;
   var hsBadge=document.getElementById('hsBadge');
   hsBadge.textContent=hsOk>0?('握手：TLS 已建立 ('+(fm.handshake.tls||'TLS')+')'):('握手：'+(hsFail>0?'失败':'未建立'));
@@ -356,6 +377,15 @@ async function applyPreset(name){
   }
   else { var why='加载失败'; try{ why=JSON.parse(text).error||why; }catch(e){} setMsg('cfgMsg',why,false); if(r.status===403) showPin(); }
 }
+async function toggleFsdOpts(){
+  var en=document.getElementById('fsdEn').checked?1:0;
+  var ao=document.getElementById('fsdAutoOff').checked?1:0;
+  var r=await fetch(q('/api/fsd-mock/set?enabled='+en+'&autoOff='+ao));
+  if(r.status===403){ showPin(); return; }
+  setTimeout(refresh,450);
+}
+document.getElementById('fsdEn').onchange=toggleFsdOpts;
+document.getElementById('fsdAutoOff').onchange=toggleFsdOpts;
 document.getElementById('addBtn').onclick=addRow;
 document.getElementById('saveBtn').onclick=savePayload;
 document.getElementById('reloadBtn').onclick=function(){ editing=false; editorLoaded=false; refresh(); };

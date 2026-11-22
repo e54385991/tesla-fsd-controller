@@ -462,7 +462,27 @@ def check_tls_policy() -> None:
     assert "config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
     assert "config.max_resp_headers = kFsdMaxRespHeaders;" in server
     assert "config.httpd.max_resp_headers = kFsdMaxRespHeaders;" in server
+    # Anti-hang & self-healing contracts (Part 1 + Part 2)
+    assert "config.keep_alive_enable = true;" in server
+    assert "config.httpd.keep_alive_enable = true;" in server
+    assert "config.httpd.lru_purge_enable = true;" in server
+    assert "config.tls_handshake_timeout_ms = 4000;" in server
+    assert "httpd_queue_work(" in server
+    assert "kHeartbeatIntervalMs = 15000" in server
+    assert "kAutoOffDelayMs = 120000" in (ROOT / "include/mod_client_config.h").read_text()
+    assert "kMaxForwardDurationMs = 15000" in mock
+    assert "kMaxForwardResponseBytes = 262144" in mock
+    assert "kMaxFsdRequestBodyBytes = 65536" in mock
+    assert "uint8_t enabled = 0;" in mock
+    assert "uint8_t autoOffOnHit = 1;" in mock
+    assert "client_config::scheduleAutoOff();" in mock
     assert "mbedtls_ssl_get_version" in mock
+
+    # UI must expose autoOff toggle and distinguish active vs enabled/safeMode.
+    for ui_path in ("include/web_ui_manage.h", "include/web_ui_fsd.h"):
+        ui_text = (ROOT / ui_path).read_text()
+        for needle in ("fsdAutoOff", "autoOffPending", "autoOffRemainingSec", "fsd443", "fsd4567", "safeMode", "lastError"):
+            assert needle in ui_text, f"{ui_path}: missing {needle}"
 
 
 def payloads() -> list[str]:

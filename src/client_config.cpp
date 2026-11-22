@@ -8,8 +8,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <cJSON.h>
+#include <esp_err.h>
 #include <esp_http_server.h>
 #include <esp_https_server.h>
+#include <freertos/FreeRTOS.h>
 #include <lwip/sockets.h>
 #include <cerrno>
 #include <memory>
@@ -27,6 +29,9 @@ extern void wifiBridgeSerialList();
 extern void wifiBridgeSerialAdd(const char* args);
 extern void wifiBridgeSerialRemove(const char* ssid);
 extern void wifiBridgeSerialEnableUpstream();
+extern void wifiBridgeLog(const char* msg);
+extern bool wifiBridgeOtaActive();
+extern void wifiBridgeTriggerRestart(const char* reason);
 #endif
 
 namespace client_config {
@@ -36,6 +41,58 @@ static httpd_handle_t fsdServer;
 static httpd_handle_t mothershipServer;
 static bool initialized = false;
 static volatile bool listenerSyncRequested = false;
+
+static constexpr uint32_t kHeartbeatIntervalMs = 15000;
+static constexpr uint8_t kMissedPauseDns = 2;    // ~30 s unresponsive -> drop DNS hijack
+static constexpr uint8_t kMissedRestart = 3;     // ~45 s wedged -> clean auto-restart
+static constexpr uint32_t kRetryBackoffMs[] = {5000, 15000, 30000};
+
+struct ListenerHealth {
+    volatile uint32_t sentSeq = 0;
+    volatile uint32_t pongSeq = 0;
+    uint8_t missed = 0;
+    bool dnsPaused = false;
+};
+
+static ListenerHealth fsdHealth;
+static ListenerHealth mothershipHealth;
+static uint32_t lastHealthCheckMs = 0;
+static uint32_t nextRetryMs = 0;
+static uint8_t retryStep = 0;
+static uint32_t gRecoveryCount = 0;
+static bool gSafeModeBypassed = false;
+static portMUX_TYPE gWatchdogMux = portMUX_INITIALIZER_UNLOCKED;
+static bool gAutoOffScheduled = false;
+static uint32_t gAutoOffDeadlineMs = 0;
+static char gLastListenerError[64] = {};
+
+static void resetHealth(ListenerHealth& health) {
+    health.sentSeq = 0;
+    health.pongSeq = 0;
+    health.missed = 0;
+    health.dnsPaused = false;
+}
+
+static void setLastErrorText(const char* text) {
+    portENTER_CRITICAL(&gWatchdogMux);
+    strlcpy(gLastListenerError, text ? text : "", sizeof(gLastListenerError));
+    portEXIT_CRITICAL(&gWatchdogMux);
+}
+
+static void setLastErrorCode(const char* prefix, esp_err_t err) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "%s:%s", prefix, esp_err_to_name(err));
+    setLastErrorText(msg);
+}
+
+static void clearLastError() {
+    setLastErrorText("");
+}
+
+static void heartbeatWork(void* arg) {
+    auto* health = static_cast<ListenerHealth*>(arg);
+    if (health) health->pongSeq = health->sentSeq;
+}
 
 static bool readState(ClientConfigState& state) {
     size_t length = sizeof(state);
@@ -239,6 +296,7 @@ static constexpr size_t kFsdMaxRespHeaders = 16;
 // server is much cheaper than a second TLS context, so both listeners share
 // the same fsd_mock handlers.
 static bool startMothershipHttp() {
+    if (mothershipServer != nullptr) return true;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = fsd_mock::kMothershipHttpPort;
     config.ctrl_port = 32770;  // 443 TLS server uses ESP_HTTPD_DEF_CTRL_PORT+1 (32769)
@@ -252,11 +310,17 @@ static bool startMothershipHttp() {
     config.max_open_sockets = 1;
     config.backlog_conn = 1;
     config.lru_purge_enable = true;
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 15;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
 
-    if (httpd_start(&mothershipServer, &config) != ESP_OK) {
+    const esp_err_t startErr = httpd_start(&mothershipServer, &config);
+    if (startErr != ESP_OK) {
         mothershipServer = nullptr;
+        setLastErrorCode("http_4567_start", startErr);
         return false;
     }
 
@@ -269,11 +333,14 @@ static bool startMothershipHttp() {
         endpoint.method = method;
         endpoint.handler = catchAll;
         endpoint.user_ctx = nullptr;
-        if (httpd_register_uri_handler(mothershipServer, &endpoint) == ESP_OK) continue;
+        const esp_err_t regErr = httpd_register_uri_handler(mothershipServer, &endpoint);
+        if (regErr == ESP_OK) continue;
+        setLastErrorCode("http_4567_uri", regErr);
         httpd_stop(mothershipServer);
         mothershipServer = nullptr;
         return false;
     }
+    resetHealth(mothershipHealth);
     return true;
 }
 
@@ -283,6 +350,22 @@ bool fsdHttpsStarted() {
 
 bool mothershipHttpStarted() {
     return mothershipServer != nullptr;
+}
+
+bool safeModeBypassed() {
+    return gSafeModeBypassed;
+}
+
+uint32_t recoveryCount() {
+    return gRecoveryCount;
+}
+
+const char* lastListenerError() {
+    static char snapshot[sizeof(gLastListenerError)];
+    portENTER_CRITICAL(&gWatchdogMux);
+    strlcpy(snapshot, gLastListenerError, sizeof(snapshot));
+    portEXIT_CRITICAL(&gWatchdogMux);
+    return snapshot;
 }
 
 // esp_https_server calls this only after a successful TLS handshake, with the
@@ -306,6 +389,8 @@ static bool startFsdHttps() {
     // IDF 5.x renamed the server-cert fields; cacert_pem is now client CA only.
     config.servercert = reinterpret_cast<const uint8_t*>(kFsdTlsCertificate);
     config.servercert_len = strlen(kFsdTlsCertificate) + 1;
+    // Cap stalled ClientHello handshakes to 4 s (IDF default is 10 s).
+    config.tls_handshake_timeout_ms = 4000;
 #else
     config.cacert_pem = reinterpret_cast<const uint8_t*>(kFsdTlsCertificate);
     config.cacert_len = strlen(kFsdTlsCertificate) + 1;
@@ -322,9 +407,15 @@ static bool startFsdHttps() {
     config.httpd.stack_size = 10240;
     // One vehicle TLS socket at a time. A second concurrent car connection
     // plus the upstream esp_http_client TLS context can exhaust internal RAM;
-    // lru_purge_enable closes the stale socket when the car reconnects.
+    // lru_purge_enable evicts stale sockets on reconnect, and TCP keepalive
+    // reclaims silent half-open peers in ~30 s (~25 KB TLS session RAM).
     config.httpd.max_open_sockets = 1;
     config.httpd.backlog_conn = 1;  // serialize reconnects; car uses one TLS socket
+    config.httpd.lru_purge_enable = true;
+    config.httpd.keep_alive_enable = true;
+    config.httpd.keep_alive_idle = 15;
+    config.httpd.keep_alive_interval = 5;
+    config.httpd.keep_alive_count = 3;
     config.httpd.recv_wait_timeout = 3;
     config.httpd.send_wait_timeout = 3;
 
@@ -337,16 +428,21 @@ static bool startFsdHttps() {
         {"/*", HTTP_OPTIONS, catchAll, nullptr},
         {"/*", HTTP_PATCH, catchAll, nullptr},
     };
-    if (httpd_ssl_start(&fsdServer, &config) != ESP_OK) {
+    const esp_err_t startErr = httpd_ssl_start(&fsdServer, &config);
+    if (startErr != ESP_OK) {
         fsdServer = nullptr;
+        setLastErrorCode("https_443_start", startErr);
         return false;
     }
     for (const auto& endpoint : fsdEndpoints) {
-        if (httpd_register_uri_handler(fsdServer, &endpoint) == ESP_OK) continue;
+        const esp_err_t regErr = httpd_register_uri_handler(fsdServer, &endpoint);
+        if (regErr == ESP_OK) continue;
+        setLastErrorCode("https_443_uri", regErr);
         httpd_ssl_stop(fsdServer);
         fsdServer = nullptr;
         return false;
     }
+    resetHealth(fsdHealth);
     return true;
 }
 
@@ -354,12 +450,14 @@ static void stopMothershipHttp() {
     if (!mothershipServer) return;
     httpd_stop(mothershipServer);
     mothershipServer = nullptr;
+    resetHealth(mothershipHealth);
 }
 
 static void stopFsdHttps() {
     if (!fsdServer) return;
     httpd_ssl_stop(fsdServer);
     fsdServer = nullptr;
+    resetHealth(fsdHealth);
 }
 
 static bool syncFsdListenersNow() {
@@ -368,10 +466,12 @@ static bool syncFsdListenersNow() {
     if (want) {
         const bool httpsOk = startFsdHttps();
         if (httpsOk) {
-            if (!mothershipServer) startMothershipHttp();
+            const bool httpOk = mothershipServer != nullptr || startMothershipHttp();
             // Only redirect api-prd/mothership after 443 is actually accepting connections.
             fsd_mock::setListenersReady(true);
-            return true;
+            if (httpOk) clearLastError();
+            lastHealthCheckMs = millis();
+            return httpOk;
         }
         fsd_mock::setListenersReady(false);
         return false;
@@ -379,9 +479,14 @@ static bool syncFsdListenersNow() {
 
     // Stop DNS redirect FIRST so clients never hit a closing listener, then
     // reclaim ~28 KB RAM, 2 Core-0 tasks, and 6 BSD sockets.
+    cancelAutoOff();
     fsd_mock::setListenersReady(false);
     stopMothershipHttp();
     stopFsdHttps();
+    clearLastError();
+    retryStep = 0;
+    nextRetryMs = 0;
+    lastHealthCheckMs = 0;
     return true;
 }
 
@@ -389,25 +494,211 @@ void requestListenerSync() {
     listenerSyncRequested = true;
 }
 
-void serviceListeners() {
-    if (!listenerSyncRequested) return;
-    listenerSyncRequested = false;
-    syncFsdListenersNow();
+void scheduleAutoOff(uint32_t delayMs) {
+    const uint32_t now = millis();
+    portENTER_CRITICAL(&gWatchdogMux);
+    // Keep the first successful delivery's deadline so periodic car retries
+    // during the 2-minute window still get served without pushing off shutdown.
+    if (!gAutoOffScheduled) {
+        gAutoOffScheduled = true;
+        gAutoOffDeadlineMs = now + delayMs;
+    }
+    portEXIT_CRITICAL(&gWatchdogMux);
 }
 
-bool start() {
+void cancelAutoOff() {
+    portENTER_CRITICAL(&gWatchdogMux);
+    gAutoOffScheduled = false;
+    gAutoOffDeadlineMs = 0;
+    portEXIT_CRITICAL(&gWatchdogMux);
+}
+
+bool autoOffPending() {
+    portENTER_CRITICAL(&gWatchdogMux);
+    const bool pending = gAutoOffScheduled;
+    portEXIT_CRITICAL(&gWatchdogMux);
+    return pending;
+}
+
+uint32_t autoOffRemainingSec() {
+    const uint32_t now = millis();
+    portENTER_CRITICAL(&gWatchdogMux);
+    const bool pending = gAutoOffScheduled;
+    const uint32_t deadline = gAutoOffDeadlineMs;
+    portEXIT_CRITICAL(&gWatchdogMux);
+    if (!pending) return 0;
+    const int32_t remMs = static_cast<int32_t>(deadline - now);
+    if (remMs <= 0) return 0;
+    return static_cast<uint32_t>((remMs + 999) / 1000);
+}
+
+static void checkServerHeartbeat(httpd_handle_t server, ListenerHealth& health,
+                                 const char* label, const char* errTag,
+                                 const char* restartTag, bool controlsDns) {
+    if (!server) return;
+    if (health.sentSeq != health.pongSeq) {
+        if (health.missed < 255) ++health.missed;
+        if (health.missed == 1) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "FSD %s heartbeat delayed (15s)", label);
+            wifiBridgeLog(msg);
+        } else if (health.missed == kMissedPauseDns) {
+            setLastErrorText(errTag);
+            if (controlsDns && !health.dnsPaused) {
+                health.dnsPaused = true;
+                fsd_mock::setListenersReady(false);
+                wifiBridgeLog("FSD 443 unresponsive 30s; DNS redirect paused");
+            } else {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "FSD %s unresponsive 30s", label);
+                wifiBridgeLog(msg);
+            }
+        } else if (health.missed >= kMissedRestart) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "FSD %s wedged 45s -> auto restart", label);
+            wifiBridgeLog(msg);
+            wifiBridgeTriggerRestart(restartTag);
+        }
+        // Do not flood the control mailbox while a previous ping is still queued.
+        return;
+    }
+
+    if (health.missed > 0) {
+        health.missed = 0;
+        if (controlsDns && health.dnsPaused) {
+            health.dnsPaused = false;
+            fsd_mock::setListenersReady(true);
+        }
+        ++gRecoveryCount;
+        clearLastError();
+        char msg[64];
+        snprintf(msg, sizeof(msg), "FSD %s heartbeat recovered", label);
+        wifiBridgeLog(msg);
+    }
+
+    const uint32_t nextSeq = health.sentSeq + 1;
+    health.sentSeq = nextSeq;
+    if (httpd_queue_work(server, heartbeatWork, &health) != ESP_OK) {
+        // Leave sentSeq != pongSeq so the next cycle escalates if ctrl queue stays stuck.
+    }
+}
+
+void serviceListeners() {
+    if (!initialized) return;
+
+    // 1) Non-blocking 2-minute post-delivery auto-disable timer.
+    const uint32_t now = millis();
+    bool dueAutoOff = false;
+    portENTER_CRITICAL(&gWatchdogMux);
+    if (gAutoOffScheduled && static_cast<int32_t>(now - gAutoOffDeadlineMs) >= 0) {
+        gAutoOffScheduled = false;
+        gAutoOffDeadlineMs = 0;
+        dueAutoOff = true;
+    }
+    portEXIT_CRITICAL(&gWatchdogMux);
+
+    if (dueAutoOff && fsd_mock::enabled() && fsd_mock::autoOffOnHit()) {
+        fsd_mock::setEnabled(false);
+        fsd_mock::noteAutoDisabled();
+        syncFsdListenersNow();
+        wifiBridgeLog("FSD delivered -> auto-disabled (2m delay)");
+        return;
+    }
+
+    // 2) Explicit toggle / config sync from Web UI or API.
+    if (listenerSyncRequested) {
+        listenerSyncRequested = false;
+        gSafeModeBypassed = false;
+        retryStep = 0;
+        nextRetryMs = 0;
+        const bool want = fsd_mock::enabled();
+        const bool ok = syncFsdListenersNow();
+        if (want) {
+            if (ok) {
+                wifiBridgeLog("FSD HTTPS 443 + HTTP 4567 started");
+            } else {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "FSD start failed (%.36s, heap=%u)",
+                         lastListenerError(), static_cast<unsigned>(ESP.getFreeHeap()));
+                wifiBridgeLog(msg);
+                nextRetryMs = now + kRetryBackoffMs[0];
+                retryStep = 1;
+            }
+        } else {
+            wifiBridgeLog("FSD mock disabled; listeners stopped");
+        }
+        return;
+    }
+
+    if (wifiBridgeOtaActive() || gSafeModeBypassed || !fsd_mock::enabled()) return;
+
+    // 3) Missing-listener automatic retry with backoff (5s -> 15s -> 30s).
+    if (!fsdServer || !mothershipServer) {
+        if (nextRetryMs == 0 || static_cast<int32_t>(now - nextRetryMs) >= 0) {
+            const bool had443 = fsdServer != nullptr;
+            const bool had4567 = mothershipServer != nullptr;
+            const bool httpsOk = had443 || startFsdHttps();
+            const bool httpOk = httpsOk && (had4567 || startMothershipHttp());
+            if (httpsOk && !fsdHealth.dnsPaused) {
+                fsd_mock::setListenersReady(true);
+            }
+            if (httpsOk && httpOk) {
+                ++gRecoveryCount;
+                clearLastError();
+                retryStep = 0;
+                nextRetryMs = 0;
+                lastHealthCheckMs = now;
+                wifiBridgeLog("FSD listeners auto-recovered (443+4567)");
+            } else {
+                const uint8_t idx = retryStep < 3 ? retryStep : 2;
+                nextRetryMs = now + kRetryBackoffMs[idx];
+                if (retryStep < 2) ++retryStep;
+                if (idx == 0) {
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "FSD retry failed (%.36s, heap=%u)",
+                             lastListenerError(), static_cast<unsigned>(ESP.getFreeHeap()));
+                    wifiBridgeLog(msg);
+                }
+            }
+        }
+    }
+
+    // 4) Zero-intrusion httpd_queue_work() heartbeat every 15 s (never touches
+    //    active car sockets or TLS sessions) + DNS redirect self-check.
+    if (now - lastHealthCheckMs < kHeartbeatIntervalMs) return;
+    lastHealthCheckMs = now;
+
+    if (fsdServer && !fsdHealth.dnsPaused) {
+        fsd_mock::resyncDnsRedirect();
+    }
+    checkServerHeartbeat(fsdServer, fsdHealth, "443",
+                         "https_443_unresponsive", "fsd-443-watchdog", true);
+    checkServerHeartbeat(mothershipServer, mothershipHealth, "4567",
+                         "http_4567_unresponsive", "fsd-4567-watchdog", false);
+}
+
+bool start(bool skipAutoListeners) {
     if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
     if (!loadIdentity(storage)) {
         nvs_close(storage);
         return false;
     }
     initialized = true;
+    gSafeModeBypassed = skipAutoListeners;
 
     // Load FSD mock settings & payload first; only start 443/4567 listeners
-    // when FSD mock is enabled (default OFF to keep maximum RAM/Wi-Fi headroom).
+    // when FSD mock is enabled (default OFF to keep maximum RAM/Wi-Fi headroom)
+    // and not booting in crash-recovery safe mode.
     fsd_mock::begin();
+    if (skipAutoListeners) {
+        setLastErrorText("safe_mode");
+        return true;
+    }
     if (fsd_mock::enabled()) {
-        syncFsdListenersNow();
+        if (!syncFsdListenersNow()) {
+            nextRetryMs = millis() + kRetryBackoffMs[0];
+            retryStep = 1;
+        }
     }
     return true;
 }
@@ -466,13 +757,18 @@ void serviceSerial() {
                         }
                     }
                 } else if (strcmp(command, "fsd-on") == 0) {
+                    cancelAutoOff();
+                    gSafeModeBypassed = false;
                     fsd_mock::setEnabled(true);
                     syncFsdListenersNow();
-                    Serial.printf("[fsd] enabled=1 fsd443=%d fsdHttp4567=%d heap=%u\n",
+                    Serial.printf("[fsd] enabled=1 autoOff=%d fsd443=%d fsdHttp4567=%d heap=%u err=%s\n",
+                                  fsd_mock::autoOffOnHit() ? 1 : 0,
                                   fsdHttpsStarted() ? 1 : 0,
                                   mothershipHttpStarted() ? 1 : 0,
-                                  static_cast<unsigned>(ESP.getFreeHeap()));
+                                  static_cast<unsigned>(ESP.getFreeHeap()),
+                                  lastListenerError());
                 } else if (strcmp(command, "fsd-off") == 0) {
+                    cancelAutoOff();
                     fsd_mock::setEnabled(false);
                     syncFsdListenersNow();
                     Serial.printf("[fsd] enabled=0 fsd443=%d fsdHttp4567=%d heap=%u\n",

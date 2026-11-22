@@ -88,15 +88,18 @@ struct Handshake {
 void installLogHook();
 void begin();
 void setListenersReady(bool ready);
+void resyncDnsRedirect();
 
 void noteHandshake(const struct esp_tls* tls);
 void noteHandshakeFailure(const char* error);
+void noteAutoDisabled();
 
 bool isFeatureConfigurationUri(const char* uri);
 esp_err_t handleRequest(struct httpd_req* request);
 esp_err_t forwardPassthrough(struct httpd_req* request);
 
 bool enabled();
+bool autoOffOnHit();
 Mode mode();
 const char* modeName();
 const char* host();
@@ -107,6 +110,7 @@ size_t copyPayload(char* output, size_t capacity,
                    char* md5Out = nullptr, size_t* fieldsOut = nullptr);
 
 bool setEnabled(bool value);
+bool setAutoOffOnHit(bool value);
 bool setMode(const char* value);
 bool setHost(const char* value);
 bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
@@ -119,6 +123,7 @@ uint32_t hitCount();
 uint32_t observeCount();
 uint32_t flowCount();
 uint32_t dnsRedirectCount();
+uint32_t autoDisabledCount();
 
 // Appends `"fsdMock":{...}` (without leading comma) for /api/wifi-bridge/status.
 void appendStatusJson(String& out);

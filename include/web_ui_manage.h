@@ -110,8 +110,10 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   </div></section>
 
   <section class="fsd-only"><h2>FSD 下发</h2><div class="body">
-    <label><input type="checkbox" id="fsdEn"> 启用 FSD mock（/feature_configuration）</label>
+    <label><input type="checkbox" id="fsdEn"> 启用 FSD mock（/feature_configuration，默认关闭）</label>
+    <label><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认开启，非阻塞）</label>
     <label>模式</label><select id="fsdMode"><option value="reply">reply（本地回包）</option><option value="observe">observe（只记录并转发）</option></select>
+    <div class="dim" id="fsdHealth" style="font-size:12px;margin-top:6px">监听状态：--</div>
     <button class="primary" id="fsdSave">保存 FSD 设置</button>
     <a class="btn" href="/fsd">编辑载荷 / 查看命中与握手</a>
     <div class="msg" id="fsdMsg"></div>
@@ -157,8 +159,12 @@ async function refresh(){
     document.querySelectorAll('.fsd-only').forEach(function(el){el.style.display=hasFsd?'':'none';});
     document.getElementById('bUp').textContent='上游：'+(d.upstreamConnected?(d.upstreamSSID||'已连接'):'未启用');
     document.getElementById('bUp').className='badge '+(d.upstreamConnected?'ok':'');
-    document.getElementById('bFsd').textContent='FSD：'+(f.enabled?'开':'关')+' / '+(f.mode||'--');
-    document.getElementById('bFsd').className='badge '+(f.enabled?'ok':'bad');
+    var fsdBadge=document.getElementById('bFsd');
+    if(f.safeMode){fsdBadge.textContent='FSD：安全模式暂停';fsdBadge.className='badge bad';}
+    else if(f.enabled&&!f.active){fsdBadge.textContent='FSD：未监听（自动恢复中）';fsdBadge.className='badge bad';}
+    else if(f.enabled&&f.autoOffPending){fsdBadge.textContent='FSD：已下发 · '+(f.autoOffRemainingSec||0)+'s 后自动关闭';fsdBadge.className='badge ok';}
+    else if(f.enabled){fsdBadge.textContent='FSD：开 / '+(f.mode||'--');fsdBadge.className='badge ok';}
+    else{fsdBadge.textContent='FSD：关'+(f.autoDisabledCount?'（已自动关闭）':'');fsdBadge.className='badge';}
     document.getElementById('bHeap').textContent=(d.heap||0)+' B free';
     document.getElementById('apSsid').textContent=d.apSSID||'fsd-esp32';
     if(!document.getElementById('apSsidIn').matches(':focus'))
@@ -175,7 +181,17 @@ async function refresh(){
     document.getElementById('heapCard').textContent=(d.heap||0)+' / '+(d.minHeap||0)+' B';
     document.getElementById('resetCard').textContent=d.resetReason||'--';
     document.getElementById('fsdEn').checked=!!f.enabled;
+    document.getElementById('fsdAutoOff').checked=f.autoOffOnHit!==false;
     document.getElementById('fsdMode').value=f.mode==='observe'?'observe':'reply';
+    var fh='443:'+(f.fsd443?'监听中':'未监听')+' · 4567:'+(f.fsd4567?'监听中':'未监听')+
+      ' · DNS劫持:'+(f.active&&f.enabled?'开':'关')+
+      (f.autoOffPending?(' · 倒计时:'+(f.autoOffRemainingSec||0)+'s'):'')+
+      (f.recoveries?(' · 自复:'+f.recoveries+'次'):'')+
+      (f.autoDisabledCount?(' · 已自动关闭:'+f.autoDisabledCount+'次'):'')+
+      (f.lastError?(' · 异常:'+f.lastError):'');
+    var fhEl=document.getElementById('fsdHealth');
+    fhEl.textContent=fh;
+    fhEl.style.color=(f.safeMode||(f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
     var nets=d.upstreamNetworks||[];
     document.getElementById('netRows').innerHTML=nets.map(function(n){
       return '<tr><td>'+esc(n.ssid)+'</td><td>'+(n.connected?'<span style="color:#3fb950">已连接</span>':(n.active?'<span style="color:#d29922">连接中</span>':'<span class="dim">未连接</span>'))+'</td><td><button class="red" data-del="'+esc(n.ssid)+'">删除</button></td></tr>';
@@ -272,8 +288,13 @@ async function scan(){
   setMsg('netMsg','扫描超时',false);
 }
 async function saveFsd(){
-  var u='/api/fsd-mock/set?enabled='+(document.getElementById('fsdEn').checked?1:0)+'&mode='+encodeURIComponent(document.getElementById('fsdMode').value);
-  var r=await fetch(q(u)); setMsg('fsdMsg',r.ok?'已保存':'保存失败',r.ok); if(r.status===403)showPin(); refresh();
+  var en=document.getElementById('fsdEn').checked?1:0;
+  var ao=document.getElementById('fsdAutoOff').checked?1:0;
+  var u='/api/fsd-mock/set?enabled='+en+'&autoOff='+ao+'&mode='+encodeURIComponent(document.getElementById('fsdMode').value);
+  var r=await fetch(q(u));
+  setMsg('fsdMsg',r.ok?(en?'已保存，正在同步 443/4567 监听…':'已关闭 FSD mock'):'保存失败',r.ok);
+  if(r.status===403)showPin();
+  setTimeout(refresh,450);
 }
 async function otaUpload(){
   var f=document.getElementById('otaFile').files[0]; if(!f){setMsg('otaMsg','请选择 .bin',false);return;}
@@ -293,6 +314,9 @@ document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
 document.getElementById('fsdSave').onclick=saveFsd;
+document.getElementById('fsdEn').onchange=saveFsd;
+document.getElementById('fsdAutoOff').onchange=saveFsd;
+document.getElementById('fsdMode').onchange=saveFsd;
 document.getElementById('upEn').onchange=saveBridge;
 document.getElementById('dnsEn').onchange=saveBridge;
 document.getElementById('ipBlkEn').onchange=saveIpBlk;

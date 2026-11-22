@@ -515,8 +515,28 @@ void wifiBridgeForceApChannel1() {
     if (channel == 1) return;
     WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1, 0, 8);
     wifiBridgeConfigureApIpAndDns();
+#ifdef CLIENT_CONFIG_HTTPS_ENABLED
+    fsd_mock::resyncDnsRedirect();
+#endif
     Serial.printf("[wifi] AP forced to channel 1 (was %u)\n", static_cast<unsigned>(channel));
 }
+
+#ifdef CLIENT_CONFIG_HTTPS_ENABLED
+void wifiBridgeLog(const char* msg) {
+    if (msg && msg[0]) addDiagLog(bootUptimeSeconds(), msg);
+}
+
+bool wifiBridgeOtaActive() {
+    return otaIsActive();
+}
+
+void wifiBridgeTriggerRestart(const char* reason) {
+    saveRestartReason(reason ? reason : "fsd-watchdog");
+    flushLogsToSpiffs();
+    delay(150);
+    ESP.restart();
+}
+#endif
 
 // Serial-console helpers (see client_config::serviceSerial):
 void wifiBridgeSerialList() {
@@ -621,20 +641,24 @@ void wifiBridgePrintDiag() {
                   wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason),
                   static_cast<unsigned>(gWifiBridgeCfg.connectSuccessCount),
                   static_cast<unsigned>(gWifiBridgeCfg.disconnectCount));
-    Serial.printf("[wifi-diag] dnsFilter=%d dnsEnabled=%d allow=%u block=%u cache=%u/%u fwd=%u/%u\n",
+    Serial.printf("[wifi-diag] dnsFilter=%d dnsEnabled=%d allow=%u block=%u cache=%u/%u fwd=%u/%u rebind=%u\n",
                   gDnsFilter.started() ? 1 : 0, gDnsFilterCfg.enabled ? 1 : 0,
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
                   static_cast<unsigned>(dnsHits), static_cast<unsigned>(dnsMisses),
-                  static_cast<unsigned>(dnsFwdOk), static_cast<unsigned>(dnsFwdTo));
+                  static_cast<unsigned>(dnsFwdOk), static_cast<unsigned>(dnsFwdTo),
+                  static_cast<unsigned>(gDnsFilter.rebindCount()));
     Serial.printf("[wifi-diag] heap=%u minHeap=%u reset=%s psram=%u freePsram=%u\n",
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()), resetReasonName(),
                   static_cast<unsigned>(ESP.getPsramSize()),
                   static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    Serial.printf("[wifi-diag] fsd=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u dns=%u spi=%u/%u\n",
-                  fsd_mock::enabled() ? 1 : 0, fsd_mock::modeName(),
+    Serial.printf("[wifi-diag] fsd=%d autoOff=%d(%us) mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u dns=%u spi=%u/%u\n",
+                  fsd_mock::enabled() ? 1 : 0,
+                  fsd_mock::autoOffOnHit() ? 1 : 0,
+                  static_cast<unsigned>(client_config::autoOffRemainingSec()),
+                  fsd_mock::modeName(),
                   static_cast<unsigned>(fsd_mock::payloadBytes()), fsd_mock::payloadMd5(),
                   static_cast<unsigned>(fsd_mock::payloadFields()),
                   static_cast<unsigned>(fsd_mock::hitCount()),
@@ -643,9 +667,11 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
                   static_cast<unsigned>(SPIFFS.usedBytes()),
                   static_cast<unsigned>(SPIFFS.totalBytes()));
-    Serial.printf("[wifi-diag] fsd443=%d fsdHttp4567=%d\n",
+    Serial.printf("[wifi-diag] fsd443=%d fsdHttp4567=%d recoveries=%u err=%s\n",
                   client_config::fsdHttpsStarted() ? 1 : 0,
-                  client_config::mothershipHttpStarted() ? 1 : 0);
+                  client_config::mothershipHttpStarted() ? 1 : 0,
+                  static_cast<unsigned>(client_config::recoveryCount()),
+                  client_config::lastListenerError());
 #endif
 }
 
@@ -1316,7 +1342,16 @@ static void setupWebServer() {
     // ── FSD payload mock (TeslaDG fsd_mock.py parity) ─────────────────────────
     server.on("/api/fsd-mock/set", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (req->hasParam("autoOff") || req->hasParam("autoOffOnHit")) {
+            const String raw = req->hasParam("autoOff")
+                ? req->getParam("autoOff")->value()
+                : req->getParam("autoOffOnHit")->value();
+            const bool nextAutoOff = raw.toInt() != 0;
+            fsd_mock::setAutoOffOnHit(nextAutoOff);
+            if (!nextAutoOff) client_config::cancelAutoOff();
+        }
         if (req->hasParam("enabled")) {
+            client_config::cancelAutoOff();
             fsd_mock::setEnabled(req->getParam("enabled")->value().toInt() != 0);
             client_config::requestListenerSync();
         }
@@ -1346,9 +1381,11 @@ static void setupWebServer() {
         char md5[33] = {};
         size_t fields = 0;
         const size_t bytes = fsd_mock::copyPayload(nullptr, 0, md5, &fields);
-        char body[128];
+        char body[192];
         snprintf(body, sizeof(body),
-                 "{\"ok\":true,\"bytes\":%u,\"fields\":%u,\"md5\":\"%s\"}",
+                 "{\"ok\":true,\"enabled\":%s,\"autoOffOnHit\":%s,\"bytes\":%u,\"fields\":%u,\"md5\":\"%s\"}",
+                 fsd_mock::enabled() ? "true" : "false",
+                 fsd_mock::autoOffOnHit() ? "true" : "false",
                  static_cast<unsigned>(bytes), static_cast<unsigned>(fields), md5);
         req->send(200, "application/json", body);
     });
@@ -1568,19 +1605,19 @@ void setup() {
     // Start web server
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    const bool clientConfigReady = !safeModeActive && client_config::start();
-    if (!safeModeActive) {
-        if (!clientConfigReady) {
-            addDiagLog(1, "FSD client_config startup failed");
-        } else if (!fsd_mock::enabled()) {
-            addDiagLog(0, "FSD mock standby (off by default)");
-        } else if (client_config::fsdHttpsStarted() && client_config::mothershipHttpStarted()) {
-            addDiagLog(0, "FSD HTTPS 443 + mothership HTTP 4567 started");
-        } else if (client_config::fsdHttpsStarted()) {
-            addDiagLog(1, "FSD HTTPS 443 started; mothership HTTP 4567 failed");
-        } else {
-            addDiagLog(1, "FSD HTTPS startup failed");
-        }
+    const bool clientConfigReady = client_config::start(safeModeActive);
+    if (safeModeActive) {
+        addDiagLog(1, "SAFE MODE: FSD listeners skipped at boot (manual toggle/reboot recovers)");
+    } else if (!clientConfigReady) {
+        addDiagLog(1, "FSD client_config startup failed");
+    } else if (!fsd_mock::enabled()) {
+        addDiagLog(0, "FSD mock standby (off by default)");
+    } else if (client_config::fsdHttpsStarted() && client_config::mothershipHttpStarted()) {
+        addDiagLog(0, "FSD HTTPS 443 + mothership HTTP 4567 started");
+    } else if (client_config::fsdHttpsStarted()) {
+        addDiagLog(1, "FSD HTTPS 443 started; mothership HTTP 4567 failed (auto-retry)");
+    } else {
+        addDiagLog(1, "FSD HTTPS startup failed (auto-retry)");
     }
 #endif
 
