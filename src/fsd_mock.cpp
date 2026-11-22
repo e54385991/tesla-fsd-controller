@@ -260,26 +260,67 @@ size_t countFields(cJSON* root) {
     return root ? static_cast<size_t>(cJSON_GetArraySize(root)) : 0;
 }
 
+// Match Python json.loads() / JS JSON.parse(): when a raw JSON object has
+// duplicate keys, keep the first key's position and replace its value with the
+// last occurrence so compacted bytes and MD5 X-Checksum match PC TeslaDG.
+void dedupeJsonObjects(cJSON* item) {
+    if (!item) return;
+    if (cJSON_IsObject(item)) {
+        for (cJSON* cur = item->child; cur; cur = cur->next) {
+            if (!cur->string) continue;
+            cJSON* dup = cur->next;
+            while (dup) {
+                cJSON* nextDup = dup->next;
+                if (dup->string && strcmp(cur->string, dup->string) == 0) {
+                    cJSON* detached = cJSON_DetachItemViaPointer(item, dup);
+                    if (detached) {
+                        cJSON_ReplaceItemViaPointer(item, cur, detached);
+                        cur = detached;
+                    }
+                }
+                dup = nextDup;
+            }
+        }
+    }
+    for (cJSON* child = item->child; child; child = child->next) {
+        dedupeJsonObjects(child);
+    }
+}
+
 bool compactJson(const char* json, size_t length, char* out, size_t outCapacity,
                  size_t& outLength, size_t& fields, char* error, size_t errorSize) {
     if (!json || length == 0) {
         snprintf(error, errorSize, "empty payload");
         return false;
     }
-    if (length >= outCapacity) {
+    if (length > kPayloadInputCapacity) {
         snprintf(error, errorSize, "payload_too_large");
         return false;
     }
-    cJSON* root = cJSON_ParseWithLength(json, length);
-    if (!root) {
+    if (memchr(json, '\0', length) != nullptr) {
         snprintf(error, errorSize, "invalid_json");
         return false;
+    }
+    const char* parseEnd = nullptr;
+    cJSON* root = cJSON_ParseWithLengthOpts(json, length, &parseEnd, false);
+    if (!root || !parseEnd) {
+        cJSON_Delete(root);
+        snprintf(error, errorSize, "invalid_json");
+        return false;
+    }
+    for (const char* tail = parseEnd; tail < json + length; ++tail) {
+        if (!isspace(static_cast<unsigned char>(*tail))) {
+            cJSON_Delete(root);
+            snprintf(error, errorSize, "invalid_json");
+            return false;
+        }
     }
     if (!cJSON_IsObject(root)) {
         cJSON_Delete(root);
         snprintf(error, errorSize, "expected_object");
         return false;
     }
+    dedupeJsonObjects(root);
     char* text = cJSON_PrintUnformatted(root);
     fields = countFields(root);
     cJSON_Delete(root);
@@ -1381,15 +1422,19 @@ const char* payloadMd5() {
     return gState.md5;
 }
 
-size_t copyPayload(char* output, size_t capacity) {
-    if (!output || capacity == 0) return 0;
+size_t copyPayload(char* output, size_t capacity, char* md5Out, size_t* fieldsOut) {
     lockState();
     const size_t bytes = gState.bytes;
-    const size_t copy = bytes < capacity - 1 ? bytes : capacity - 1;
-    memcpy(output, gState.payload, copy);
-    output[copy] = '\0';
+    if (md5Out) strlcpy(md5Out, gState.md5, 33);
+    if (fieldsOut) *fieldsOut = gState.fields;
+    size_t copied = bytes;
+    if (output && capacity > 0) {
+        copied = bytes < capacity - 1 ? bytes : capacity - 1;
+        memcpy(output, gState.payload, copied);
+        output[copied] = '\0';
+    }
     unlockState();
-    return copy;
+    return copied;
 }
 
 bool setEnabled(bool value) {

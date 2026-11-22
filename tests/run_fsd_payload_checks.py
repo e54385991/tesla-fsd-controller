@@ -223,6 +223,151 @@ int main() {
         subprocess.run([str(exe)], check=True)
 
 
+def check_payload_compact_and_sum_parity() -> None:
+    """Compile production compactJson/dedupeJsonObjects against ESP-IDF cJSON
+    under ASan+UBSan and verify byte-for-byte & MD5 X-Checksum parity with
+    PC TeslaDG (_compact + hashlib.md5) across add/delete/reorder/UTF-8/dupes."""
+    cxx = shutil.which("c++")
+    cc = shutil.which("cc")
+    cjson_dir = Path.home() / ".platformio/packages/framework-espidf/components/json/cJSON"
+    if not (cxx and cc and (cjson_dir / "cJSON.c").is_file()):
+        return
+
+    source = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted = "\n".join((
+        _extract_block(source, "size_t countFields("),
+        _extract_block(source, "void dedupeJsonObjects("),
+        _extract_block(source, "bool compactJson("),
+    ))
+    harness = r'''
+#include <cassert>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include "cJSON.h"
+constexpr size_t kPayloadCapacity = 2049;
+constexpr size_t kPayloadInputCapacity = 4096;
+''' + extracted + r'''
+int main(int argc, char** argv) {
+    if (argc != 2) return 2;
+    FILE* f = std::fopen(argv[1], "rb");
+    assert(f != nullptr);
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    char* in = static_cast<char*>(std::malloc(static_cast<size_t>(sz) + 1));
+    assert(in != nullptr);
+    size_t n = std::fread(in, 1, static_cast<size_t>(sz), f);
+    std::fclose(f);
+    in[n] = '\0';
+
+    char out[kPayloadCapacity] = {};
+    char err[64] = {};
+    size_t outLen = 0, fields = 0;
+    bool ok = compactJson(in, n, out, sizeof(out), outLen, fields, err, sizeof(err));
+    std::free(in);
+    if (!ok) {
+        std::fprintf(stderr, "ERR:%s\n", err);
+        return 1;
+    }
+    std::printf("%zu\n", fields);
+    std::fwrite(out, 1, outLen, stdout);
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="fsd-sum-") as tmp:
+        base = Path(tmp)
+        cjson_obj = base / "cJSON.o"
+        cpp = base / "compact.cpp"
+        exe = base / "compact"
+        subprocess.run(
+            [cc, "-O2", "-I", str(cjson_dir), "-c", str(cjson_dir / "cJSON.c"), "-o", str(cjson_obj)],
+            check=True,
+        )
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             "-I", str(cjson_dir), str(cpp), str(cjson_obj), "-o", str(exe)],
+            check=True,
+        )
+
+        def run_case(raw_bytes: bytes) -> tuple[bool, int, bytes, str]:
+            inp = base / "in.json"
+            inp.write_bytes(raw_bytes)
+            r = subprocess.run([str(exe), str(inp)], capture_output=True)
+            if r.returncode != 0:
+                return False, 0, b"", r.stderr.decode("utf-8", "replace").strip()
+            nl = r.stdout.index(b"\n")
+            return True, int(r.stdout[:nl]), r.stdout[nl + 1:], ""
+
+        def pc_compact(obj: dict) -> bytes:
+            # Exact TeslaDG/app/fsd_mock.py _compact()
+            return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+        base_obj = json.loads(payloads()[0])
+        # 1) Adding fields (bool, string, null, int, UTF-8)
+        added = dict(base_obj)
+        added["custom_bool"] = True
+        added["custom_str"] = "CHN-测试"
+        added["custom_null"] = None
+        added["custom_num"] = 42
+        # 2) Deleting fields including enable_eu_fsd_behavior & autoshift_dr
+        deleted = {k: v for k, v in base_obj.items()
+                   if k not in ("enable_eu_fsd_behavior", "autoshift_dr", "tcpdump_enabled")}
+        # 3) Deleting down to single field and empty object
+        single = {"full_self_driving": True}
+        empty_obj: dict = {}
+        # 4) Key reordering (must preserve order and match PC MD5)
+        reordered = {"autoshift_dr": True, "full_self_driving": True, "eu_fsd_allowed_country_codes": "CHN"}
+
+        for label, obj in (
+            ("default", base_obj),
+            ("added", added),
+            ("deleted", deleted),
+            ("single", single),
+            ("empty", empty_obj),
+            ("reordered", reordered),
+        ):
+            pretty = json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8")
+            ok, fields, out_bytes, err = run_case(pretty)
+            expected_bytes = pc_compact(obj)
+            assert ok, f"{label}: compactJson failed: {err}"
+            assert fields == len(obj), f"{label}: fields={fields} != {len(obj)}"
+            assert out_bytes == expected_bytes, f"{label}: bytes mismatch:\n  esp={out_bytes!r}\n  pc ={expected_bytes!r}"
+            assert hashlib.md5(out_bytes).hexdigest() == hashlib.md5(expected_bytes).hexdigest(), (
+                f"{label}: MD5 X-Checksum mismatch"
+            )
+
+        # 5) Duplicate keys must deduplicate identically to Python json.loads (keep first position, last value)
+        dup_raw = b'{"a":true,"b":false,"a":false,"c":"x","a":"final"}'
+        ok, fields, out_bytes, err = run_case(dup_raw)
+        pc_dup = pc_compact(json.loads(dup_raw.decode("utf-8")))
+        assert ok and fields == 3 and out_bytes == pc_dup, (ok, fields, out_bytes, pc_dup, err)
+        assert hashlib.md5(out_bytes).hexdigest() == hashlib.md5(pc_dup).hexdigest()
+
+        # 6) Pretty-printed JSON > 2048 B raw that compacts to <= 2048 B must succeed
+        big_obj = {f"field_{i:02d}": (i % 2 == 0) for i in range(95)}
+        big_pretty = json.dumps(big_obj, indent=4).encode("utf-8")
+        assert len(big_pretty) > 2048 and len(pc_compact(big_obj)) < 2048
+        ok, fields, out_bytes, err = run_case(big_pretty)
+        assert ok and fields == 95 and out_bytes == pc_compact(big_obj), (ok, fields, err)
+
+        # 7) Invalid payloads must be rejected
+        for bad in (b"", b"[1,2]", b'{"a":true}junk', b'{"a":\x00}', b"not json"):
+            ok, _, _, _ = run_case(bad)
+            assert not ok, f"expected failure for {bad!r}"
+
+    # UI editor contract: no forced re-injection or reordering; case-insensitive coerce
+    ui = (ROOT / "include/web_ui_fsd.h").read_text()
+    assert "if(!hasEu)" not in ui, "web_ui_fsd must not re-inject deleted enable_eu_fsd_behavior"
+    assert "delete obj.autoshift_dr" not in ui, "web_ui_fsd must not silently reorder autoshift_dr"
+    assert "toLowerCase()" in ui, "web_ui_fsd coerce() must be case-insensitive like PC fsd_panel.py"
+    assert "默认 654B" in ui, "web_ui_fsd default preset button must show 654B"
+    assert "默认 653B" not in ui, "stale 653B label found in web_ui_fsd.h"
+
+
 def check_port_policy() -> None:
     """443 is FSD-only; 4567 mirrors the PC mothership HTTP listener."""
     main = (ROOT / "src/main.cpp").read_text()
@@ -384,6 +529,7 @@ def main() -> None:
     check_tls_policy()
     check_response_contract()
     check_upstream_header_capture()
+    check_payload_compact_and_sum_parity()
     check_port_policy()
     print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "
           f"TLS chain + reply contract + 443/10010 policy OK")

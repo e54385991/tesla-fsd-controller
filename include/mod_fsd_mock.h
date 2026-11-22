@@ -25,7 +25,8 @@ namespace fsd_mock {
 // mothership reverse listener (svc/stack.py reverse:http://<ip>:4567).
 constexpr uint16_t kMothershipHttpPort = 4567;
 
-constexpr size_t kPayloadCapacity = 2049;   // compact payload limit (Windows UI sends 602/476/282 B)
+constexpr size_t kPayloadCapacity = 2049;      // compact payload limit (<= 2048 B)
+constexpr size_t kPayloadInputCapacity = 4096; // raw (pretty-printed) JSON upload limit before compacting
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
@@ -102,7 +103,8 @@ const char* host();
 size_t payloadBytes();
 size_t payloadFields();
 const char* payloadMd5();
-size_t copyPayload(char* output, size_t capacity);
+size_t copyPayload(char* output, size_t capacity,
+                   char* md5Out = nullptr, size_t* fieldsOut = nullptr);
 
 bool setEnabled(bool value);
 bool setMode(const char* value);

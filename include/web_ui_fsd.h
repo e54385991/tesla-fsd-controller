@@ -89,7 +89,7 @@ textarea{height:300px;resize:vertical}
     <table><thead><tr><th>时间</th><th>来源</th><th>字节</th><th>md5</th><th>字段数</th></tr></thead><tbody id="cfgRows"></tbody></table>
   </section>
 
-  <section><h2>当前回包载荷 · <code id="payloadMd5"></code></h2><pre id="payloadPre">--</pre></section>
+  <section><h2>当前回包载荷 · X-Checksum / md5 <code id="payloadMd5"></code></h2><pre id="payloadPre">--</pre></section>
 
   <section><h2>FSD 链路计数</h2>
     <table><thead><tr><th>命中</th><th>观察</th><th>透传</th><th>DNS 重定向</th><th>握手成功/失败</th><th>上游</th></tr></thead><tbody id="cntRows"></tbody></table>
@@ -100,14 +100,14 @@ textarea{height:300px;resize:vertical}
       <button class="btn" id="addBtn">＋ 添加参数</button>
       <button class="btn green" id="saveBtn">保存并下发</button>
       <button class="btn" id="defaultBtn">恢复默认（22 字段）</button>
-      <button class="btn" data-preset="default">默认 653B</button>
+      <button class="btn" data-preset="default">默认 654B</button>
       <button class="btn" data-preset="windows">Windows 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
       <button class="btn" id="rawBtn">原始 JSON</button>
       <button class="btn" id="reloadBtn">重新读取</button>
     </div>
-    <div class="hint">字段说明为中文注释，非官方定义；保存时 <code>autoshift_dr</code> 固定放在最后。默认载荷在 Windows 20 字段基础上加入 <code>enable_eu_fsd_behavior:false</code> 与 <code>autoshift_dr:true</code>。</div>
+    <div class="hint">字段说明为中文注释，非官方定义；支持任意增删改，保存时保持字段顺序并按紧凑 UTF-8 JSON 重算 <code>X-Checksum</code>（MD5，与 PC 版一致）。</div>
     <table class="rows"><thead><tr><th style="width:26%">字段名</th><th style="width:24%">值（true/false/字符串）</th><th>中文说明</th><th style="width:60px">操作</th></tr></thead><tbody id="rows"></tbody></table>
     <textarea id="rawJson" style="display:none"></textarea>
     <div class="msg" id="cfgMsg"></div>
@@ -151,7 +151,7 @@ var NOTES = {
   disable_cabin_camera:'禁用车内摄像头（默认 false）',
   wifi_disabled_mode:'Wi-Fi 禁用模式',
   enable_eu_fsd_behavior:'启用欧盟 FSD 行为（默认 false）',
-  autoshift_dr:'自动换挡（默认 true，固定最后）'
+  autoshift_dr:'自动换挡（默认 true）'
 };
 function q(url){ return url + (token ? (url.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token) : ''); }
 function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -172,7 +172,7 @@ function ageFrom(ts){ var t=Date.parse(ts); if(isNaN(t)) return null; return Mat
 function pathOf(url){ var s=String(url||''); s=s.replace(/^https?:\/\/[^/]+/,''); s=s.replace(/\?.*$/,''); s=s.replace(/\/vehicles\/[A-Za-z0-9-]{5,}\//,'/vehicles/<VIN>/'); return s||'/'; }
 function methodPath(r){ return (r.method||'?')+' '+pathOf(r.url); }
 function kindBadge(kind){ var k=String(kind||'HIT'); var c=k==='HIT'?'#3fb950':(k==='OBSERVE'?'#d29922':'#8b949e'); return '<span style="color:'+c+';font-weight:600">'+esc(k)+'</span>'; }
-function valText(v){ if(v===true) return 'true'; if(v===false) return 'false'; if(v===null) return 'null'; return String(v); }
+function valText(v){ if(v===true) return 'true'; if(v===false) return 'false'; if(v===null) return 'null'; if(typeof v==='object') return JSON.stringify(v); return String(v); }
 
 async function refresh(){
   if(document.hidden || busy) return; busy=true;
@@ -207,7 +207,7 @@ function render(st,hits,hs,cfg,payloadText){
   document.getElementById('cHits').textContent=(fm.hits||0);
   document.getElementById('cLastHit').textContent=lastHit?tsText(lastHit.ts):'—';
   document.getElementById('cVin').textContent=vin||'—';
-  document.getElementById('cPayload').textContent=(fm.bytes||0)+' B / '+(fm.md5||'').slice(0,10)+(fm.fields?(' / '+fm.fields+' 字段'):'');
+  document.getElementById('cPayload').textContent=(fm.bytes||0)+' B / '+(fm.md5||'').slice(0,10)+(fm.fields!=null?(' / '+fm.fields+' 字段'):'');
   var recentFsd=(fm.recent||[])[0];
   var lastAge=recentFsd?Math.max(0,Math.floor(((fm.nowMs||0)-recentFsd.atMs)/1000)):null;
   var carEl=document.getElementById('cCar');
@@ -274,63 +274,92 @@ function render(st,hits,hs,cfg,payloadText){
   if(!editorLoaded){ editorLoaded=true; try{ renderRows(JSON.parse(payloadText)); }catch(e){} }
 }
 function noteFor(name){ return NOTES[name] || '自定义字段'; }
+function markDirty(){
+  editing=true;
+  if(!rawVisible){
+    var n=Object.keys(readRows()).length;
+    setMsg('cfgMsg','未保存变更（当前 '+n+' 个有效字段），点击“保存并下发”生效',null);
+  }
+}
 function makeRow(name,value){
   var tr=document.createElement('tr');
-  tr.innerHTML='<td><input class="name" type="text" value="'+esc(name)+'"></td>'+
-    '<td><input class="value" type="text" value="'+esc(valText(value))+'"></td>'+
+  tr.innerHTML='<td><input class="name" type="text" value="'+esc(name)+'" placeholder="新字段名"></td>'+
+    '<td><input class="value" type="text" value="'+esc(valText(value))+'" placeholder="true / false / 字符串"></td>'+
     '<td class="note">'+esc(noteFor(name))+'</td>'+
     '<td><button class="btn red del" type="button">删除</button></td>';
-  tr.querySelector('.del').onclick=function(){ tr.remove(); editing=true; };
-  tr.querySelectorAll('input').forEach(function(inp){ inp.oninput=function(){ editing=true; var n=tr.querySelector('.name').value.trim(); tr.querySelector('.note').textContent=noteFor(n); }; });
+  tr.querySelector('.del').onclick=function(){ tr.remove(); markDirty(); };
+  tr.querySelectorAll('input').forEach(function(inp){ inp.oninput=function(){ var n=tr.querySelector('.name').value.trim(); tr.querySelector('.note').textContent=noteFor(n); markDirty(); }; });
   return tr;
 }
-function autoRow(){ var rows=document.getElementById('rows').querySelectorAll('tr'); for(var i=0;i<rows.length;i++){ if(rows[i].querySelector('.name').value.trim()==='autoshift_dr') return rows[i]; } return null; }
-function insertRow(tr){ var tbody=document.getElementById('rows'); var a=autoRow(); if(a) tbody.insertBefore(tr,a); else tbody.appendChild(tr); }
 function renderRows(obj){
   var tbody=document.getElementById('rows'); tbody.innerHTML='';
-  var entries=Object.keys(obj||{}).map(function(k){return [k,obj[k]];});
-  var hasEu=false, auto=null;
-  entries.forEach(function(e){ if(e[0]==='autoshift_dr'){ auto=e; return; } if(e[0]==='enable_eu_fsd_behavior') hasEu=true; tbody.appendChild(makeRow(e[0],e[1])); });
-  if(!hasEu) tbody.appendChild(makeRow('enable_eu_fsd_behavior',false));
-  tbody.appendChild(makeRow('autoshift_dr',auto?auto[1]:true));
+  var clean=(obj && typeof obj==='object' && !Array.isArray(obj))?obj:{};
+  Object.keys(clean).forEach(function(k){ tbody.appendChild(makeRow(k,clean[k])); });
+  if(rawVisible) document.getElementById('rawJson').value=JSON.stringify(clean,null,2);
   editing=false;
 }
-function coerce(v){ var s=String(v).trim(); if(s==='true') return true; if(s==='false') return false; if(s==='null') return null; return s; }
+function coerce(v){
+  var s=String(v).trim(), low=s.toLowerCase();
+  if(low==='true') return true;
+  if(low==='false') return false;
+  if(low==='null') return null;
+  return s;
+}
 function readRows(){
-  var obj={}, auto;
+  var obj={};
   var rows=document.getElementById('rows').querySelectorAll('tr');
   for(var i=0;i<rows.length;i++){
     var n=rows[i].querySelector('.name').value.trim(); if(!n) continue;
-    var v=coerce(rows[i].querySelector('.value').value);
-    if(n==='autoshift_dr'){ auto=v; continue; }
-    obj[n]=v;
+    obj[n]=coerce(rows[i].querySelector('.value').value);
   }
-  if(auto!==undefined) obj.autoshift_dr=auto;
   return obj;
 }
-function addRow(){ insertRow(makeRow('','')); editing=true; }
+function addRow(){
+  if(rawVisible){
+    try{ renderRows(JSON.parse(document.getElementById('rawJson').value)); }
+    catch(e){ setMsg('cfgMsg','JSON 格式错误：'+e.message,false); return; }
+    document.getElementById('rawJson').style.display='none';
+    document.querySelector('.rows').style.display='';
+    rawVisible=false;
+    document.getElementById('rawBtn').textContent='原始 JSON';
+  }
+  var tr=makeRow('','');
+  document.getElementById('rows').appendChild(tr);
+  var inp=tr.querySelector('.name'); if(inp) inp.focus();
+  markDirty();
+}
 async function savePayload(){
   var obj;
   try{ obj=rawVisible?JSON.parse(document.getElementById('rawJson').value):readRows(); }
   catch(e){ setMsg('cfgMsg','JSON 格式错误：'+e.message,false); return; }
   if(!obj || typeof obj!=='object' || Array.isArray(obj)){ setMsg('cfgMsg','顶层必须是 JSON 对象',false); return; }
-  if(Object.prototype.hasOwnProperty.call(obj,'autoshift_dr')){ var av=obj.autoshift_dr; delete obj.autoshift_dr; obj.autoshift_dr=av; }
-  var r=await fetch(q('/api/fsd-mock/payload'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
+  var src=rawVisible?'payload':'config';
+  var r=await fetch(q('/api/fsd-mock/payload?source='+src),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
   var text=await r.text();
-  if(r.status===200){ setMsg('cfgMsg','已保存并下发：'+JSON.stringify(obj).length+' B',true); editing=false; editorLoaded=false; refresh(); }
+  if(r.status===200){
+    var info={}; try{ info=JSON.parse(text); }catch(e){}
+    var summary=(info.bytes!=null?info.bytes:JSON.stringify(obj).length)+' B'+(info.fields!=null?(' / '+info.fields+' 字段'):'')+(info.md5?(' / md5 '+info.md5):'');
+    setMsg('cfgMsg','已保存并下发：'+summary,true);
+    editing=false; editorLoaded=false; refresh();
+  }
   else { var why='保存失败'; try{ why=JSON.parse(text).error||why; }catch(e){} setMsg('cfgMsg',why,false); if(r.status===403) showPin(); }
 }
 async function applyPreset(name){
   if(!confirm('将立即覆盖当前载荷并保存，继续？')) return;
   var r=await fetch(q('/api/fsd-mock/set?preset='+encodeURIComponent(name)));
   var text=await r.text();
-  if(r.status===200){ setMsg('cfgMsg','已加载预设 '+name,true); editing=false; editorLoaded=false; refresh(); }
+  if(r.status===200){
+    var info={}; try{ info=JSON.parse(text); }catch(e){}
+    var tail=info.md5?('：'+info.bytes+' B / '+info.fields+' 字段 / md5 '+info.md5):'';
+    setMsg('cfgMsg','已加载预设 '+name+tail,true);
+    editing=false; editorLoaded=false; refresh();
+  }
   else { var why='加载失败'; try{ why=JSON.parse(text).error||why; }catch(e){} setMsg('cfgMsg',why,false); if(r.status===403) showPin(); }
 }
 document.getElementById('addBtn').onclick=addRow;
 document.getElementById('saveBtn').onclick=savePayload;
 document.getElementById('reloadBtn').onclick=function(){ editing=false; editorLoaded=false; refresh(); };
-document.getElementById('defaultBtn').onclick=function(){ renderRows(DEFAULT_OBJ); setMsg('cfgMsg','已填入默认 22 字段（含 autoshift_dr），点击“保存并下发”生效',true); };
+document.getElementById('defaultBtn').onclick=function(){ renderRows(DEFAULT_OBJ); editing=true; setMsg('cfgMsg','已填入默认 22 字段，点击“保存并下发”生效',true); };
 document.getElementById('rawBtn').onclick=function(){
   var ta=document.getElementById('rawJson'), table=document.querySelector('.rows');
   if(!rawVisible){ ta.value=JSON.stringify(readRows(),null,2); ta.style.display='block'; table.style.display='none'; rawVisible=true; this.textContent='表格编辑'; }

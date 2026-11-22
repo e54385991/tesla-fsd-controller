@@ -323,7 +323,7 @@ static void fsdPayloadBody(AsyncWebServerRequest* req, uint8_t* data, size_t len
             upload->rejected = true;
             return;
         }
-        if (total > 2048) {
+        if (total > fsd_mock::kPayloadInputCapacity) {
             upload->rejected = true;
             upload->tooLarge = true;
             return;
@@ -332,7 +332,7 @@ static void fsdPayloadBody(AsyncWebServerRequest* req, uint8_t* data, size_t len
     }
     auto* upload = static_cast<FsdPayloadUpload*>(req->_tempObject);
     if (upload && !upload->rejected) {
-        if (upload->body.length() + len > 2048) {
+        if (upload->body.length() + len > fsd_mock::kPayloadInputCapacity) {
             upload->rejected = true;
             upload->tooLarge = true;
             return;
@@ -360,9 +360,15 @@ static void fsdPayloadRequest(AsyncWebServerRequest* req) {
                   tooLarge ? "{\"error\":\"payload_too_large\"}" : "{\"error\":\"unauthorized\"}");
         return;
     }
+    const char* source = "api";
+    if (req->hasParam("source")) {
+        const String rawSource = req->getParam("source")->value();
+        if (rawSource == "config") source = "config";
+        else if (rawSource == "payload") source = "payload";
+    }
     char error[48];
     const bool ok = fsd_mock::setPayload(upload->body.c_str(), upload->body.length(),
-                                         error, sizeof(error));
+                                         error, sizeof(error), source);
     delete upload;
     if (!ok) {
         char body[96];
@@ -372,7 +378,14 @@ static void fsdPayloadRequest(AsyncWebServerRequest* req) {
         req->send(400, "application/json", body);
         return;
     }
-    req->send(200, "application/json", "{\"ok\":true}");
+    char md5[33] = {};
+    size_t fields = 0;
+    const size_t bytes = fsd_mock::copyPayload(nullptr, 0, md5, &fields);
+    char body[128];
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"bytes\":%u,\"fields\":%u,\"md5\":\"%s\"}",
+             static_cast<unsigned>(bytes), static_cast<unsigned>(fields), md5);
+    req->send(200, "application/json", body);
 }
 
 // Client-config API lives on the 10010 management server. It uses its own
@@ -1330,17 +1343,26 @@ static void setupWebServer() {
                 return;
             }
         }
-        req->send(200, "application/json", "{\"ok\":true}");
+        char md5[33] = {};
+        size_t fields = 0;
+        const size_t bytes = fsd_mock::copyPayload(nullptr, 0, md5, &fields);
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"ok\":true,\"bytes\":%u,\"fields\":%u,\"md5\":\"%s\"}",
+                 static_cast<unsigned>(bytes), static_cast<unsigned>(fields), md5);
+        req->send(200, "application/json", body);
     });
 
     server.on("/api/fsd-mock/payload", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         char* body = static_cast<char*>(malloc(fsd_mock::kPayloadCapacity));
         if (!body) { req->send(500, "application/json", "{\"error\":\"no_memory\"}"); return; }
-        const size_t length = fsd_mock::copyPayload(body, fsd_mock::kPayloadCapacity);
+        char md5[33] = {};
+        const size_t length = fsd_mock::copyPayload(body, fsd_mock::kPayloadCapacity, md5);
         String payloadText(body, length);
         free(body);
         auto* response = req->beginResponse(200, "application/json", payloadText);
+        response->addHeader("X-Checksum", md5);
         response->addHeader("Cache-Control", "no-store");
         req->send(response);
     });
