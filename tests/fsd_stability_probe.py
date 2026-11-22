@@ -38,7 +38,7 @@ import urllib.request
 from pathlib import Path
 
 CANONICAL_LEN = 653
-CANONICAL_MD5 = "d216ba9d001cfff321dfb6e596f61d64"
+CANONICAL_MD5 = "bd262907ff9fb2709bb54f9d3e78d07d"
 CANONICAL_FIELDS = 22
 SNI = "api-prd.vn.cloud.tesla.cn"
 FSD_PATH = "/feature_configuration"
@@ -245,8 +245,8 @@ class Probe:
                     obj = json.loads(body)
                     if len(obj) != self.expected_fields:
                         problems.append(f"fields={len(obj)} expected={self.expected_fields}")
-                    if obj.get("disable_cabin_camera") is not True:
-                        problems.append("disable_cabin_camera!=true")
+                    if obj.get("disable_cabin_camera") is not False:
+                        problems.append("disable_cabin_camera!=false")
                     if obj.get("enable_eu_fsd_behavior") is not False:
                         problems.append("enable_eu_fsd_behavior!=false")
                     if obj.get("autoshift_dr") is not True:

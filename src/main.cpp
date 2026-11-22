@@ -451,6 +451,10 @@ static const char* resetReasonName() {
         case ESP_RST_WDT: return "wdt";
         case ESP_RST_BROWNOUT: return "brownout";
         case ESP_RST_SDIO: return "sdio";
+#if ESP_IDF_VERSION_MAJOR >= 5
+        case ESP_RST_USB: return "usb";
+        case ESP_RST_JTAG: return "jtag";
+#endif
         default: return "unknown";
     }
 }
@@ -1424,12 +1428,16 @@ void setup() {
     }
 
     // ── Watchdog: 30-second timeout ────────────────────────────────
+    // ESP-IDF 5.x pre-initializes TWDT at boot (default 5 s), so call
+    // esp_task_wdt_reconfigure() first and only fall back to init().
 #if ESP_IDF_VERSION_MAJOR >= 5
     esp_task_wdt_config_t wdtConfig = {};
     wdtConfig.timeout_ms = 30000;
     wdtConfig.idle_core_mask = 1 << 0;  // subscribe the core-0 idle task only
     wdtConfig.trigger_panic = true;
-    esp_task_wdt_init(&wdtConfig);
+    if (esp_task_wdt_reconfigure(&wdtConfig) != ESP_OK) {
+        esp_task_wdt_init(&wdtConfig);
+    }
 #else
     esp_task_wdt_init(30, true);
 #endif
@@ -1480,9 +1488,14 @@ void setup() {
     }
 
     // Wi-Fi AP+STA bridge setup:
+    //   - useStaticBuffers(true): keep WIFI_INIT_CONFIG_DEFAULT() from sdkconfig
+    //     (STATIC_RX_BUFFER_NUM=16 on S3 / 12 on ESP32 to match RX_BA_WIN;
+    //     otherwise Arduino's WiFiGeneric.cpp silently clamps it down to 4!).
+    //     TX buffers remain dynamic per CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=1.
     //   - persistent(false): avoid NVS flash wear & races on WiFi API calls
     //   - autoReconnect(false): serviceUpstreamWiFi() owns event-driven backoff
     //   - AP IP 9.9.9.9/24: avoids common mobile-hotspot subnets
+    WiFi.useStaticBuffers(true);
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
     WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);

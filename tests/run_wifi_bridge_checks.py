@@ -39,6 +39,8 @@ def extract_function(source: str, signature: str) -> str:
 
 
 def check_static_contracts() -> None:
+    assert "WiFi.useStaticBuffers(true);" in MAIN_SRC, "Bridge must preserve sdkconfig STATIC_RX_BUFFER_NUM"
+    assert "esp_task_wdt_reconfigure(" in MAIN_SRC, "IDF 5.x must reconfigure pre-initialized TWDT to 30s"
     assert "WiFi.setAutoReconnect(false);" in MAIN_SRC, "Bridge must disable Arduino autoReconnect"
     assert "esp_wifi_set_inactive_time(WIFI_IF_STA, 12);" in MAIN_SRC
     assert "wifiBridgeRegisterEvents();" in MAIN_SRC

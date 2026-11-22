@@ -45,7 +45,7 @@ from pathlib import Path
 
 SNI_MAIN = "api-prd.vn.cloud.tesla.cn"
 SNI_ALT = "mothership.vn.teslamotors.com"
-FSD_MD5 = "d216ba9d001cfff321dfb6e596f61d64"
+FSD_MD5 = "bd262907ff9fb2709bb54f9d3e78d07d"
 FSD_LEN = 653
 VIN = "5YJ3E1EA7KF000001"
 

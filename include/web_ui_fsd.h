@@ -128,7 +128,7 @@ textarea{height:300px;resize:vertical}
 var token = '';
 try { token = sessionStorage.getItem('fsd_tok') || ''; } catch(e) {}
 var editing = false, rawVisible = false, editorLoaded = false, busy = false;
-var DEFAULT_OBJ = {"audio_log_alsa_device_delay_verbose":false,"audio_log_awe_stats":false,"delivered":true,"disable_eng_voice_recording_uploads":true,"drive_on_nav_maps":true,"enable_autocomplete_telemetry":false,"enable_failure_log_upload":false,"enable_fsd_auto_nav":true,"ethtrace_auto_capture":false,"ethtrace_auto_upload":false,"fsd_navigation_supported":true,"fsd_stops_maps":true,"full_self_driving":true,"latched_delivered":true,"log_upload_without_wifi":false,"tcpdump_enabled":false,"suspend_full_self_driving":false,"enable_seat_adjustment_from_ui":true,"disable_cabin_camera":true,"wifi_disabled_mode":true,"enable_eu_fsd_behavior":false,"autoshift_dr":true};
+var DEFAULT_OBJ = {"audio_log_alsa_device_delay_verbose":false,"audio_log_awe_stats":false,"delivered":true,"disable_eng_voice_recording_uploads":true,"drive_on_nav_maps":true,"enable_autocomplete_telemetry":false,"enable_failure_log_upload":false,"enable_fsd_auto_nav":true,"ethtrace_auto_capture":false,"ethtrace_auto_upload":false,"fsd_navigation_supported":true,"fsd_stops_maps":true,"full_self_driving":true,"latched_delivered":true,"log_upload_without_wifi":false,"tcpdump_enabled":false,"suspend_full_self_driving":false,"enable_seat_adjustment_from_ui":true,"disable_cabin_camera":false,"wifi_disabled_mode":true,"enable_eu_fsd_behavior":false,"autoshift_dr":true};
 var NOTES = {
   audio_log_alsa_device_delay_verbose:'音频 ALSA 设备延迟详细日志',
   audio_log_awe_stats:'音频 AWE 统计日志',
@@ -148,7 +148,7 @@ var NOTES = {
   tcpdump_enabled:'启用 tcpdump',
   suspend_full_self_driving:'暂停完全自动驾驶',
   enable_seat_adjustment_from_ui:'允许 UI 调整座椅',
-  disable_cabin_camera:'禁用车内摄像头',
+  disable_cabin_camera:'禁用车内摄像头（默认 false）',
   wifi_disabled_mode:'Wi-Fi 禁用模式',
   enable_eu_fsd_behavior:'启用欧盟 FSD 行为（默认 false）',
   autoshift_dr:'自动换挡（默认 true，固定最后）'

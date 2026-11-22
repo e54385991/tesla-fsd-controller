@@ -252,7 +252,7 @@ mothership.vn.cloud.tesla.cn
 
 | 预设 | 字节 | md5 | 来源 |
 |---|---:|---|---|
-| ESP32 默认 22 字段 | 653 | `d216ba9d001cfff321dfb6e596f61d64` | Windows 20 字段 + `enable_eu_fsd_behavior:false` + `autoshift_dr:true` |
+| ESP32 默认 22 字段 | 654 | `bd262907ff9fb2709bb54f9d3e78d07d` | Windows 20 字段（`disable_cabin_camera:false`）+ `enable_eu_fsd_behavior:false` + `autoshift_dr:true` |
 | Windows 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` 原版 |
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json` |
