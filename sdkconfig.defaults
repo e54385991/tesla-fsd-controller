@@ -9,22 +9,23 @@ CONFIG_LWIP_IP_FORWARD=y
 CONFIG_LWIP_IPV4_NAPT=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 
-# ── Wi-Fi / TCP throughput tuning (v1.4.31+) ──────────────────────────────
-# IDF default TCP window/send buffer of 5760 caps single-stream throughput
-# at ~2.3 Mbps (window÷RTT). 11520 doubles that; cost ~6 KB RAM/connection,
-# worst case ~96 KB at 16 concurrent TCP connections (well within budget).
-CONFIG_LWIP_TCP_WND_DEFAULT=5760
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
-CONFIG_TCP_WND_DEFAULT=5760
-CONFIG_TCP_SND_BUF_DEFAULT=5760
-# Deeper TCP receive mailbox — fewer drops under NAPT burst load.
+# ── Wi-Fi / TCP throughput & stability tuning ─────────────────────────────────
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_LWIP_TCP_WND_DEFAULT=11520
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+CONFIG_TCP_WND_DEFAULT=11520
+CONFIG_TCP_SND_BUF_DEFAULT=11520
+CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=48
+CONFIG_LWIP_TCP_SACK_OUT=y
 # Move lwip hot paths into IRAM. +10-20% throughput, costs ~10 KB IRAM.
 CONFIG_LWIP_IRAM_OPTIMIZATION=y
-# Larger Block-Ack window lets AMPDU batch more frames per ACK cycle.
-# Bridge env peaks around here; cost ~2 KB RAM per window.
-CONFIG_ESP32_WIFI_TX_BA_WIN=16
-CONFIG_ESP32_WIFI_RX_BA_WIN=16
+# Align STATIC_RX_BUFFER_NUM >= RX_BA_WIN (IDF 4.4 ESP32 sweet spot = 12).
+CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=12
+CONFIG_ESP32_WIFI_TX_BA_WIN=12
+CONFIG_ESP32_WIFI_RX_BA_WIN=12
 
 # Dual TLS (vehicle server + upstream client): keep record buffers small.
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y

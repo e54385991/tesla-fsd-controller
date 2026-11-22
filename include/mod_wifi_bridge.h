@@ -33,12 +33,14 @@ extern "C" {
 extern void wifiBridgeForceApChannel1();
 
 static constexpr uint32_t UPSTREAM_RETRY_THROTTLED_MS = 60000;
-static constexpr uint8_t MAX_UPSTREAM_NETWORKS = 10;
+static constexpr uint32_t UPSTREAM_CONNECT_TIMEOUT_MS = 12000;
+static constexpr uint32_t UPSTREAM_FAST_RETRY_DELAY_MS = 2000;
+static constexpr uint8_t  MAX_UPSTREAM_NETWORKS = 10;
 
 // Exponential-backoff schedule for repeated upstream connect failures.
-// Indexed by consecutiveFailures count; clamped to last entry. Replaces the
-// old fixed 3 s / 15 s retry pair, which retried wrong-password / out-of-range
-// routers every few seconds indefinitely (radio thrash + user-visible spam).
+// Indexed by consecutiveFailures count; clamped to last entry.
+// Note: WiFi.setAutoReconnect(false) MUST be set in bridge builds so Arduino's
+// STA_DISCONNECTED handler does not bypass this schedule with tight retry loops.
 // Reset to 0 on successful connect or when the user re-saves the network list.
 static constexpr uint32_t kUpstreamBackoffMs[] = {
     3000, 8000, 15000, 30000, 60000, 120000, 300000
@@ -47,20 +49,34 @@ static constexpr uint8_t kUpstreamBackoffSteps =
     sizeof(kUpstreamBackoffMs) / sizeof(kUpstreamBackoffMs[0]);
 
 struct SavedUpstreamNetwork {
-    char ssid[33] = {};
-    char pass[65] = {};
+    char    ssid[33]    = {};
+    char    pass[65]    = {};
+    uint8_t lastChannel = 0;  // RAM-only last connected channel hint (1..13, 0=any)
 };
 
 struct UpstreamWiFiConfig {
-    bool                 enabled             = false;
+    bool                 enabled                = false;
     SavedUpstreamNetwork networks[MAX_UPSTREAM_NETWORKS];
-    uint8_t              networkCount        = 0;
-    int8_t               activeIndex         = -1;
-    uint8_t              nextTryIndex        = 0;
-    volatile bool        applyRequested      = false;
-    uint32_t             lastAttemptMillis   = 0;
-    uint8_t              consecutiveFailures = 0;
-    int8_t               preferredIndex      = -1;  // last network that connected; tried first after apply/boot
+    uint8_t              networkCount           = 0;
+    int8_t               activeIndex            = -1;
+    uint8_t              nextTryIndex           = 0;
+    volatile bool        applyRequested         = false;
+    uint32_t             lastAttemptMillis      = 0;
+    uint32_t             connectStartMillis     = 0;
+    uint32_t             nextRetryMillis        = 0;
+    uint8_t              consecutiveFailures    = 0;
+    int8_t               preferredIndex         = -1;  // last network that connected; tried first after apply/boot
+    bool                 connecting             = false;
+    bool                 wasConnected           = false;
+    bool                 fastRetryPending       = false;
+    bool                 usedChannelHint        = false;
+    volatile bool        pendingDisconnectEvent = false;
+    volatile bool        pendingGotIpEvent      = false;
+    volatile uint8_t     lastDisconnectReason   = 0;
+    volatile uint32_t    connectSuccessCount    = 0;
+    volatile uint32_t    disconnectCount        = 0;
+    volatile uint32_t    apClientJoinCount      = 0;
+    volatile uint32_t    apClientLeaveCount     = 0;
 };
 
 static UpstreamWiFiConfig gWifiBridgeCfg;
@@ -172,20 +188,43 @@ static inline bool wifiBridgeRemoveNetwork(const String& ssidInput) {
         wifiBridgeClearNetwork(gWifiBridgeCfg.networks[gWifiBridgeCfg.networkCount]);
     }
 
+    bool prefChanged = false;
+    int8_t newPref = -1;
     if (gWifiBridgeCfg.networkCount == 0) {
         gWifiBridgeCfg.activeIndex = -1;
         gWifiBridgeCfg.nextTryIndex = 0;
+        if (gWifiBridgeCfg.preferredIndex != -1) {
+            gWifiBridgeCfg.preferredIndex = -1;
+            prefChanged = true;
+            newPref = -1;
+        }
     } else {
         if (gWifiBridgeCfg.activeIndex == index) {
             gWifiBridgeCfg.activeIndex = -1;
         } else if (gWifiBridgeCfg.activeIndex > index) {
             --gWifiBridgeCfg.activeIndex;
         }
+        if (gWifiBridgeCfg.preferredIndex == index) {
+            gWifiBridgeCfg.preferredIndex = -1;
+            prefChanged = true;
+            newPref = -1;
+        } else if (gWifiBridgeCfg.preferredIndex > index) {
+            --gWifiBridgeCfg.preferredIndex;
+            prefChanged = true;
+            newPref = gWifiBridgeCfg.preferredIndex;
+        }
         if (gWifiBridgeCfg.nextTryIndex >= gWifiBridgeCfg.networkCount) {
             gWifiBridgeCfg.nextTryIndex = 0;
         }
     }
     portEXIT_CRITICAL(&gWifiBridgeMux);
+    if (prefChanged) {
+        Preferences p;
+        if (p.begin("fsd", false)) {
+            p.putChar("ub_pref", newPref);
+            p.end();
+        }
+    }
     return true;
 }
 
@@ -203,13 +242,102 @@ static inline String wifiBridgeActiveSSID() {
     return String();
 }
 
+static inline bool wifiBridgeIsTransientDisconnect(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_BEACON_TIMEOUT:
+        case WIFI_REASON_AP_TSF_RESET:
+        case WIFI_REASON_CONNECTION_FAIL:
+        case WIFI_REASON_ASSOC_EXPIRE:
+        case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+        case WIFI_REASON_ROAMING:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline const char* wifiBridgeDisconnectReasonText(uint8_t reason) {
+    switch (reason) {
+        case 0:                                     return "none";
+        case WIFI_REASON_ASSOC_EXPIRE:              return "assoc_expire";
+        case WIFI_REASON_ASSOC_LEAVE:               return "assoc_leave";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:    return "4way_timeout";
+        case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:  return "gtk_timeout";
+        case WIFI_REASON_BEACON_TIMEOUT:            return "beacon_timeout";
+        case WIFI_REASON_NO_AP_FOUND:               return "no_ap_found";
+        case WIFI_REASON_AUTH_FAIL:                 return "auth_fail";
+        case WIFI_REASON_ASSOC_FAIL:                return "assoc_fail";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:         return "handshake_timeout";
+        case WIFI_REASON_CONNECTION_FAIL:           return "connection_fail";
+        case WIFI_REASON_AP_TSF_RESET:              return "ap_tsf_reset";
+        case WIFI_REASON_ROAMING:                   return "roaming";
+        default:                                    return "other";
+    }
+}
+
+static inline uint32_t wifiBridgeComputeBackoffMs(uint8_t consecutiveFailures,
+                                                  bool hasApStations,
+                                                  bool thermalThrottled) {
+    uint8_t step = consecutiveFailures;
+    if (step >= kUpstreamBackoffSteps) step = kUpstreamBackoffSteps - 1;
+    uint32_t delayMs = kUpstreamBackoffMs[step];
+    if (thermalThrottled && delayMs < UPSTREAM_RETRY_THROTTLED_MS) {
+        delayMs = UPSTREAM_RETRY_THROTTLED_MS;
+    }
+    // In APSTA mode every STA scan/begin can briefly disturb the AP. Once at
+    // least one upstream attempt has failed while a phone/car is connected to
+    // the AP, back off to >=60 s so the AP stays rock-solid.
+    if (hasApStations && consecutiveFailures > 0 && delayMs < UPSTREAM_RETRY_THROTTLED_MS) {
+        delayMs = UPSTREAM_RETRY_THROTTLED_MS;
+    }
+    return delayMs;
+}
+
+static inline void wifiBridgeOnEvent(arduino_event_t* ev) {
+    if (!ev) return;
+    switch (ev->event_id) {
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            gWifiBridgeCfg.pendingGotIpEvent = true;
+            gWifiBridgeCfg.pendingDisconnectEvent = false;
+            gWifiBridgeCfg.lastDisconnectReason = 0;
+            gWifiBridgeCfg.connectSuccessCount = gWifiBridgeCfg.connectSuccessCount + 1;
+            break;
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+            const uint8_t reason = ev->event_info.wifi_sta_disconnected.reason;
+            // Voluntary disconnect (our own WiFi.disconnect()) emits ASSOC_LEAVE.
+            // Ignore it while starting a fresh connection so we don't abort ourselves.
+            if (reason == WIFI_REASON_ASSOC_LEAVE && gWifiBridgeCfg.connecting) {
+                break;
+            }
+            gWifiBridgeCfg.lastDisconnectReason = reason;
+            gWifiBridgeCfg.disconnectCount = gWifiBridgeCfg.disconnectCount + 1;
+            gWifiBridgeCfg.pendingDisconnectEvent = true;
+            break;
+        }
+        case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+            gWifiBridgeCfg.apClientJoinCount = gWifiBridgeCfg.apClientJoinCount + 1;
+            break;
+        case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
+            gWifiBridgeCfg.apClientLeaveCount = gWifiBridgeCfg.apClientLeaveCount + 1;
+            break;
+        default:
+            break;
+    }
+}
+
+static inline void wifiBridgeRegisterEvents() {
+    static bool registered = false;
+    if (registered) return;
+    registered = true;
+    WiFi.onEvent(wifiBridgeOnEvent);
+}
+
 static inline int wifiBridgeSelectNextNetworkIndex(const char* /*apSsid*/) {
     if (!wifiBridgeHasCredentials()) return -1;
 
     // Do NOT scan on every reconnect retry: a full-channel scan in APSTA mode
-    // briefly drops the AP's beacon, kicking the phone off Wi-Fi every 15s.
-    // Just round-robin through saved networks — WiFi.begin() will succeed if
-    // the SSID is in range and fail fast (WL_NO_SSID_AVAIL) otherwise.
+    // briefly drops the AP's beacon, kicking the phone off Wi-Fi.
+    // Round-robin through saved networks instead.
     if (gWifiBridgeCfg.nextTryIndex >= gWifiBridgeCfg.networkCount) {
         gWifiBridgeCfg.nextTryIndex = 0;
     }
@@ -218,12 +346,13 @@ static inline int wifiBridgeSelectNextNetworkIndex(const char* /*apSsid*/) {
     return selectedIndex;
 }
 
-static inline void wifiBridgeStartConnect(const char* apSsid) {
+static inline void wifiBridgeStartConnect(const char* apSsid, bool useChannelHint = true) {
     if (!gWifiBridgeCfg.enabled || !wifiBridgeHasCredentials()) return;
 
-    // Copy ssid/pass under mux; WiFi.begin blocks and must not hold a portMUX.
+    // Copy ssid/pass/channel under mux; WiFi.begin blocks and must not hold a portMUX.
     char ssid[33] = {};
     char pass[65] = {};
+    uint8_t channelHint = 0;
     bool have = false;
 
     portENTER_CRITICAL(&gWifiBridgeMux);
@@ -233,21 +362,34 @@ static inline void wifiBridgeStartConnect(const char* apSsid) {
         gWifiBridgeCfg.nextTryIndex = (idx + 1) % gWifiBridgeCfg.networkCount;
         memcpy(ssid, gWifiBridgeCfg.networks[idx].ssid, sizeof(ssid));
         memcpy(pass, gWifiBridgeCfg.networks[idx].pass, sizeof(pass));
+        if (useChannelHint) channelHint = gWifiBridgeCfg.networks[idx].lastChannel;
         have = true;
     } else {
         gWifiBridgeCfg.activeIndex = -1;
     }
     portEXIT_CRITICAL(&gWifiBridgeMux);
 
+    const uint32_t now = millis();
     if (!have) {
-        gWifiBridgeCfg.lastAttemptMillis = millis();
+        gWifiBridgeCfg.connecting = false;
+        gWifiBridgeCfg.lastAttemptMillis = now;
         return;
     }
 
-    WiFi.disconnect(false, false);
-    if (pass[0] != '\0') WiFi.begin(ssid, pass);
-    else                 WiFi.begin(ssid);
-    gWifiBridgeCfg.lastAttemptMillis = millis();
+    gWifiBridgeCfg.connecting = true;
+    gWifiBridgeCfg.usedChannelHint = (channelHint >= 1 && channelHint <= 13);
+    gWifiBridgeCfg.pendingDisconnectEvent = false;
+    gWifiBridgeCfg.pendingGotIpEvent = false;
+    gWifiBridgeCfg.connectStartMillis = now;
+    gWifiBridgeCfg.lastAttemptMillis = now;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect(false, false);
+    }
+    const int32_t ch = gWifiBridgeCfg.usedChannelHint ? static_cast<int32_t>(channelHint) : 0;
+    WiFi.begin(static_cast<const char*>(ssid),
+               pass[0] != '\0' ? static_cast<const char*>(pass) : static_cast<const char*>(nullptr),
+               ch);
 }
 
 static inline void wifiBridgeRequestApply() { gWifiBridgeCfg.applyRequested = true; }
@@ -257,18 +399,18 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
     // an explicit signal to retry promptly even if the previous attempts were
     // in long-backoff territory.
     gWifiBridgeCfg.consecutiveFailures = 0;
+    gWifiBridgeCfg.connecting = false;
+    gWifiBridgeCfg.wasConnected = false;
+    gWifiBridgeCfg.fastRetryPending = false;
+    gWifiBridgeCfg.usedChannelHint = false;
+    gWifiBridgeCfg.pendingDisconnectEvent = false;
+    gWifiBridgeCfg.pendingGotIpEvent = false;
+    gWifiBridgeCfg.lastDisconnectReason = 0;
+    gWifiBridgeCfg.nextRetryMillis = 0;
 
-    if (thermalProtectActive()) {
+    if (thermalProtectActive() || !gWifiBridgeCfg.enabled || !wifiBridgeHasCredentials()) {
         WiFi.disconnect(false, true);
-        gWifiBridgeCfg.activeIndex = -1;
-        gWifiBridgeCfg.nextTryIndex = 0;
-        gWifiBridgeCfg.lastAttemptMillis = 0;
-        wifiBridgeForceApChannel1();
-        return;
-    }
-
-    if (!gWifiBridgeCfg.enabled || !wifiBridgeHasCredentials()) {
-        WiFi.disconnect(false, true);
+        gDnsFilter.clearCache();
         gWifiBridgeCfg.activeIndex = -1;
         gWifiBridgeCfg.nextTryIndex = 0;
         gWifiBridgeCfg.lastAttemptMillis = 0;
@@ -277,6 +419,7 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
     }
 
     WiFi.disconnect(false, true);
+    gDnsFilter.clearCache();
     gWifiBridgeCfg.activeIndex = -1;
     // Start with the last-known-good network if it's still in the saved list.
     // Falls back to round-robin from index 0 if no preference exists.
@@ -286,7 +429,7 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
     } else {
         gWifiBridgeCfg.nextTryIndex = 0;
     }
-    wifiBridgeStartConnect(apSsid);
+    wifiBridgeStartConnect(apSsid, /*useChannelHint=*/false);
 }
 
 static inline void serviceUpstreamWiFi(const char* apSsid) {
@@ -299,58 +442,152 @@ static inline void serviceUpstreamWiFi(const char* apSsid) {
     if (!gWifiBridgeCfg.enabled || !wifiBridgeHasCredentials()) return;
 
     if (thermalProtectActive()) {
-        if (WiFi.status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED || gWifiBridgeCfg.connecting) {
             WiFi.disconnect(false, true);
+            gDnsFilter.clearCache();
             gWifiBridgeCfg.activeIndex = -1;
+            gWifiBridgeCfg.connecting = false;
+            gWifiBridgeCfg.wasConnected = false;
+            gWifiBridgeCfg.fastRetryPending = false;
             gWifiBridgeCfg.lastAttemptMillis = 0;
+            gWifiBridgeCfg.nextRetryMillis = 0;
         }
         return;
     }
 
+    // Never collide with an active async Wi-Fi scan triggered by /api/scan.
+    if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    // 1. Connected path: record channel hint, reset backoff, persist preferred SSID.
     if (WiFi.status() == WL_CONNECTED) {
-        int idx = wifiBridgeFindNetwork(WiFi.SSID());
-        if (idx >= 0) gWifiBridgeCfg.activeIndex = idx;
-        // First successful connect (or transition from failures): reset backoff
-        // and persist this network as the preferred one for next boot.
-        if (gWifiBridgeCfg.consecutiveFailures > 0 || gWifiBridgeCfg.preferredIndex != idx) {
-            gWifiBridgeCfg.consecutiveFailures = 0;
-            if (idx >= 0 && gWifiBridgeCfg.preferredIndex != idx) {
+        gWifiBridgeCfg.connecting = false;
+        gWifiBridgeCfg.wasConnected = true;
+        gWifiBridgeCfg.fastRetryPending = false;
+        gWifiBridgeCfg.pendingDisconnectEvent = false;
+        gWifiBridgeCfg.pendingGotIpEvent = false;
+
+        String currentSsid = WiFi.SSID();
+        uint8_t currentCh = 0;
+        wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+        if (esp_wifi_get_channel(&currentCh, &second) != ESP_OK) currentCh = 0;
+
+        int idx = -1;
+        bool prefChanged = false;
+        portENTER_CRITICAL(&gWifiBridgeMux);
+        idx = wifiBridgeFindNetwork(currentSsid);
+        if (idx >= 0) {
+            gWifiBridgeCfg.activeIndex = idx;
+            if (currentCh >= 1 && currentCh <= 13) {
+                gWifiBridgeCfg.networks[idx].lastChannel = currentCh;
+            }
+            if (gWifiBridgeCfg.preferredIndex != idx) {
                 gWifiBridgeCfg.preferredIndex = idx;
-                Preferences p;
-                if (p.begin("fsd", false)) {
-                    p.putChar("ub_pref", (int8_t)idx);
-                    p.end();
-                }
+                prefChanged = true;
+            }
+        }
+        portEXIT_CRITICAL(&gWifiBridgeMux);
+
+        gWifiBridgeCfg.consecutiveFailures = 0;
+        if (prefChanged && idx >= 0) {
+            Preferences p;
+            if (p.begin("fsd", false)) {
+                p.putChar("ub_pref", (int8_t)idx);
+                p.end();
             }
         }
         return;
     }
 
-    uint32_t now = millis();
-    uint8_t  fails = gWifiBridgeCfg.consecutiveFailures;
-    if (fails >= kUpstreamBackoffSteps) fails = kUpstreamBackoffSteps - 1;
-    uint32_t retryDelay = kUpstreamBackoffMs[fails];
-    if (thermalThrottleActive() && retryDelay < UPSTREAM_RETRY_THROTTLED_MS) {
-        retryDelay = UPSTREAM_RETRY_THROTTLED_MS;
-    }
-    // In APSTA mode every WiFi.begin() can briefly disturb the AP (channel
-    // switch/scan), which users see as "connected, then DHCP/IP lost". When a
-    // client is already on the AP and the upstream has failed, retry slowly.
-    if (WiFi.softAPgetStationNum() > 0 && gWifiBridgeCfg.consecutiveFailures > 0 &&
-        retryDelay < UPSTREAM_RETRY_THROTTLED_MS) {
-        retryDelay = UPSTREAM_RETRY_THROTTLED_MS;
-    }
+    // 2. Process asynchronous STA_DISCONNECTED event.
+    if (gWifiBridgeCfg.pendingDisconnectEvent) {
+        gWifiBridgeCfg.pendingDisconnectEvent = false;
+        const uint8_t reason = gWifiBridgeCfg.lastDisconnectReason;
+        const bool droppedFromConnected = gWifiBridgeCfg.wasConnected;
+        gWifiBridgeCfg.wasConnected = false;
+        gWifiBridgeCfg.connecting = false;
+        gDnsFilter.clearCache();
 
-    bool shouldRetry = (gWifiBridgeCfg.lastAttemptMillis == 0)
-                    || (now - gWifiBridgeCfg.lastAttemptMillis >= retryDelay);
+        if (droppedFromConnected && wifiBridgeIsTransientDisconnect(reason) &&
+            gWifiBridgeCfg.activeIndex >= 0 &&
+            gWifiBridgeCfg.activeIndex < gWifiBridgeCfg.networkCount &&
+            !gWifiBridgeCfg.fastRetryPending) {
+            // Brief link loss on a healthy upstream: retry the SAME SSID once
+            // after 2 s using its cached channel hint (~150 ms re-assoc).
+            gWifiBridgeCfg.fastRetryPending = true;
+            portENTER_CRITICAL(&gWifiBridgeMux);
+            if (gWifiBridgeCfg.activeIndex >= 0 && gWifiBridgeCfg.activeIndex < gWifiBridgeCfg.networkCount) {
+                gWifiBridgeCfg.nextTryIndex = static_cast<uint8_t>(gWifiBridgeCfg.activeIndex);
+            }
+            portEXIT_CRITICAL(&gWifiBridgeMux);
+            gWifiBridgeCfg.nextRetryMillis = now + UPSTREAM_FAST_RETRY_DELAY_MS;
+            return;
+        }
 
-    if (shouldRetry) {
-        // Saturate at the last backoff step — incrementing past it would just
-        // waste cycles since we already clamp `fails` to the table size above.
+        // Failed attempt or non-transient disconnect: clear stale channel hint
+        // so the next try scans all channels (hotspot may have changed channel).
+        portENTER_CRITICAL(&gWifiBridgeMux);
+        if (gWifiBridgeCfg.activeIndex >= 0 && gWifiBridgeCfg.activeIndex < gWifiBridgeCfg.networkCount) {
+            gWifiBridgeCfg.networks[gWifiBridgeCfg.activeIndex].lastChannel = 0;
+        }
+        portEXIT_CRITICAL(&gWifiBridgeMux);
+
+        gWifiBridgeCfg.fastRetryPending = false;
         if (gWifiBridgeCfg.consecutiveFailures < kUpstreamBackoffSteps) {
             gWifiBridgeCfg.consecutiveFailures++;
         }
-        wifiBridgeStartConnect(apSsid);
+        const uint32_t delayMs = wifiBridgeComputeBackoffMs(
+            gWifiBridgeCfg.consecutiveFailures - 1,
+            WiFi.softAPgetStationNum() > 0,
+            thermalThrottleActive());
+        gWifiBridgeCfg.nextRetryMillis = now + delayMs;
+        return;
+    }
+
+    // 3. While an attempt is actively in flight (scan / WPA handshake / DHCP),
+    //    wait up to UPSTREAM_CONNECT_TIMEOUT_MS (12 s) instead of aborting at 3 s.
+    if (gWifiBridgeCfg.connecting) {
+        if (now - gWifiBridgeCfg.connectStartMillis < UPSTREAM_CONNECT_TIMEOUT_MS) {
+            return;
+        }
+        // Timed out waiting for association or DHCP.
+        WiFi.disconnect(false, false);
+        gWifiBridgeCfg.connecting = false;
+        gWifiBridgeCfg.wasConnected = false;
+        gWifiBridgeCfg.fastRetryPending = false;
+        portENTER_CRITICAL(&gWifiBridgeMux);
+        if (gWifiBridgeCfg.activeIndex >= 0 && gWifiBridgeCfg.activeIndex < gWifiBridgeCfg.networkCount) {
+            gWifiBridgeCfg.networks[gWifiBridgeCfg.activeIndex].lastChannel = 0;
+        }
+        portEXIT_CRITICAL(&gWifiBridgeMux);
+        if (gWifiBridgeCfg.consecutiveFailures < kUpstreamBackoffSteps) {
+            gWifiBridgeCfg.consecutiveFailures++;
+        }
+        const uint32_t delayMs = wifiBridgeComputeBackoffMs(
+            gWifiBridgeCfg.consecutiveFailures - 1,
+            WiFi.softAPgetStationNum() > 0,
+            thermalThrottleActive());
+        gWifiBridgeCfg.nextRetryMillis = now + delayMs;
+        return;
+    }
+
+    // 4. Handle unexpected silent drop without event (safety net).
+    if (gWifiBridgeCfg.wasConnected) {
+        gWifiBridgeCfg.wasConnected = false;
+        gDnsFilter.clearCache();
+        gWifiBridgeCfg.nextRetryMillis = now + UPSTREAM_FAST_RETRY_DELAY_MS;
+        return;
+    }
+
+    // 5. Waiting for backoff timer to expire before next attempt.
+    if (gWifiBridgeCfg.lastAttemptMillis == 0 ||
+        static_cast<int32_t>(now - gWifiBridgeCfg.nextRetryMillis) >= 0) {
+        const bool useHint = gWifiBridgeCfg.fastRetryPending;
+        gWifiBridgeCfg.fastRetryPending = false;
+        wifiBridgeStartConnect(apSsid, useHint);
     }
 }
 
@@ -359,23 +596,24 @@ static inline void syncNATState() {
     if (gNatEnabled == shouldEnable) return;
 
 #if ESP_IDF_VERSION_MAJOR >= 5
-    // IDF 5.x exposes NAPT through esp_netif; no raw address/NBO handling.
+    // IDF 5.x exposes NAPT through esp_netif; verify return status so a
+    // transient failure retries on the next loop tick.
     esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (apNetif) {
-        if (shouldEnable) {
-            esp_netif_napt_enable(apNetif);
-        } else {
-            esp_netif_napt_disable(apNetif);
-        }
+    if (!apNetif) return;
+    if (shouldEnable) {
+        if (esp_netif_napt_enable(apNetif) != ESP_OK) return;
+    } else {
+        esp_netif_napt_disable(apNetif);
+        gDnsFilter.clearCache();
     }
 #else
     // Must pass address in network byte order — lwip compares netif->ip_addr.addr
-    // directly (u32_t in NBO). Manual big-endian shifting mismatches lwip's netif
-    // on little-endian ESP32, causing ip_napt_enable to fall through to
-    // ip_napt_deinit() which mem_free(NULL)s and asserts. Arduino IPAddress'
-    // uint32_t conversion already returns NBO on little-endian targets.
+    // directly (u32_t in NBO). Arduino IPAddress' uint32_t conversion already
+    // returns NBO on little-endian targets.
     uint32_t apAddrNbo = static_cast<uint32_t>(WiFi.softAPIP());
+    if (apAddrNbo == 0) return;
     ip_napt_enable(static_cast<u32_t>(apAddrNbo), shouldEnable ? 1 : 0);
+    if (!shouldEnable) gDnsFilter.clearCache();
 #endif
     gNatEnabled = shouldEnable;
 }
@@ -558,13 +796,21 @@ static inline const char* wifiBridgeUpstreamStatusText() {
     if (!gWifiBridgeCfg.enabled)        return "未启用";
     if (!wifiBridgeHasCredentials())    return "未配置热点";
     if (thermalProtectActive())         return "过热保护中";
+    if (WiFi.status() == WL_CONNECTED)  return "已连接";
+    if (gWifiBridgeCfg.connecting)      return "连接中";
+
+    const uint8_t reason = gWifiBridgeCfg.lastDisconnectReason;
+    if (reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT) {
+        return "认证/密码失败";
+    }
+    if (reason == WIFI_REASON_NO_AP_FOUND)    return "找不到热点";
+    if (reason == WIFI_REASON_BEACON_TIMEOUT) return "信号丢失";
 
     switch (WiFi.status()) {
-        case WL_CONNECTED:       return "已连接";
         case WL_NO_SSID_AVAIL:   return "找不到热点";
         case WL_CONNECT_FAILED:  return "连接失败";
         case WL_CONNECTION_LOST: return "连接丢失";
-        case WL_DISCONNECTED:    return "未连接";
+        case WL_DISCONNECTED:    return "等待重连";
         case WL_IDLE_STATUS:
         default:                 return "连接中";
     }

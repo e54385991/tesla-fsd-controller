@@ -78,8 +78,28 @@ uint32_t ipAddressToHostOrder(const IPAddress& ip) { return ip.value; }
 std::vector<std::string> remembered;
 void rememberResolvedIp(const String& domain, uint32_t) { remembered.push_back(domain); }
 constexpr size_t kStagingCapacity = 64;
-struct CachedIpEntry { uint32_t ipHostOrder; char domain[128]; uint32_t lastSeenAtSeconds; };
+struct CachedIpEntry { uint32_t ipHostOrder; uint32_t lastSeenAtSeconds; };
 CachedIpEntry gStagingIps[kStagingCapacity];
+constexpr size_t kDnsCacheCapacity = 32;
+constexpr uint32_t kDnsCacheMinTtlSeconds = 30;
+constexpr uint32_t kDnsCacheMaxTtlSeconds = 300;
+struct DnsCacheEntry { char domain[96] = {}; uint32_t ipv4Nbo = 0; uint32_t expiresAtSec = 0; uint32_t lastUsedSec = 0; };
+DnsCacheEntry gDnsCache[kDnsCacheCapacity];
+static bool gFakeIpBlockerEnabled = false;
+static bool dnsIpBlockerEnabled() { return gFakeIpBlockerEnabled; }
+#ifndef portENTER_CRITICAL
+#define portENTER_CRITICAL(mux) do {} while (0)
+#define portEXIT_CRITICAL(mux) do {} while (0)
+#endif
+#ifndef strlcpy
+#define strlcpy(dest, src, size) std::snprintf(dest, size, "%s", src)
+#endif
+constexpr size_t kPendingBlockResolveCap = 8;
+char gPendingBlockResolve[kPendingBlockResolveCap][128] = {};
+size_t gPendingBlockHead = 0;
+size_t gPendingBlockCount = 0;
+int gDnsCacheMux = 0;
+int gDnsIpPolicyMux = 0;
 '''
 
 STRICT_PREAMBLE = r'''
@@ -92,9 +112,6 @@ uint8_t gIngressNetifIndex = 0;
 uint32_t gIpForwardDropCount = 0;
 uint32_t nowMs = 0;
 uint32_t millis() { return nowMs; }
-#define portENTER_CRITICAL(mux) do {} while (0)
-#define portEXIT_CRITICAL(mux) do {} while (0)
-#define strlcpy(dest, src, size) std::snprintf(dest, size, "%s", src)
 '''
 
 TESTS = r'''
@@ -234,8 +251,10 @@ int main() {
     // substitute; only literal rules and concrete blocked hosts are resolved.
     assert(buildStaging("*.qq.com qq.com *.tesla.cn api.example.com", 42) == 2);
     assert((WiFi.queries == std::vector<std::string>{"qq.com", "api.example.com"}));
-    assert(std::strcmp(gStagingIps[0].domain, "qq.com") == 0);
+    assert(gStagingIps[0].ipHostOrder == 1);
     assert(gStagingIps[0].lastSeenAtSeconds == 42);
+    assert(gStagingIps[1].ipHostOrder == 2);
+    static_assert(sizeof(CachedIpEntry) == 8, "CachedIpEntry must stay compact (8 B)");
     WiFi.queries.clear();
     resolveAndRememberDomain("*.qq.com");
     resolveAndRememberDomain("");
@@ -243,6 +262,39 @@ int main() {
     resolveAndRememberDomain("music.qq.com");
     assert((WiFi.queries == std::vector<std::string>{"music.qq.com"}));
     assert((remembered == std::vector<std::string>{"music.qq.com"}));
+
+    // IP blocker disabled (default): dnsIpBlockerRememberDomain must NOT enqueue
+    // or call WiFi.hostByName().
+    WiFi.queries.clear();
+    gFakeIpBlockerEnabled = false;
+    gPendingBlockHead = 0;
+    gPendingBlockCount = 0;
+    dnsIpBlockerRememberDomain("blocked.example.com", 1);
+    assert(WiFi.queries.empty() && gPendingBlockCount == 0);
+
+    // IP blocker enabled: enqueues asynchronously (deduped) without calling hostByName().
+    gFakeIpBlockerEnabled = true;
+    dnsIpBlockerRememberDomain("  BLOCKED.Example.COM. ", 1);
+    dnsIpBlockerRememberDomain("blocked.example.com", 1);
+    assert(WiFi.queries.empty() && gPendingBlockCount == 1);
+    char popped[128] = {};
+    assert(popPendingBlockResolve(popped, sizeof(popped)));
+    assert(std::strcmp(popped, "blocked.example.com") == 0);
+    assert(gPendingBlockCount == 0);
+
+    // DNS A-record LRU cache: store, TTL clamp [30..300], hit, expire, clear.
+    dnsCacheClear();
+    uint32_t hitIp = 0, remTtl = 0;
+    assert(!dnsCacheLookup("api.map.baidu.com", 100, hitIp, remTtl));
+    dnsCacheStore("api.map.baidu.com", 0x01020304u, 5, 100);  // clamped up to 30s
+    assert(dnsCacheLookup("api.map.baidu.com", 110, hitIp, remTtl));
+    assert(hitIp == 0x01020304u && remTtl == 20);
+    assert(!dnsCacheLookup("api.map.baidu.com", 130, hitIp, remTtl));  // expired
+    dnsCacheStore("y.qq.com", 0x05060708u, 9999, 200);  // clamped down to 300s
+    assert(dnsCacheLookup("y.qq.com", 250, hitIp, remTtl));
+    assert(hitIp == 0x05060708u && remTtl == 250);
+    dnsCacheClear();
+    assert(!dnsCacheLookup("y.qq.com", 250, hitIp, remTtl));
     // FSD hijack set: exact configured hosts plus PC arp_mitm's mothership.*
     // prefix, regardless of whether the list names a concrete mothership host.
     assert(dnsFsdRedirectMatchesHost("api-prd.vn.cloud.tesla.cn", "api-prd.vn.cloud.tesla.cn"));
@@ -265,6 +317,8 @@ int main() {
 
 def main():
     signatures = [
+        "void dnsCacheClear(", "bool dnsCacheLookup(", "void dnsCacheStore(",
+        "bool enqueuePendingBlockResolve(", "bool popPendingBlockResolve(",
         "bool isWildcardDomainRule(", "bool domainMatchesRule(",
         "String normalizeDomainCstr(", "bool hasRules(",
         "bool getRuleByIndex(", "size_t countRules(",
@@ -273,6 +327,7 @@ def main():
         "bool DNSWhitelistServer::hasDomainRules(",
         "bool DNSWhitelistServer::isAllowedDomain(",
         "void resolveAndRememberDomain(", "size_t buildStaging(",
+        'extern "C" void dnsIpBlockerRememberDomain(',
     ]
     base_functions = "\n".join(function(s) for s in signatures)
     strict_functions = "\n".join(function(signature) for signature in (

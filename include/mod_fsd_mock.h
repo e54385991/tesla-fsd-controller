@@ -86,6 +86,7 @@ struct Handshake {
 
 void installLogHook();
 void begin();
+void setListenersReady(bool ready);
 
 void noteHandshake(const struct esp_tls* tls);
 void noteHandshakeFailure(const char* error);

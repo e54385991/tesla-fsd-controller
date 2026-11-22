@@ -28,7 +28,7 @@
 | DNS 过滤 | 首次启动默认开启 |
 | 默认白名单 | 40 条基础 / 地图 / 音乐 / 豆包域名（见下文） |
 | 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` |
-| FSD 下发 | 默认开启，`reply` 模式 |
+| FSD 下发 | 默认关闭（可在面板一键开启，`reply` 模式，443/4567 按需启停） |
 
 > 首次启动、恢复出厂或执行 `erase_flash` 后，设备使用上述默认值。之后在面板里改过的配置会保存在 NVS，重启不会丢失。
 
@@ -230,7 +230,7 @@ mothership.vn.cloud.tesla.cn
 
 ## FSD 下发（`/feature_configuration`）
 
-`esp32s3-waveshare-wifi` 内置与 Windows TeslaDG 对齐的下发链路，默认开启。
+`esp32s3-waveshare-wifi` 内置与 Windows TeslaDG 对齐的下发链路，默认关闭（不启动 443/4567 监听以释放约 28 KB 内部 RAM 供 Wi-Fi/NAPT 使用）；在管理面板一键开启后自动拉起监听，关闭后自动释放资源，无需重启。
 
 ### 工作流程
 

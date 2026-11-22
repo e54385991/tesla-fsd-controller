@@ -57,7 +57,7 @@ constexpr char kLegacyDefaultHosts[] = "api-prd.vn.cloud.tesla.cn";
 
 struct Settings {
     uint32_t magic = kSettingsMagic;
-    uint8_t enabled = 1;
+    uint8_t enabled = 0;  // Default OFF to preserve RAM/network headroom; user toggles ON in UI
     uint8_t mode = static_cast<uint8_t>(Mode::Reply);
     uint8_t reserved[2] = {};
     char host[kHostCapacity] =
@@ -65,7 +65,7 @@ struct Settings {
 };
 
 struct State {
-    bool enabled = true;
+    bool enabled = false;
     Mode mode = Mode::Reply;
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
@@ -1067,7 +1067,14 @@ void begin() {
     free(stored);
     free(compacted);
     if (migrateHost) persistSettings();
-    gActive = true;
+    // Listeners (443/4567) are started lazily by client_config only when
+    // enabled() is true; gActive becomes true via setListenersReady(true).
+    gActive = false;
+    syncDnsRedirect();
+}
+
+void setListenersReady(bool ready) {
+    gActive = ready;
     syncDnsRedirect();
 }
 

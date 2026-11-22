@@ -34,6 +34,8 @@ namespace client_config {
 static nvs_handle_t storage;
 static httpd_handle_t fsdServer;
 static httpd_handle_t mothershipServer;
+static bool initialized = false;
+static volatile bool listenerSyncRequested = false;
 
 static bool readState(ClientConfigState& state) {
     size_t length = sizeof(state);
@@ -265,6 +267,10 @@ static bool startMothershipHttp() {
     return true;
 }
 
+bool fsdHttpsStarted() {
+    return fsdServer != nullptr;
+}
+
 bool mothershipHttpStarted() {
     return mothershipServer != nullptr;
 }
@@ -276,13 +282,8 @@ static void tlsUserCallback(esp_https_server_user_cb_arg_t* argument) {
     if (argument && argument->tls) fsd_mock::noteHandshake(argument->tls);
 }
 
-bool start() {
-    if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
-    if (!loadIdentity(storage)) {
-        nvs_close(storage);
-        return false;
-    }
-
+static bool startFsdHttps() {
+    if (fsdServer != nullptr) return true;
     fsd_mock::installLogHook();
 
     // 443 is FSD-only: the catch-all handles /feature_configuration and
@@ -307,8 +308,8 @@ bool start() {
     config.httpd.core_id = 0;
     config.httpd.stack_size = 10240;
     // One vehicle TLS socket at a time. A second concurrent car connection
-    // plus the upstream esp_http_client TLS context can exhaust the ~80 KB
-    // heap; lru_purge_enable closes the stale socket when the car reconnects.
+    // plus the upstream esp_http_client TLS context can exhaust internal RAM;
+    // lru_purge_enable closes the stale socket when the car reconnects.
     config.httpd.max_open_sockets = 1;
     config.httpd.backlog_conn = 1;  // serialize reconnects; car uses one TLS socket
     config.httpd.recv_wait_timeout = 3;
@@ -325,21 +326,76 @@ bool start() {
     };
     if (httpd_ssl_start(&fsdServer, &config) != ESP_OK) {
         fsdServer = nullptr;
-        nvs_close(storage);
         return false;
     }
     for (const auto& endpoint : fsdEndpoints) {
         if (httpd_register_uri_handler(fsdServer, &endpoint) == ESP_OK) continue;
         httpd_ssl_stop(fsdServer);
         fsdServer = nullptr;
-        nvs_close(storage);
+        return false;
+    }
+    return true;
+}
+
+static void stopMothershipHttp() {
+    if (!mothershipServer) return;
+    httpd_stop(mothershipServer);
+    mothershipServer = nullptr;
+}
+
+static void stopFsdHttps() {
+    if (!fsdServer) return;
+    httpd_ssl_stop(fsdServer);
+    fsdServer = nullptr;
+}
+
+static bool syncFsdListenersNow() {
+    if (!initialized) return false;
+    const bool want = fsd_mock::enabled();
+    if (want) {
+        const bool httpsOk = startFsdHttps();
+        if (httpsOk) {
+            if (!mothershipServer) startMothershipHttp();
+            // Only redirect api-prd/mothership after 443 is actually accepting connections.
+            fsd_mock::setListenersReady(true);
+            return true;
+        }
+        fsd_mock::setListenersReady(false);
         return false;
     }
 
-    // Only redirect api-prd/mothership after 443 is actually accepting
-    // connections. Port 4567 mirrors the PC mothership reverse listener.
+    // Stop DNS redirect FIRST so clients never hit a closing listener, then
+    // reclaim ~28 KB RAM, 2 Core-0 tasks, and 6 BSD sockets.
+    fsd_mock::setListenersReady(false);
+    stopMothershipHttp();
+    stopFsdHttps();
+    return true;
+}
+
+void requestListenerSync() {
+    listenerSyncRequested = true;
+}
+
+void serviceListeners() {
+    if (!listenerSyncRequested) return;
+    listenerSyncRequested = false;
+    syncFsdListenersNow();
+}
+
+bool start() {
+    if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
+    if (!loadIdentity(storage)) {
+        nvs_close(storage);
+        return false;
+    }
+    initialized = true;
+
+    // Load FSD mock settings & payload first; only start 443/4567 listeners
+    // when FSD mock is enabled (default OFF to keep maximum RAM/Wi-Fi headroom).
     fsd_mock::begin();
-    startMothershipHttp();
+    if (fsd_mock::enabled()) {
+        syncFsdListenersNow();
+    }
     return true;
 }
 
@@ -396,6 +452,20 @@ void serviceSerial() {
                             close(sock);
                         }
                     }
+                } else if (strcmp(command, "fsd-on") == 0) {
+                    fsd_mock::setEnabled(true);
+                    syncFsdListenersNow();
+                    Serial.printf("[fsd] enabled=1 fsd443=%d fsdHttp4567=%d heap=%u\n",
+                                  fsdHttpsStarted() ? 1 : 0,
+                                  mothershipHttpStarted() ? 1 : 0,
+                                  static_cast<unsigned>(ESP.getFreeHeap()));
+                } else if (strcmp(command, "fsd-off") == 0) {
+                    fsd_mock::setEnabled(false);
+                    syncFsdListenersNow();
+                    Serial.printf("[fsd] enabled=0 fsd443=%d fsdHttp4567=%d heap=%u\n",
+                                  fsdHttpsStarted() ? 1 : 0,
+                                  mothershipHttpStarted() ? 1 : 0,
+                                  static_cast<unsigned>(ESP.getFreeHeap()));
                 } else if (strcmp(command, "fsd-default") == 0 ||
                            strcmp(command, "fsd-16f") == 0 ||
                            strcmp(command, "fsd-282b") == 0) {

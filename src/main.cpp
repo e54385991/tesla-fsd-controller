@@ -19,6 +19,7 @@
 #include <esp_netif.h>
 #include <dhcpserver/dhcpserver.h>
 #include <esp_wifi.h>
+#include <lwip/sockets.h>
 #include <SPIFFS.h>
 #include <sys/time.h>
 
@@ -58,7 +59,9 @@ static char apPass[64] = "88888888";
 // ── WiFi STA config (connect to router) ──
 static char staSSID[33] = "";
 static char staPass[64] = "";
+#ifndef WIFI_BRIDGE_ENABLED
 static bool staConnected = false;
+#endif
 
 // ── Globals ──
 #ifndef WIFI_BRIDGE_ENABLED
@@ -690,6 +693,40 @@ static const char* resetReasonName() {
 }
 
 #ifdef WIFI_BRIDGE_ENABLED
+// Configure SoftAP IP (9.9.9.9/24) and ensure the DHCP server advertises
+// 9.9.9.9 as the primary DNS server. Shared by setup() and channel-1 recovery
+// so AP clients never lose the DNS option after switching back to AP-only.
+static void wifiBridgeConfigureApIpAndDns() {
+    WiFi.softAPConfig(IPAddress(9, 9, 9, 9), IPAddress(9, 9, 9, 9), IPAddress(255, 255, 255, 0));
+    esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (!apNetif) return;
+
+    const esp_err_t stopErr = esp_netif_dhcps_stop(apNetif);
+    (void)stopErr;
+    esp_netif_dns_info_t dnsInfo = {};
+    dnsInfo.ip.type = ESP_IPADDR_TYPE_V4;
+    dnsInfo.ip.u_addr.ip4.addr = static_cast<uint32_t>(WiFi.softAPIP());
+    const esp_err_t dnsErr = esp_netif_set_dns_info(apNetif, ESP_NETIF_DNS_MAIN, &dnsInfo);
+    dhcps_offer_t offerDns = OFFER_DNS;
+    const esp_err_t offerErr = esp_netif_dhcps_option(
+        apNetif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER, &offerDns, sizeof(offerDns));
+    (void)offerErr;
+    esp_err_t startErr = esp_netif_dhcps_start(apNetif);
+    if (startErr != ESP_OK && startErr != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        delay(50);
+        startErr = esp_netif_dhcps_start(apNetif);
+    }
+    esp_netif_dhcp_status_t dhcpStatus = ESP_NETIF_DHCP_INIT;
+    esp_netif_dhcps_get_status(apNetif, &dhcpStatus);
+    DLOG("DHCP: stop=%d dns=%d offer=%d start=%d status=%d\n",
+         stopErr, dnsErr, offerErr, startErr, dhcpStatus);
+    if (startErr != ESP_OK && startErr != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        addDiagLog(bootUptimeSeconds(), "DHCP server start FAILED");
+    } else if (dnsErr != ESP_OK) {
+        addDiagLog(bootUptimeSeconds(), "DHCP DNS option failed");
+    }
+}
+
 // AP-only mode must not stay on the last STA channel: some car/phone Wi-Fi
 // stacks fail to re-associate after the AP follows a hotspot to ch 6-14.
 void wifiBridgeForceApChannel1() {
@@ -697,8 +734,8 @@ void wifiBridgeForceApChannel1() {
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
     esp_wifi_get_channel(&channel, &second);
     if (channel == 1) return;
-    WiFi.softAPConfig(IPAddress(9, 9, 9, 9), IPAddress(9, 9, 9, 9), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1);
+    WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1, 0, 8);
+    wifiBridgeConfigureApIpAndDns();
     Serial.printf("[wifi] AP forced to channel 1 (was %u)\n", static_cast<unsigned>(channel));
 }
 
@@ -791,16 +828,32 @@ void wifiBridgePrintDiag() {
     uint8_t channel = 0;
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
     esp_wifi_get_channel(&channel, &second);
-    Serial.printf("[wifi-diag] AP ssid=%s pass=%s ip=%s ch=%u stations=%u dhcp=%d\n",
+    wifi_ps_type_t psMode = WIFI_PS_MIN_MODEM;
+    esp_wifi_get_ps(&psMode);
+    int8_t txPwr = 0;
+    esp_wifi_get_max_tx_power(&txPwr);
+    uint32_t dnsHits = 0, dnsMisses = 0, dnsFwdOk = 0, dnsFwdTo = 0;
+    gDnsFilter.getPerfStats(&dnsHits, &dnsMisses, &dnsFwdOk, &dnsFwdTo);
+    const bool staUp = WiFi.status() == WL_CONNECTED;
+
+    Serial.printf("[wifi-diag] AP ssid=%s pass=%s ip=%s ch=%u stations=%u dhcp=%d ps=%d txPwr=%d napt=%d\n",
                   apSSID, apPass, WiFi.softAPIP().toString().c_str(),
-                  static_cast<unsigned>(channel), WiFi.softAPgetStationNum(), dhcp);
-    Serial.printf("[wifi-diag] upstream=%d ssid=%s sta=%d staIP=%s dnsFilter=%d dnsEnabled=%d allow=%u block=%u heap=%u\n",
+                  static_cast<unsigned>(channel), WiFi.softAPgetStationNum(), dhcp,
+                  static_cast<int>(psMode), static_cast<int>(txPwr), gNatEnabled ? 1 : 0);
+    Serial.printf("[wifi-diag] upstream=%d ssid=%s sta=%d staIP=%s rssi=%d reason=%u(%s) conn=%u disc=%u\n",
                   gWifiBridgeCfg.enabled ? 1 : 0, wifiBridgeActiveSSID().c_str(),
-                  WiFi.status(), WiFi.localIP().toString().c_str(),
+                  WiFi.status(), staUp ? WiFi.localIP().toString().c_str() : "0.0.0.0",
+                  staUp ? static_cast<int>(WiFi.RSSI()) : 0,
+                  static_cast<unsigned>(gWifiBridgeCfg.lastDisconnectReason),
+                  wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason),
+                  static_cast<unsigned>(gWifiBridgeCfg.connectSuccessCount),
+                  static_cast<unsigned>(gWifiBridgeCfg.disconnectCount));
+    Serial.printf("[wifi-diag] dnsFilter=%d dnsEnabled=%d allow=%u block=%u cache=%u/%u fwd=%u/%u\n",
                   gDnsFilter.started() ? 1 : 0, gDnsFilterCfg.enabled ? 1 : 0,
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
-                  static_cast<unsigned>(ESP.getFreeHeap()));
+                  static_cast<unsigned>(dnsHits), static_cast<unsigned>(dnsMisses),
+                  static_cast<unsigned>(dnsFwdOk), static_cast<unsigned>(dnsFwdTo));
     Serial.printf("[wifi-diag] heap=%u minHeap=%u reset=%s psram=%u freePsram=%u\n",
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()), resetReasonName(),
@@ -817,7 +870,9 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
                   static_cast<unsigned>(SPIFFS.usedBytes()),
                   static_cast<unsigned>(SPIFFS.totalBytes()));
-    Serial.printf("[wifi-diag] fsdHttp4567=%d\n", client_config::mothershipHttpStarted() ? 1 : 0);
+    Serial.printf("[wifi-diag] fsd443=%d fsdHttp4567=%d\n",
+                  client_config::fsdHttpsStarted() ? 1 : 0,
+                  client_config::mothershipHttpStarted() ? 1 : 0);
 #endif
 }
 #endif
@@ -1324,8 +1379,13 @@ void setupWebServer() {
             return;
         }
         WiFi.scanDelete();
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+        // Shorter active dwell (40..120 ms/ch) cuts total off-channel sweep
+        // time by ~60%, preventing AP clients from dropping during scans.
+        WiFi.setScanActiveMinTime(40);
+#endif
         WiFi.scanNetworks(/*async=*/true, /*hidden=*/false,
-                          /*passive=*/false, /*max_ms_per_chan=*/300,
+                          /*passive=*/false, /*max_ms_per_chan=*/120,
                           /*channel=*/0);
         req->send(200, "application/json", "{\"scanning\":true}");
     });
@@ -1349,16 +1409,61 @@ void setupWebServer() {
         char logMsg[48];
         snprintf(logMsg, sizeof(logMsg), "WiFi scan: %d networks found", n);
         addDiagLog(up, logMsg);
-        String json = "[";
+
+        // Deduplicate by SSID (keeping strongest RSSI), skip empty SSIDs, and
+        // sort descending by RSSI so the strongest hotspots appear first.
+        struct ScanItem {
+            char ssid[33];
+            int32_t rssi;
+        };
+        constexpr size_t kMaxScanItems = 32;
+        ScanItem items[kMaxScanItems];
+        size_t itemCount = 0;
         for (int i = 0; i < n; i++) {
-            if (i > 0) json += ",";
             String ssid = WiFi.SSID(i);
-            ssid.replace("\\", "\\\\");
-            ssid.replace("\"", "\\\"");
-            json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+            if (ssid.isEmpty()) continue;
+            const int32_t rssi = WiFi.RSSI(i);
+            bool dup = false;
+            for (size_t j = 0; j < itemCount; ++j) {
+                if (ssid.equals(items[j].ssid)) {
+                    if (rssi > items[j].rssi) items[j].rssi = rssi;
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup && itemCount < kMaxScanItems) {
+                strlcpy(items[itemCount].ssid, ssid.c_str(), sizeof(items[itemCount].ssid));
+                items[itemCount].rssi = rssi;
+                ++itemCount;
+            }
+        }
+        WiFi.scanDelete();
+
+        for (size_t i = 0; i + 1 < itemCount; ++i) {
+            size_t best = i;
+            for (size_t j = i + 1; j < itemCount; ++j) {
+                if (items[j].rssi > items[best].rssi) best = j;
+            }
+            if (best != i) {
+                ScanItem tmp = items[i];
+                items[i] = items[best];
+                items[best] = tmp;
+            }
+        }
+
+        String json = "[";
+        json.reserve(itemCount * 48 + 4);
+        for (size_t i = 0; i < itemCount; ++i) {
+            if (i > 0) json += ",";
+            char escaped[72];
+            jsonEscapeInto(items[i].ssid, escaped, sizeof(escaped));
+            json += "{\"ssid\":\"";
+            json += escaped;
+            json += "\",\"rssi\":";
+            json += String(items[i].rssi);
+            json += "}";
         }
         json += "]";
-        WiFi.scanDelete();
         req->send(200, "application/json", json);
     });
 
@@ -1626,6 +1731,9 @@ void setupWebServer() {
         json += ",\"upstreamIP\":\""; json += wifiBridgeJsonEscape(upIP); json += "\"";
         json += ",\"upstreamStatus\":\""; json += wifiBridgeJsonEscape(String(wifiBridgeUpstreamStatusText())); json += "\"";
         json += ",\"upstreamSignal\":\""; json += (upConnected ? wifiBridgeJsonEscape(String(wifiBridgeSignalText(upRSSI))) : String()); json += "\"";
+        json += ",\"upstreamLastReason\":"; json += String((unsigned)gWifiBridgeCfg.lastDisconnectReason);
+        json += ",\"upstreamLastReasonText\":\""; json += wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason); json += "\"";
+        json += ",\"upstreamDisconnects\":"; json += String((unsigned)gWifiBridgeCfg.disconnectCount);
         // Snapshot networks under mux (HTTP task vs loop task writers). Copy to
         // locals so JSON-building String ops run outside the critical section.
         SavedUpstreamNetwork snap[MAX_UPSTREAM_NETWORKS];
@@ -1665,9 +1773,15 @@ void setupWebServer() {
         json += ",\"dnsBlockedTotal\":"; json += String((unsigned)totalBlocked);
         uint32_t ipDrops = 0, ipCache = 0, ipPeak = 0;
         dnsIpBlockerGetStats(&ipDrops, &ipCache, &ipPeak);
+        uint32_t dnsHits = 0, dnsMisses = 0, dnsFwdOk = 0, dnsFwdTo = 0;
+        gDnsFilter.getPerfStats(&dnsHits, &dnsMisses, &dnsFwdOk, &dnsFwdTo);
         json += ",\"ipBlockDrops\":"; json += String((unsigned)ipDrops);
         json += ",\"ipCacheCount\":"; json += String((unsigned)ipCache);
         json += ",\"ipCachePeak\":"; json += String((unsigned)ipPeak);
+        json += ",\"dnsCacheHits\":"; json += String((unsigned)dnsHits);
+        json += ",\"dnsCacheMisses\":"; json += String((unsigned)dnsMisses);
+        json += ",\"dnsForwardOk\":"; json += String((unsigned)dnsFwdOk);
+        json += ",\"dnsForwardTimeouts\":"; json += String((unsigned)dnsFwdTo);
         json += ",\"dnsBlockedRecent\":[";
         for (size_t i = 0; i < recentBlocked; ++i) {
             if (i > 0) json += ",";
@@ -1755,17 +1869,13 @@ void setupWebServer() {
             changed = true;
         }
 #else
-        if (req->hasParam("dnsReset") || req->hasParam("dnsEnable")) {
-            gDnsFilterCfg.enabled = req->hasParam("dnsReset") ||
-                req->getParam("dnsEnable")->value().toInt() != 0;
-            changed = true;
-        }
-        if (hasAllow) {
-            wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), allowVal);
-            changed = true;
-        }
-        if (hasBlock) {
-            wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), blockVal);
+        const bool hasDnsEnable = req->hasParam("dnsReset") || req->hasParam("dnsEnable");
+        if (hasDnsEnable || hasAllow || hasBlock) {
+            const bool nextEnabled = req->hasParam("dnsReset") ||
+                (req->hasParam("dnsEnable") && req->getParam("dnsEnable")->value().toInt() != 0);
+            dnsFilterUpdateConfig(gDnsFilterCfg, hasDnsEnable, nextEnabled,
+                                  hasAllow ? allowVal.c_str() : nullptr,
+                                  hasBlock ? blockVal.c_str() : nullptr);
             changed = true;
         }
 #endif
@@ -1852,6 +1962,7 @@ void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (req->hasParam("enabled")) {
             fsd_mock::setEnabled(req->getParam("enabled")->value().toInt() != 0);
+            client_config::requestListenerSync();
         }
         if (req->hasParam("mode")) {
             if (!fsd_mock::setMode(req->getParam("mode")->value().c_str())) {
@@ -2120,8 +2231,8 @@ void canTask(void* param) {
                         IdEntry t = idScan[i]; idScan[i] = idScan[j]; idScan[j] = t;
                     }
             uint32_t up = bootUptimeSeconds();
-            char hdr[40];
-            snprintf(hdr, sizeof(hdr), "=== CAN IDs (%u unique, 30s) ===", idScanN);
+            char hdr[48];
+            snprintf(hdr, sizeof(hdr), "=== CAN IDs (%u unique, 30s) ===", (unsigned)idScanN);
             addDiagLog(up, hdr);
             char buf[80];
             // The final batch can advance past 255; keep indices wider than uint8_t.
@@ -2383,14 +2494,19 @@ void setup() {
 #endif
 
     // Always use AP+STA mode so WiFi scanning is available even without a router configured.
-    // Upstream-proven WiFi config for Tesla browser compatibility:
-    //   persistent(false)     — skip NVS writes on every WiFi setting (reduces flash wear, avoids races)
-    //   setAutoReconnect(true)— STA auto-reconnects on router drop
-    //   AP IP 9.9.9.9         — avoids all common phone-hotspot subnets (172.20.10.x, 192.168.43.x, 192.168.4.x)
-    // Note: setSleep(false) and channel-6 lock removed — in APSTA the AP must follow STA's channel,
-    // and setSleep(false) increased thermal/power load which correlated with client DHCP reassignment loops.
+    //   persistent(false) — skip NVS writes on every WiFi setting (reduces flash wear, avoids races)
+    //   AP IP 9.9.9.9     — avoids all common phone-hotspot subnets (172.20.10.x, 192.168.43.x, 192.168.4.x)
     WiFi.persistent(false);
+#ifdef WIFI_BRIDGE_ENABLED
+    // Bridge builds own upstream reconnection via event-driven backoff in
+    // serviceUpstreamWiFi(). Keeping Arduino's autoReconnect=true would loop
+    // esp_wifi_connect() immediately on every STA_DISCONNECTED (incl. NO_AP_FOUND),
+    // defeating backoff and kicking AP clients off Wi-Fi.
+    WiFi.setAutoReconnect(false);
+    WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
+#else
     WiFi.setAutoReconnect(true);
+#endif
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     WiFi.onEvent([](arduino_event_id_t) { dnsStrictClearAddresses(); }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
@@ -2401,25 +2517,55 @@ void setup() {
     WiFi.mode(WIFI_AP_STA);
 
 #ifdef WIFI_BRIDGE_ENABLED
-    // v1.4.29: bridge-only throughput tuning — 240 MHz CPU + 11b/g/n + HT40.
-    // Non-bridge CAN-only envs don't do NAPT, don't need the extra thermal budget,
-    // and Tesla-screen-facing AP stays captive-portal-only (HT20 is enough).
-    // HT40 requested; stack downgrades STA to match the router's advertised width.
+    // Bridge performance & coexistence tuning:
+    //   - 240 MHz CPU + 11b/g/n + HT20 (HT20 avoids AP drops on cheap USB power
+    //     and picky car/phone Wi-Fi stacks while staying fast for NAPT).
+    //   - STA inactive_time 12 s (default 6 s) absorbs brief mobile-hotspot
+    //     beacon hiccups without spurious BEACON_TIMEOUT drops.
+    //   - WiFi.setSleep(WIFI_PS_NONE) keeps both driver and Arduino state in sync.
     setCpuFrequencyMhz(240);
     esp_wifi_set_protocol(WIFI_IF_AP,  WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
-    // HT20 is much more tolerant of phone/car Wi-Fi stacks and cheap USB
-    // power; HT40 AP mode was unstable for some clients and caused repeated
-    // AP disconnects. Throughput is still ample for DNS filtering + config.
     esp_wifi_set_bandwidth(WIFI_IF_AP,  WIFI_BW_HT20);
     esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
-#endif
+    esp_wifi_set_inactive_time(WIFI_IF_STA, 12);
+    wifiBridgeRegisterEvents();
+    WiFi.setSleep(WIFI_PS_NONE);
 
+    // Bring up AP once on 9.9.9.9/24 with DNS=9.9.9.9 advertised via DHCP.
+    // (Skip legacy single-STA staSSID blocking branch; multi-upstream config
+    // is managed non-blockingly by serviceUpstreamWiFi.)
+    WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1, 0, 8);
+    wifiBridgeConfigureApIpAndDns();
+
+    wifiBridgeLoadConfig();
+    gDnsFilter.begin(53);
+    wifiBridgeRequestApply();
+    // Event-driven select() + burst drain eliminates the old 10 ms per-packet
+    // latency floor. On FSD_MOCK_ONLY (no CAN task on Core 1), pin DNSFilter
+    // to Core 1 alongside lwIP TCPIP so Core 0 stays dedicated to Wi-Fi L2.
+#ifdef FSD_MOCK_ONLY
+    constexpr BaseType_t kDnsCore = 1;
+#else
+    constexpr BaseType_t kDnsCore = 0;
+#endif
+    xTaskCreatePinnedToCore(
+        [](void*) {
+            for (;;) {
+                if (gDnsFilter.waitForRequest(50)) {
+                    const bool up = WiFi.status() == WL_CONNECTED;
+                    for (int burst = 0; burst < 16; ++burst) {
+                        if (!gDnsFilter.processNextRequest(gDnsFilterCfg, up)) break;
+                    }
+                }
+            }
+        },
+        "DNSFilter", 5120, NULL, 2, NULL, kDnsCore);
+    DLOG("WiFi bridge: DNS filter on :53 (core %d), AP=%s IP=%s\n",
+         (int)kDnsCore, apSSID, WiFi.softAPIP().toString().c_str());
+#else
     // Connect to router first (if configured) so we can read the assigned STA IP
     if (staSSID[0] != '\0') {
-        // Bring up AP on 9.9.9.9 while STA connects (AP channel auto-follows STA in APSTA mode)
-        WiFi.softAPdisconnect(false);
-        delay(100);
         WiFi.softAPConfig(IPAddress(9,9,9,9), IPAddress(9,9,9,9), IPAddress(255,255,255,0));
         WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1, 0, 8);
         WiFi.begin(staSSID, staPass[0] ? staPass : nullptr);
@@ -2441,61 +2587,9 @@ void setup() {
         }
     } else {
         // No router configured — AP only on 9.9.9.9
-        WiFi.softAPdisconnect(false);
-        delay(100);
         WiFi.softAPConfig(IPAddress(9,9,9,9), IPAddress(9,9,9,9), IPAddress(255,255,255,0));
         WiFi.softAP(apSSID, apPass[0] ? apPass : nullptr, 1, 0, 8);
     }
-#ifdef WIFI_BRIDGE_ENABLED
-    // WiFi bridge mode: replace captive-portal DNS with filtering DNS on :53.
-    // Captive portal is unneeded because AP clients hit http://<apIP>/ directly,
-    // and port 53 is owned by the bridge's DNS filter+forwarder.
-    //
-    // Force AP's DHCP server to hand out the AP IP as DNS — arduino-esp32's
-    // default behaviour can leave DNS unset, so phones fall back to cached/mobile
-    // DNS and bypass the filter entirely.
-    {
-        esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-        if (apNetif) {
-            const esp_err_t stopErr = esp_netif_dhcps_stop(apNetif);
-            (void)stopErr;
-            esp_netif_dns_info_t dnsInfo = {};
-            dnsInfo.ip.type = ESP_IPADDR_TYPE_V4;
-            dnsInfo.ip.u_addr.ip4.addr = static_cast<uint32_t>(WiFi.softAPIP());
-            const esp_err_t dnsErr = esp_netif_set_dns_info(apNetif, ESP_NETIF_DNS_MAIN, &dnsInfo);
-            dhcps_offer_t offerDns = OFFER_DNS;
-            const esp_err_t offerErr = esp_netif_dhcps_option(apNetif, ESP_NETIF_OP_SET,
-                ESP_NETIF_DOMAIN_NAME_SERVER, &offerDns, sizeof(offerDns));
-            (void)offerErr;
-            esp_err_t startErr = esp_netif_dhcps_start(apNetif);
-            if (startErr != ESP_OK && startErr != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
-                delay(100);
-                startErr = esp_netif_dhcps_start(apNetif);
-            }
-            esp_netif_dhcp_status_t dhcpStatus = ESP_NETIF_DHCP_INIT;
-            esp_netif_dhcps_get_status(apNetif, &dhcpStatus);
-            DLOG("DHCP: stop=%d dns=%d offer=%d start=%d status=%d\n",
-                 stopErr, dnsErr, offerErr, startErr, dhcpStatus);
-            if (startErr != ESP_OK && startErr != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
-                addDiagLog(0, "DHCP server start FAILED");
-            } else if (dnsErr != ESP_OK) {
-                addDiagLog(0, "DHCP DNS option failed");
-            }
-        }
-    }
-    wifiBridgeLoadConfig();
-    gDnsFilter.begin(53);
-    wifiBridgeRequestApply();
-    xTaskCreatePinnedToCore(
-        [](void*) {
-            for (;;) {
-                gDnsFilter.processNextRequest(gDnsFilterCfg, WiFi.status() == WL_CONNECTED);
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
-        },
-        "DNSFilter", 4096, NULL, 1, NULL, 0);
-    DLOG("WiFi bridge: DNS filter on :53, AP=%s IP=%s\n", apSSID, WiFi.softAPIP().toString().c_str());
-#else
     // Captive portal DNS — redirect all domains to ESP32 AP IP.
     // Causes iOS/Android to detect a captive portal and pop up the browser automatically.
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -2506,14 +2600,18 @@ void setup() {
     // Start web server
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    const bool fsdHttpsAvailable = !safeModeActive && client_config::start();
+    const bool clientConfigReady = !safeModeActive && client_config::start();
     if (!safeModeActive) {
-        if (!fsdHttpsAvailable) {
-            addDiagLog(1, "FSD HTTPS startup failed");
-        } else if (client_config::mothershipHttpStarted()) {
+        if (!clientConfigReady) {
+            addDiagLog(1, "FSD client_config startup failed");
+        } else if (!fsd_mock::enabled()) {
+            addDiagLog(0, "FSD mock standby (off by default)");
+        } else if (client_config::fsdHttpsStarted() && client_config::mothershipHttpStarted()) {
             addDiagLog(0, "FSD HTTPS 443 + mothership HTTP 4567 started");
-        } else {
+        } else if (client_config::fsdHttpsStarted()) {
             addDiagLog(1, "FSD HTTPS 443 started; mothership HTTP 4567 failed");
+        } else {
+            addDiagLog(1, "FSD HTTPS startup failed");
         }
     }
 #endif
@@ -2522,7 +2620,7 @@ void setup() {
     if (MDNS.begin("fsd")) {
         MDNS.addService("http", "tcp", kManagementPort);
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-        if (fsdHttpsAvailable) MDNS.addService("https", "tcp", client_config::kFsdPort);
+        if (client_config::fsdHttpsStarted()) MDNS.addService("https", "tcp", client_config::kFsdPort);
 #endif
         DLOGLN("mDNS: fsd.local");
         addDiagLog(0, "mDNS: fsd.local");
@@ -2547,6 +2645,7 @@ void loop() {
     esp_task_wdt_reset();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     client_config::serviceSerial();
+    client_config::serviceListeners();
 #endif
 
     // Handle OTA restart safely outside async context
@@ -2574,18 +2673,25 @@ void loop() {
     // triggers rst:0xc (RTC_SW_CPU_RST). Observed on v1.4.19 when a user
     // clicked "检查更新".
     if (!otaIsActive()) {
-        // Sync Wi-Fi PS mode with thermal state.
+        // Sync Wi-Fi PS mode and TX power with thermal state.
         // PS_NONE keeps the radio fully awake — 3-4× STA downlink throughput and
-        // removes the 50-300 ms DTIM-sync jitter on small requests. Only applied
-        // on bridge builds where the user's actually pushing traffic through STA.
-        // Thermal fallback: when the chip averages ≥82 °C (ThermalLevel::Throttled),
-        // we revert to MIN_MODEM so the radio duty cycle can drop and the chip
-        // can cool down. Hysteresis lives in mod_thermal.h — no action thrash.
-        static wifi_ps_type_t sPsMode = WIFI_PS_MIN_MODEM;  // ESP-IDF boot default
-        wifi_ps_type_t desiredPs = thermalThrottleActive() ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE;
+        // removes the 50-300 ms DTIM-sync jitter on small requests. Using
+        // WiFi.setSleep() keeps Arduino's internal _sleepEnabled in sync.
+        // Thermal fallback (>=82 °C): switch to MIN_MODEM and trim TX power
+        // gently (20 dBm -> 17 dBm) to cool the chip without breaking links.
+        static wifi_ps_type_t sPsMode = WIFI_PS_NONE;
+        static int8_t sTxPower = 80;  // 80 × 0.25 dBm = 20 dBm
+        const bool throttled = thermalThrottleActive();
+        wifi_ps_type_t desiredPs = throttled ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE;
         if (desiredPs != sPsMode) {
-            esp_wifi_set_ps(desiredPs);
+            WiFi.setSleep(desiredPs);
             sPsMode = desiredPs;
+        }
+        int8_t desiredTxPwr = throttled ? 68 : 80;
+        if (desiredTxPwr != sTxPower) {
+            if (esp_wifi_set_max_tx_power(desiredTxPwr) == ESP_OK) {
+                sTxPower = desiredTxPwr;
+            }
         }
         serviceUpstreamWiFi(apSSID);
 #ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
