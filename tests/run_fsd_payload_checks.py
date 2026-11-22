@@ -169,9 +169,10 @@ def check_port_policy() -> None:
     assert "kTeslaMinAllowV5" in main
     assert "kTeslaMinBlockV5" in main
     # v5 default allowlist: consolidated Apple Music + Doubao domains.
-    for domain in ("*.apple.com", "mzstatic.com", "doubao.com", "doubaoapps.com",
-                   "doubaocdn.com", "butterflyai.cn", "byteimg.com", "bytescm.com",
-                   "bytednsdoc.com", "snssdk.com"):
+    for domain in ("*.apple.com", "mzstatic.com", "baidu.com", "bdimg.com", "bcebos.com",
+                   "qq.com", "tencentmusic.com", "163.com", "126.net", "netease.com",
+                   "doubao.com", "doubaoapps.com", "doubaocdn.com", "butterflyai.cn",
+                   "byteimg.com", "bytescm.com", "bytednsdoc.com", "snssdk.com"):
         assert domain in bridge, f"default allowlist missing {domain}"
 
 

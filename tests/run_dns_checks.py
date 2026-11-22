@@ -135,6 +135,15 @@ int main() {
     expect("music.163.com", "", "interface.music.163.com", true);
     expect("qlogo.cn", "", "thirdqq.qlogo.cn", true);
     expect("qqmusic.qq.com", "", "fakeqqmusic.qq.com", false);
+    // Consolidated parent domains (v5): Baidu, QQ, NetEase.
+    for (const char* name : {"api.map.baidu.com", "itsmap3.baidu.com"})
+        expect("baidu.com", "", name, true);
+    expect("bdimg.com", "", "mapapip0.bdimg.com", true);
+    expect("bcebos.com", "", "lbsnavi.cdn.bcebos.com", true);
+    expect("qq.com", "", "aqqmusic.tc.qq.com", true);
+    expect("163.com", "", "interface.music.163.com", true);
+    expect("126.net", "", "m701.music.126.net", true);
+    expect("netease.com", "", "mam.netease.com", true);
     // Wildcards include all child depths, while respecting domain boundaries.
     for (const char* name : {"music.qq.com", "a.b.qq.com", "a.b.c.qq.com"})
         expect("*.qq.com", "", name, true);
