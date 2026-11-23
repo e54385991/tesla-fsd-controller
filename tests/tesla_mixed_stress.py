@@ -341,7 +341,18 @@ class Stress:
     # ── request classification ───────────────────────────────────────────
     @staticmethod
     def is_fsd_path(path: str) -> bool:
-        return "/feature_configuration" in path and not path.startswith("/FEATURE")
+        """Mirror fsd_mock::isFeatureConfigurationUri / TeslaDG PATH_RE."""
+        marker = "/feature_configuration"
+        start = path.find(marker)
+        if start < 0:
+            return False
+        end = start + len(marker)
+        if end == len(path) or path[end] in "?#":
+            return True
+        if path[end] == "/":
+            end += 1
+            return end == len(path) or path[end] in "?#"
+        return False
 
     def run_tls(self, method: str, path: str, *, sni: str | None = SNI_MAIN,
                 tls_version: str | None = None, alpn: list[str] | None = None,

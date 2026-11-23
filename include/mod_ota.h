@@ -48,6 +48,7 @@ extern "C" {
     #include "esp_ota_ops.h"
     #include "esp_crt_bundle.h"
     #include "freertos/FreeRTOS.h"
+    #include "freertos/semphr.h"
     #include "freertos/task.h"
 }
 
@@ -78,14 +79,21 @@ struct OtaStatus {
     volatile uint8_t  state;
     volatile uint32_t total;
     volatile uint32_t written;
+    volatile bool     hasNotes;
     char message[128];
     char latestVersion[24];
     char latestUrl[256];
-    char releaseNotes[kOtaNotesCap];
+    // Lazily allocated on first GitHub release check (0 B DRAM when unused).
+    char* releaseNotes;
 };
 
 static OtaStatus gOta = {};
 static String    gOtaBody;
+
+static SemaphoreHandle_t otaNotesMutex() {
+    static SemaphoreHandle_t mtx = xSemaphoreCreateMutex();
+    return mtx;
+}
 
 static void otaSetMsg(uint8_t state, const char* fmt, ...) {
     va_list ap;
@@ -191,11 +199,24 @@ static bool otaParseLatest(const String& body) {
     strlcpy(gOta.latestVersion, tag.c_str(), sizeof(gOta.latestVersion));
 
     // Parse body field (release notes). Optional — absence is not fatal.
-    gOta.releaseNotes[0] = '\0';
     int bodyIdx = body.indexOf("\"body\":\"");
+    SemaphoreHandle_t notesMtx = otaNotesMutex();
+    if (notesMtx) xSemaphoreTake(notesMtx, portMAX_DELAY);
     if (bodyIdx >= 0) {
-        otaJsonUnescapeInto(body, bodyIdx + 8, gOta.releaseNotes, sizeof(gOta.releaseNotes));
+        if (!gOta.releaseNotes) {
+            gOta.releaseNotes = (char*)malloc(kOtaNotesCap);
+        }
+        if (gOta.releaseNotes) {
+            otaJsonUnescapeInto(body, bodyIdx + 8, gOta.releaseNotes, kOtaNotesCap);
+            gOta.hasNotes = (gOta.releaseNotes[0] != '\0');
+        } else {
+            gOta.hasNotes = false;
+        }
+    } else {
+        if (gOta.releaseNotes) gOta.releaseNotes[0] = '\0';
+        gOta.hasNotes = false;
     }
+    if (notesMtx) xSemaphoreGive(notesMtx);
 
     String envTag = FIRMWARE_ENV_TAG;
     String suffix = String("_v") + gOta.latestVersion + "_ota.bin";
@@ -516,7 +537,7 @@ static size_t otaStatusJsonImpl(char* buf, size_t cap) {
         (unsigned)st, (unsigned)wr, (unsigned)tot,
         gOta.message, gOta.latestVersion, gOta.latestUrl,
         FIRMWARE_VERSION, FIRMWARE_ENV_TAG,
-        gOta.releaseNotes[0] ? "true" : "false");
+        gOta.hasNotes ? "true" : "false");
 }
 
 // Separate endpoint for release notes — fetched once per check, not on each
@@ -533,7 +554,15 @@ static size_t otaNotesJsonImpl(char* buf, size_t cap) {
     size_t o = (size_t)prefix;
     if (cap - o < kOtaNotesJsonSuffix + 1) { buf[o] = '\0'; return o; }
     size_t notesCap = cap - o - kOtaNotesJsonSuffix;
-    size_t wrote = otaJsonEscapeInto(gOta.releaseNotes, buf + o, notesCap);
+    size_t wrote = 0;
+    if (gOta.hasNotes) {
+        SemaphoreHandle_t notesMtx = otaNotesMutex();
+        if (notesMtx) xSemaphoreTake(notesMtx, portMAX_DELAY);
+        if (gOta.releaseNotes) {
+            wrote = otaJsonEscapeInto(gOta.releaseNotes, buf + o, notesCap);
+        }
+        if (notesMtx) xSemaphoreGive(notesMtx);
+    }
     o += wrote;
     buf[o++] = '"';
     buf[o++] = '}';

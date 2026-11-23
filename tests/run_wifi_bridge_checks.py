@@ -66,10 +66,14 @@ def check_static_contracts() -> None:
     for needle in (
         "CONFIG_COMPILER_OPTIMIZATION_PERF=y",
         "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240",
-        "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16",
-        "CONFIG_ESP_WIFI_RX_BA_WIN=16",
-        "CONFIG_ESP_WIFI_TX_BA_WIN=16",
-        "CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y",
+        "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10",
+        "CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16",
+        "CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16",
+        "CONFIG_ESP_WIFI_RX_BA_WIN=10",
+        "CONFIG_ESP_WIFI_TX_BA_WIN=10",
+        "# CONFIG_ESP_WIFI_EXTRA_IRAM_OPT is not set",
+        "CONFIG_MBEDTLS_DYNAMIC_BUFFER=y",
+        "# CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA is not set",
         "CONFIG_LWIP_MAX_SOCKETS=16",
         "CONFIG_LWIP_UDP_RECVMBOX_SIZE=16",
         "CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=48",
@@ -77,6 +81,9 @@ def check_static_contracts() -> None:
         "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y",
     ):
         assert needle in s3_cfg, f"sdkconfig.esp32s3-waveshare-wifi missing {needle}"
+
+    assert "forEachBlockedDomainSorted(" in MAIN_SRC, "Status/CSV endpoints must stream blocked domains without 6.8 KB heap copy"
+    assert "new (std::nothrow) DNSBlockedDomainStatEntry[" not in MAIN_SRC, "Avoid 6.8 KB DNSBlockedDomainStatEntry heap spikes"
 
     esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
     assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"

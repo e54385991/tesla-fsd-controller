@@ -217,9 +217,9 @@ static void spiffsRotate() {
     if (sz <= SPIFFS_LOG_KEEP) { f.close(); return; }
     size_t skip = sz - SPIFFS_LOG_KEEP;
     f.seek(skip);
-    // Read tail into a temporary buffer and rewrite the file.
-    // We do this in 2 KB chunks to avoid a large stack allocation.
-    static uint8_t rotBuf[2048];
+    // Read tail in small stack chunks (loop task has 8 KB stack) to avoid
+    // keeping a permanent 2 KB static BSS buffer solely for rare log rotation.
+    uint8_t rotBuf[512];
     File tmp = SPIFFS.open("/diag.tmp", "w");
     if (!tmp) { f.close(); return; }
     while (f.available()) {
@@ -281,6 +281,35 @@ static void flushLogsToSpiffs() {
 // ═══════════════════════════════════════════
 //  Web Server Setup (runs on Core 0)
 // ═══════════════════════════════════════════
+
+// Stream a JSON-escaped string directly into a Print sink (e.g. AsyncResponseStream)
+// without allocating temporary String copies on the heap.
+static void printJsonEscaped(Print& out, const char* value) {
+    if (!value) return;
+    const char* runStart = value;
+    for (const char* p = value; *p != '\0'; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        const char* repl = nullptr;
+        size_t replLen = 0;
+        if (c == '\\')      { repl = "\\\\"; replLen = 2; }
+        else if (c == '"')  { repl = "\\\""; replLen = 2; }
+        else if (c == '\n') { repl = "\\n";  replLen = 2; }
+        else if (c == '\r') { repl = "";     replLen = 0; }
+        else if (c == '\t') { repl = "\\t";  replLen = 2; }
+        else if (c < 0x20)  { repl = " ";    replLen = 1; }
+        else continue;
+        if (p > runStart) {
+            out.write(reinterpret_cast<const uint8_t*>(runStart), static_cast<size_t>(p - runStart));
+        }
+        if (replLen > 0) {
+            out.write(reinterpret_cast<const uint8_t*>(repl), replLen);
+        }
+        runStart = p + 1;
+    }
+    if (*runStart != '\0') {
+        out.write(reinterpret_cast<const uint8_t*>(runStart), strlen(runStart));
+    }
+}
 
 static void redirectToManagement(AsyncWebServerRequest* req) {
     String url = "http://" + req->client()->localIP().toString();
@@ -1075,36 +1104,34 @@ static void setupWebServer() {
         bool upConnected = WiFi.status() == WL_CONNECTED;
         int32_t upRSSI = upConnected ? WiFi.RSSI() : 0;
         String upIP = upConnected ? WiFi.localIP().toString() : String();
+        String activeSSID = wifiBridgeActiveSSID();
+        String connectedSSID = wifiBridgeConnectedSSID();
 
-        uint32_t totalBlocked = 0;
-        // Heap-allocated: capacity=50 * 136B = 6.8KB, too large for the
-        // AsyncTCP handler task stack (~4-8KB). See mod_dns.h.
-        auto* entries = new (std::nothrow) DNSBlockedDomainStatEntry[kDnsBlockedDomainCapacity];
-        if (!entries) { req->send(500, "text/plain", "oom"); return; }
-        size_t recentBlocked = gDnsFilter.copyBlockedDomains(entries, kDnsBlockedDomainCapacity, totalBlocked);
+        AsyncResponseStream* resp = req->beginResponseStream("application/json", 4096);
+        if (!resp) { req->send(503, "text/plain", "oom"); return; }
 
-        String json;
-        json.reserve(6144);
-        json += "{";
         uint8_t apChannel = 0;
         wifi_second_chan_t apSecond = WIFI_SECOND_CHAN_NONE;
         esp_wifi_get_channel(&apChannel, &apSecond);
-        json += "\"apSSID\":\""; json += wifiBridgeJsonEscape(String(apSSID)); json += "\"";
-        json += ",\"apIP\":\""; json += WiFi.softAPIP().toString(); json += "\"";
-        json += ",\"apPassDefault\":"; json += (strcmp(apPass, DEFAULT_AP_PASS) == 0 ? "true" : "false");
-        json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
-        json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
-        json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());
-        json += ",\"upstreamEnable\":"; json += (gWifiBridgeCfg.enabled ? "true" : "false");
-        json += ",\"upstreamConnected\":"; json += (upConnected ? "true" : "false");
-        json += ",\"upstreamRSSI\":"; json += (upConnected ? String(upRSSI) : String("null"));
-        json += ",\"upstreamSSID\":\""; json += wifiBridgeJsonEscape(wifiBridgeActiveSSID()); json += "\"";
-        json += ",\"upstreamIP\":\""; json += wifiBridgeJsonEscape(upIP); json += "\"";
-        json += ",\"upstreamStatus\":\""; json += wifiBridgeJsonEscape(String(wifiBridgeUpstreamStatusText())); json += "\"";
-        json += ",\"upstreamSignal\":\""; json += (upConnected ? wifiBridgeJsonEscape(String(wifiBridgeSignalText(upRSSI))) : String()); json += "\"";
-        json += ",\"upstreamLastReason\":"; json += String((unsigned)gWifiBridgeCfg.lastDisconnectReason);
-        json += ",\"upstreamLastReasonText\":\""; json += wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason); json += "\"";
-        json += ",\"upstreamDisconnects\":"; json += String((unsigned)gWifiBridgeCfg.disconnectCount);
+        resp->print("{\"apSSID\":\""); printJsonEscaped(*resp, apSSID); resp->print("\"");
+        resp->print(",\"apIP\":\""); resp->print(WiFi.softAPIP().toString()); resp->print("\"");
+        resp->print(",\"apPassDefault\":"); resp->print(strcmp(apPass, DEFAULT_AP_PASS) == 0 ? "true" : "false");
+        resp->print(",\"apStations\":"); resp->print((unsigned)WiFi.softAPgetStationNum());
+        resp->print(",\"channel\":"); resp->print((unsigned)apChannel);
+        resp->print(",\"uptime\":"); resp->print((unsigned)bootUptimeSeconds());
+        resp->print(",\"upstreamEnable\":"); resp->print(gWifiBridgeCfg.enabled ? "true" : "false");
+        resp->print(",\"upstreamConnected\":"); resp->print(upConnected ? "true" : "false");
+        resp->print(",\"upstreamRSSI\":");
+        if (upConnected) resp->print(upRSSI); else resp->print("null");
+        resp->print(",\"upstreamSSID\":\""); printJsonEscaped(*resp, activeSSID.c_str()); resp->print("\"");
+        resp->print(",\"upstreamIP\":\""); printJsonEscaped(*resp, upIP.c_str()); resp->print("\"");
+        resp->print(",\"upstreamStatus\":\""); printJsonEscaped(*resp, wifiBridgeUpstreamStatusText()); resp->print("\"");
+        resp->print(",\"upstreamSignal\":\"");
+        if (upConnected) printJsonEscaped(*resp, wifiBridgeSignalText(upRSSI));
+        resp->print("\"");
+        resp->print(",\"upstreamLastReason\":"); resp->print((unsigned)gWifiBridgeCfg.lastDisconnectReason);
+        resp->print(",\"upstreamLastReasonText\":\""); resp->print(wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason)); resp->print("\"");
+        resp->print(",\"upstreamDisconnects\":"); resp->print((unsigned)gWifiBridgeCfg.disconnectCount);
 
         SavedUpstreamNetwork snap[MAX_UPSTREAM_NETWORKS];
         uint8_t snapCount = 0;
@@ -1115,62 +1142,68 @@ static void setupWebServer() {
         }
         portEXIT_CRITICAL(&gWifiBridgeMux);
 
-        json += ",\"upstreamSavedCount\":"; json += String((unsigned)snapCount);
-        json += ",\"upstreamNetworks\":[";
-        String connectedSSID = wifiBridgeConnectedSSID();
-        String activeSSID = wifiBridgeActiveSSID();
+        resp->print(",\"upstreamSavedCount\":"); resp->print((unsigned)snapCount);
+        resp->print(",\"upstreamNetworks\":[");
         for (uint8_t i = 0; i < snapCount; ++i) {
-            if (i > 0) json += ",";
-            json += "{\"ssid\":\""; json += wifiBridgeJsonEscape(String(snap[i].ssid));
-            json += "\",\"hasPass\":"; json += (snap[i].pass[0] != '\0' ? "true" : "false");
-            json += ",\"connected\":"; json += (connectedSSID.equals(snap[i].ssid) ? "true" : "false");
-            json += ",\"active\":"; json += (activeSSID.equals(snap[i].ssid) ? "true" : "false");
-            json += "}";
+            if (i > 0) resp->print(",");
+            resp->print("{\"ssid\":\""); printJsonEscaped(*resp, snap[i].ssid);
+            resp->print("\",\"hasPass\":"); resp->print(snap[i].pass[0] != '\0' ? "true" : "false");
+            resp->print(",\"connected\":"); resp->print(connectedSSID.equals(snap[i].ssid) ? "true" : "false");
+            resp->print(",\"active\":"); resp->print(activeSSID.equals(snap[i].ssid) ? "true" : "false");
+            resp->print("}");
         }
-        json += "]";
-        json += ",\"natEnabled\":"; json += (gNatEnabled ? "true" : "false");
-        json += ",\"natStatus\":\""; json += wifiBridgeJsonEscape(String(wifiBridgeNatStatusText())); json += "\"";
-        json += ",\"chipTempC\":"; json += (std::isfinite(gThermalStatus.currentC) ? String(gThermalStatus.currentC, 1) : String("null"));
-        json += ",\"chipTempAvgC\":"; json += (std::isfinite(gThermalStatus.averageC) ? String(gThermalStatus.averageC, 1) : String("null"));
-        json += ",\"thermalStatus\":\""; json += wifiBridgeJsonEscape(String(thermalStatusText())); json += "\"";
-        json += ",\"thermalProtect\":"; json += (thermalProtectActive() ? "true" : "false");
-        json += ",\"dnsEnable\":"; json += (gDnsFilterCfg.enabled ? "true" : "false");
-        json += ",\"ipBlockerEnabled\":"; json += (dnsIpBlockerEnabled() ? "true" : "false");
-        json += ",\"dnsAllowCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist));
-        json += ",\"dnsBlockCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist));
-        json += ",\"dnsAllow\":\""; json += wifiBridgeJsonEscape(String(gDnsFilterCfg.allowlist)); json += "\"";
-        json += ",\"dnsBlock\":\""; json += wifiBridgeJsonEscape(String(gDnsFilterCfg.blocklist)); json += "\"";
-        json += ",\"dnsBlockedTotal\":"; json += String((unsigned)totalBlocked);
+        resp->print("]");
+        resp->print(",\"natEnabled\":"); resp->print(gNatEnabled ? "true" : "false");
+        resp->print(",\"natStatus\":\""); printJsonEscaped(*resp, wifiBridgeNatStatusText()); resp->print("\"");
+        resp->print(",\"chipTempC\":");
+        if (std::isfinite(gThermalStatus.currentC)) resp->print(gThermalStatus.currentC, 1); else resp->print("null");
+        resp->print(",\"chipTempAvgC\":");
+        if (std::isfinite(gThermalStatus.averageC)) resp->print(gThermalStatus.averageC, 1); else resp->print("null");
+        resp->print(",\"thermalStatus\":\""); printJsonEscaped(*resp, thermalStatusText()); resp->print("\"");
+        resp->print(",\"thermalProtect\":"); resp->print(thermalProtectActive() ? "true" : "false");
+        resp->print(",\"dnsEnable\":"); resp->print(gDnsFilterCfg.enabled ? "true" : "false");
+        resp->print(",\"ipBlockerEnabled\":"); resp->print(dnsIpBlockerEnabled() ? "true" : "false");
+        resp->print(",\"dnsAllowCount\":"); resp->print((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist));
+        resp->print(",\"dnsBlockCount\":"); resp->print((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist));
+        resp->print(",\"dnsAllow\":\""); printJsonEscaped(*resp, gDnsFilterCfg.allowlist); resp->print("\"");
+        resp->print(",\"dnsBlock\":\""); printJsonEscaped(*resp, gDnsFilterCfg.blocklist); resp->print("\"");
+        const uint32_t totalBlockedHeader = gDnsFilter.totalBlockedCount();
+        resp->print(",\"dnsBlockedTotal\":"); resp->print((unsigned)totalBlockedHeader);
         uint32_t ipDrops = 0, ipCache = 0, ipPeak = 0;
         dnsIpBlockerGetStats(&ipDrops, &ipCache, &ipPeak);
         uint32_t dnsHits = 0, dnsMisses = 0, dnsFwdOk = 0, dnsFwdTo = 0;
         gDnsFilter.getPerfStats(&dnsHits, &dnsMisses, &dnsFwdOk, &dnsFwdTo);
-        json += ",\"ipBlockDrops\":"; json += String((unsigned)ipDrops);
-        json += ",\"ipCacheCount\":"; json += String((unsigned)ipCache);
-        json += ",\"ipCachePeak\":"; json += String((unsigned)ipPeak);
-        json += ",\"dnsCacheHits\":"; json += String((unsigned)dnsHits);
-        json += ",\"dnsCacheMisses\":"; json += String((unsigned)dnsMisses);
-        json += ",\"dnsForwardOk\":"; json += String((unsigned)dnsFwdOk);
-        json += ",\"dnsForwardTimeouts\":"; json += String((unsigned)dnsFwdTo);
-        json += ",\"dnsBlockedRecent\":[";
-        for (size_t i = 0; i < recentBlocked; ++i) {
-            if (i > 0) json += ",";
-            json += "{\"domain\":\""; json += wifiBridgeJsonEscape(String(entries[i].domain));
-            json += "\",\"count\":"; json += String(entries[i].count);
-            json += ",\"lastBlockedAt\":"; json += String(entries[i].lastBlockedAtUptimeSeconds);
-            json += "}";
-        }
-        delete[] entries;
-        json += "]";
-        json += ",\"heap\":"; json += String(ESP.getFreeHeap());
-        json += ",\"minHeap\":"; json += String(ESP.getMinFreeHeap());
-        json += ",\"resetReason\":\""; json += resetReasonName(); json += "\"";
+        resp->print(",\"ipBlockDrops\":"); resp->print((unsigned)ipDrops);
+        resp->print(",\"ipCacheCount\":"); resp->print((unsigned)ipCache);
+        resp->print(",\"ipCachePeak\":"); resp->print((unsigned)ipPeak);
+        resp->print(",\"dnsCacheHits\":"); resp->print((unsigned)dnsHits);
+        resp->print(",\"dnsCacheMisses\":"); resp->print((unsigned)dnsMisses);
+        resp->print(",\"dnsForwardOk\":"); resp->print((unsigned)dnsFwdOk);
+        resp->print(",\"dnsForwardTimeouts\":"); resp->print((unsigned)dnsFwdTo);
+        resp->print(",\"dnsBlockedRecent\":[");
+        uint32_t unusedTotal = 0;
+        gDnsFilter.forEachBlockedDomainSorted(unusedTotal, [&](const DNSBlockedDomainStatEntry& entry, size_t idx) {
+            if (idx > 0) resp->print(",");
+            resp->print("{\"domain\":\""); printJsonEscaped(*resp, entry.domain);
+            resp->print("\",\"count\":"); resp->print((unsigned)entry.count);
+            resp->print(",\"lastBlockedAt\":"); resp->print((unsigned)entry.lastBlockedAtUptimeSeconds);
+            resp->print("}");
+        });
+        resp->print("]");
+        resp->print(",\"heap\":"); resp->print((unsigned)ESP.getFreeHeap());
+        resp->print(",\"minHeap\":"); resp->print((unsigned)ESP.getMinFreeHeap());
+        resp->print(",\"resetReason\":\""); resp->print(resetReasonName()); resp->print("\"");
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-        json += ',';
-        fsd_mock::appendStatusJson(json);
+        {
+            String fsdPart;
+            fsdPart.reserve(1024);
+            fsd_mock::appendStatusJson(fsdPart);
+            resp->print(',');
+            resp->print(fsdPart);
+        }
 #endif
-        json += "}";
-        req->send(200, "application/json", json);
+        resp->print("}");
+        req->send(resp);
     });
 
     server.on("/api/wifi-bridge/set", HTTP_GET, [](AsyncWebServerRequest* req) {
@@ -1286,28 +1319,22 @@ static void setupWebServer() {
     server.on("/api/wifi-bridge/blocked-download", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (rejectOnLowHeap(req)) return;
-        uint32_t total = 0;
-        auto* entries = new (std::nothrow) DNSBlockedDomainStatEntry[kDnsBlockedDomainCapacity];
-        if (!entries) { req->send(500, "text/plain", "oom"); return; }
-        size_t n = gDnsFilter.copyBlockedDomains(entries, kDnsBlockedDomainCapacity, total);
-        uint32_t nowSec = bootUptimeSeconds();
-
-        String csv;
-        csv.reserve(128 + n * 160);
-        csv += "domain,count,last_blocked_seconds_ago\n";
-        for (size_t i = 0; i < n; ++i) {
-            uint32_t ago = (entries[i].lastBlockedAtUptimeSeconds <= nowSec)
-                ? (nowSec - entries[i].lastBlockedAtUptimeSeconds) : 0;
-            csv += entries[i].domain;
-            csv += ",";
-            csv += String((unsigned)entries[i].count);
-            csv += ",";
-            csv += String((unsigned)ago);
-            csv += "\n";
-        }
-        delete[] entries;
-        AsyncWebServerResponse* resp = req->beginResponse(200, "text/csv; charset=utf-8", csv);
+        AsyncResponseStream* resp = req->beginResponseStream("text/csv; charset=utf-8", 2048);
+        if (!resp) { req->send(503, "text/plain", "oom"); return; }
         resp->addHeader("Content-Disposition", "attachment; filename=\"dns_blocked.csv\"");
+        uint32_t nowSec = bootUptimeSeconds();
+        uint32_t total = 0;
+        resp->print("domain,count,last_blocked_seconds_ago\n");
+        gDnsFilter.forEachBlockedDomainSorted(total, [&](const DNSBlockedDomainStatEntry& entry, size_t) {
+            uint32_t ago = (entry.lastBlockedAtUptimeSeconds <= nowSec)
+                ? (nowSec - entry.lastBlockedAtUptimeSeconds) : 0;
+            resp->print(entry.domain);
+            resp->print(',');
+            resp->print((unsigned)entry.count);
+            resp->print(',');
+            resp->print((unsigned)ago);
+            resp->print('\n');
+        });
         req->send(resp);
     });
 

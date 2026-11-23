@@ -114,7 +114,10 @@ class DNSWhitelistServer {
     void getPerfStats(uint32_t* cacheHits, uint32_t* cacheMisses,
                       uint32_t* forwardOk, uint32_t* forwardTimeouts) const;
     uint32_t rebindCount() const { return rebindCount_; }
+    uint32_t totalBlockedCount() const;
     size_t copyBlockedDomains(DNSBlockedDomainStatEntry* dest, size_t maxEntries, uint32_t& totalBlockedCount);
+    template <typename EmitFn>
+    size_t forEachBlockedDomainSorted(uint32_t& totalBlockedCount, EmitFn&& emit);
     void clearBlockedRequests();
 
   private:
@@ -370,10 +373,18 @@ struct CachedIpEntry {
     uint32_t lastSeenAtSeconds = 0;
 };
 
+// Compact 64-bit FNV-1a fingerprint of the active blocklist rules (saves 3 KB
+// static BSS vs storing a full kDnsRuleBufSize string copy).
+struct BlocklistFingerprint {
+    uint64_t hash = 0;
+    size_t length = 0;
+    bool valid = false;
+};
+
 portMUX_TYPE gDnsIpPolicyMux = portMUX_INITIALIZER_UNLOCKED;
 CachedIpEntry gBlockedIps[kBlockedIpCapacity];
 size_t gBlockedIpCount = 0;
-char gBlocklistSnapshot[kDnsRuleBufSize] = {};
+BlocklistFingerprint gBlocklistSnapshot = {};
 uint32_t gLastBlockResolveAtSeconds = 0;
 uint32_t gLastFullRefreshAtSeconds = 0;
 size_t gNextBlockResolveRuleIndex = 0;
@@ -458,8 +469,27 @@ bool hasRules(const char* rules) {
     return false;
 }
 
-bool snapshotMatches(const char* rules, const char* snapshot) {
-    return strcmp(rules == nullptr ? "" : rules, snapshot == nullptr ? "" : snapshot) == 0;
+BlocklistFingerprint blocklistFingerprint(const char* rules) {
+    BlocklistFingerprint fp;
+    if (rules == nullptr || rules[0] == '\0') return fp;
+    uint64_t h = 14695981039346656037ULL;
+    size_t n = 0;
+    while (rules[n] != '\0' && n + 1 < kDnsRuleBufSize) {
+        h ^= static_cast<uint8_t>(rules[n]);
+        h *= 1099511628211ULL;
+        ++n;
+    }
+    fp.hash = h;
+    fp.length = n;
+    fp.valid = (n > 0);
+    return fp;
+}
+
+bool snapshotMatches(const char* rules, const BlocklistFingerprint& snapshot) {
+    const BlocklistFingerprint current = blocklistFingerprint(rules);
+    return current.valid == snapshot.valid &&
+        current.length == snapshot.length &&
+        current.hash == snapshot.hash;
 }
 
 void clearEntries(CachedIpEntry* entries, size_t capacity, size_t& count) {
@@ -623,10 +653,7 @@ void applyStagingLocked(size_t stagingCount, const char* blocklistRules, uint32_
     gBlockedIpCount = stagingCount;
     if (stagingCount > gIpCachePeakCount) gIpCachePeakCount = (uint32_t)stagingCount;
 
-    memset(gBlocklistSnapshot, 0, sizeof(gBlocklistSnapshot));
-    if (blocklistRules != nullptr) {
-        strncpy(gBlocklistSnapshot, blocklistRules, sizeof(gBlocklistSnapshot) - 1);
-    }
+    gBlocklistSnapshot = blocklistFingerprint(blocklistRules);
     gLastBlockResolveAtSeconds = nowSeconds;
     gLastFullRefreshAtSeconds = nowSeconds;
     gNextBlockResolveRuleIndex = 0;
@@ -1081,6 +1108,13 @@ void DNSWhitelistServer::cacheAllowedAddressesFromResponse(const String& domain,
     }
 }
 
+uint32_t DNSWhitelistServer::totalBlockedCount() const {
+    portENTER_CRITICAL(&gDnsBlockedLogMux);
+    const uint32_t total = totalBlockedCount_;
+    portEXIT_CRITICAL(&gDnsBlockedLogMux);
+    return total;
+}
+
 size_t DNSWhitelistServer::copyBlockedDomains(DNSBlockedDomainStatEntry* dest, size_t maxEntries, uint32_t& totalBlockedCount) {
     totalBlockedCount = 0;
     if (dest == nullptr || maxEntries == 0) return 0;
@@ -1109,6 +1143,47 @@ size_t DNSWhitelistServer::copyBlockedDomains(DNSBlockedDomainStatEntry* dest, s
         }
     }
     return count;
+}
+
+template <typename EmitFn>
+size_t DNSWhitelistServer::forEachBlockedDomainSorted(uint32_t& totalBlockedCount, EmitFn&& emit) {
+    static_assert(kDnsBlockedDomainCapacity <= 64, "emittedMask fits up to 64 slots");
+    uint64_t emittedMask = 0;
+    size_t limit = 0;
+    portENTER_CRITICAL(&gDnsBlockedLogMux);
+    totalBlockedCount = totalBlockedCount_;
+    limit = blockedDomainCount_ < kDnsBlockedDomainCapacity ? blockedDomainCount_ : kDnsBlockedDomainCapacity;
+    portEXIT_CRITICAL(&gDnsBlockedLogMux);
+
+    size_t emitted = 0;
+    for (size_t step = 0; step < limit; ++step) {
+        DNSBlockedDomainStatEntry chosen = {};
+        size_t bestIndex = kDnsBlockedDomainCapacity;
+
+        portENTER_CRITICAL(&gDnsBlockedLogMux);
+        const size_t currentCount = blockedDomainCount_ < kDnsBlockedDomainCapacity
+            ? blockedDomainCount_
+            : kDnsBlockedDomainCapacity;
+        for (size_t i = 0; i < currentCount; ++i) {
+            if ((emittedMask & (1ULL << i)) != 0) continue;
+            if (bestIndex == kDnsBlockedDomainCapacity ||
+                blockedDomains_[i].count < blockedDomains_[bestIndex].count ||
+                (blockedDomains_[i].count == blockedDomains_[bestIndex].count &&
+                 strcmp(blockedDomains_[i].domain, blockedDomains_[bestIndex].domain) < 0)) {
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < currentCount) {
+            chosen = blockedDomains_[bestIndex];
+        }
+        portEXIT_CRITICAL(&gDnsBlockedLogMux);
+
+        if (bestIndex >= kDnsBlockedDomainCapacity) break;
+        emittedMask |= (1ULL << bestIndex);
+        emit(chosen, emitted);
+        ++emitted;
+    }
+    return emitted;
 }
 
 void DNSWhitelistServer::clearBlockedRequests() {
@@ -1403,10 +1478,10 @@ extern "C" void dnsIpPolicyService(const char* allowlistRules, const char* block
     // stalls and unwanted upstream DNS lookups.
     if (!rulesEnabled || !dnsIpBlockerEnabled()) {
         portENTER_CRITICAL(&gDnsIpPolicyMux);
-        if (gBlockedIpCount > 0 || gBlocklistSnapshot[0] != '\0' || gPendingBlockCount > 0) {
+        if (gBlockedIpCount > 0 || gBlocklistSnapshot.valid || gPendingBlockCount > 0) {
             clearEntries(gBlockedIps, kBlockedIpCapacity, gBlockedIpCount);
             clearPendingBlockResolveLocked();
-            memset(gBlocklistSnapshot, 0, sizeof(gBlocklistSnapshot));
+            gBlocklistSnapshot = BlocklistFingerprint{};
             gLastBlockResolveAtSeconds = 0;
             gLastFullRefreshAtSeconds = nowSeconds;
             gNextBlockResolveRuleIndex = 0;
