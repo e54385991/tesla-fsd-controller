@@ -58,10 +58,13 @@ constexpr size_t kMaxRespHeaderTotalBytes = 2048;     // heap guard for captured
 constexpr char kDefaultHosts[] =
     "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
 // PC reverse targets: start_hotspot/start_all use
-// reverse:https://api-prd.vn.cloud.tesla.cn@443, while the 4567 listener
-// resolves mothership.vn.teslamotors.com and uses http://<ip>:4567.
+// reverse:https://api-prd.vn.cloud.tesla.cn@443. The 4567 listener in
+// TeslaDG/app/svc/stack.py is reverse:http://192.0.2.1:4567 (TEST-NET,
+// unreachable): non-FSD mothership paths therefore end in mitmproxy's 502
+// page instead of reaching Tesla. Match that contract so this listener can
+// never let the cloud rewrite the vehicle's FSD config.
 constexpr char kApiPrdHost[] = "api-prd.vn.cloud.tesla.cn";
-constexpr char kMothershipUpstreamHost[] = "mothership.vn.teslamotors.com";
+constexpr char kMothershipBlockedUpstream[] = "192.0.2.1:4567";
 // Before mothership support the persisted default was this single host. Only
 // that exact value is auto-migrated; user-edited host lists are left alone.
 constexpr char kLegacyDefaultHosts[] = "api-prd.vn.cloud.tesla.cn";
@@ -120,6 +123,7 @@ uint32_t gHitTotal = 0;
 uint32_t gObserveTotal = 0;
 uint32_t gFlowTotal = 0;
 uint32_t gBlockedTotal = 0;
+uint32_t gSelftestTotal = 0;
 uint32_t gAutoDisabledTotal = 0;
 
 ConfigChange gConfigHistory[kConfigHistoryCapacity];
@@ -524,7 +528,24 @@ void updateLatestHandshake(const Hit& hit) {
     portEXIT_CRITICAL(&gHandshakeMux);
 }
 
+// TeslaDG/app/web/fsd_panel.py only counts HITs whose client is not one of
+// the PC's own addresses. A loopback self-test must never look like a vehicle
+// delivery, otherwise "拦截次数" can show 1 before the car has asked once.
+bool isLocalClient(const char* client) {
+    if (!client || !*client) return false;
+    if (strcmp(client, "127.0.0.1") == 0 || strcmp(client, "::1") == 0) return true;
+    const String ap = WiFi.softAPIP().toString();
+    if (ap == client) return true;
+    if (WiFi.status() == WL_CONNECTED) {
+        const String sta = WiFi.localIP().toString();
+        if (sta == client) return true;
+    }
+    return false;
+}
+
 void recordHit(const Hit& hit, const char* responseBody) {
+    // WiFi lookups are not safe inside a portMUX critical section.
+    const bool localHit = strcmp(hit.kind, "HIT") == 0 && isLocalClient(hit.client);
     portENTER_CRITICAL(&gHitMux);
     gHits[gHitWrite] = hit;
     gHitWrite = (gHitWrite + 1) % kRecentHitCapacity;
@@ -532,13 +553,16 @@ void recordHit(const Hit& hit, const char* responseBody) {
     if (strcmp(hit.kind, "OBSERVE") == 0) ++gObserveTotal;
     else if (strcmp(hit.kind, "FLOW") == 0) ++gFlowTotal;
     else if (strcmp(hit.kind, "BLOCK") == 0) ++gBlockedTotal;
-    else ++gHitTotal;
+    else if (strcmp(hit.kind, "SELFTEST") == 0) ++gSelftestTotal;
+    else if (!localHit) ++gHitTotal;
     portEXIT_CRITICAL(&gHitMux);
 
-    // The panel's "最新回包" is an FSD view. Non-FSD FLOW/BLOCK responses (for
-    // example Tesla's mTLS 400 or policy-blocked 403) stay in the log/recent
-    // list but must not overwrite the last HIT/OBSERVE body.
-    if (strcmp(hit.kind, "FLOW") != 0 && strcmp(hit.kind, "BLOCK") != 0) {
+    // The panel's "最新回包" is an FSD view. Non-FSD FLOW/BLOCK/SELFTEST
+    // responses (for example Tesla's mTLS 400, a policy-blocked 403, or a
+    // local dashboard probe) stay in the log/recent list but must not
+    // overwrite the last vehicle HIT/OBSERVE body.
+    if (strcmp(hit.kind, "FLOW") != 0 && strcmp(hit.kind, "BLOCK") != 0 &&
+        strcmp(hit.kind, "SELFTEST") != 0) {
         portENTER_CRITICAL(&gLastResponseMux);
         strlcpy(gLastResponse.kind, hit.kind, sizeof(gLastResponse.kind));
         gLastResponse.status = hit.status;
@@ -790,16 +814,100 @@ void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
     if (responseBody) strlcpy(responseBody, json, kLastResponseCapacity);
 }
 
+// TeslaDG mitmproxy error page (mitmproxy/proxy/layers/http/_base.py
+// format_error + _http1.make_error_response): status, Server: mitmproxy,
+// Content-Type: text/html, Connection: close, HTML body. Keeping the same
+// shape makes reverse-mode failures (for example the 4567 TEST-NET upstream)
+// indistinguishable from the Windows chain on the vehicle side.
+void appendHtmlEscaped(char* out, size_t capacity, size_t& used, const char* text) {
+    if (!out || capacity == 0 || !text) return;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p; ++p) {
+        const char* replacement = nullptr;
+        char entity[8] = {};
+        switch (*p) {
+            case '&': replacement = "&amp;"; break;
+            case '<': replacement = "&lt;"; break;
+            case '>': replacement = "&gt;"; break;
+            case '"': replacement = "&quot;"; break;
+            case '\'': replacement = "&#x27;"; break;
+            default: break;
+        }
+        if (replacement) {
+            const size_t length = strlen(replacement);
+            if (used + length + 1 > capacity) return;
+            memcpy(out + used, replacement, length);
+            used += length;
+        } else if (*p < 0x20) {
+            snprintf(entity, sizeof(entity), "&#x%x;", static_cast<unsigned>(*p));
+            const size_t length = strlen(entity);
+            if (used + length + 1 > capacity) return;
+            memcpy(out + used, entity, length);
+            used += length;
+        } else {
+            if (used + 2 > capacity) return;
+            out[used++] = static_cast<char>(*p);
+        }
+    }
+    out[used] = '\0';
+}
+
+size_t formatProxyErrorBody(char* out, size_t capacity, int status, const char* message) {
+    if (!out || capacity == 0) return 0;
+    const char* reason = "Bad Gateway";
+    if (status == 400) reason = "Bad Request";
+    else if (status == 403) reason = "Forbidden";
+    else if (status == 413) reason = "Payload Too Large";
+    else if (status == 500) reason = "Internal Server Error";
+    else if (status == 503) reason = "Service Unavailable";
+    else if (status == 504) reason = "Gateway Timeout";
+
+    size_t used = 0;
+    const int head = snprintf(out, capacity,
+        "<html>\n<head>\n    <title>%d %s</title>\n</head>\n<body>\n    <h1>%d %s</h1>\n    <p>",
+        status, reason, status, reason);
+    if (head > 0) used = static_cast<size_t>(head) < capacity ? static_cast<size_t>(head) : capacity - 1;
+    out[used] = '\0';
+    appendHtmlEscaped(out, capacity, used, message ? message : "");
+    const char tail[] = "</p>\n</body>\n</html>";
+    if (used + sizeof(tail) <= capacity) {
+        memcpy(out + used, tail, sizeof(tail));
+        used += sizeof(tail) - 1;
+    }
+    out[used] = '\0';
+    return used;
+}
+
+void sendProxyError(httpd_req_t* request, Hit& hit, char* responseBody,
+                    int status, const char* message, bool closeConn = true) {
+    char body[640];
+    const size_t used = formatProxyErrorBody(body, sizeof(body), status, message);
+
+    char statusLine[32];
+    httpd_resp_set_status(request, formatStatusLine(status, statusLine));
+    httpd_resp_set_type(request, "text/html");
+    httpd_resp_set_hdr(request, "Server", "mitmproxy 12.3.1");
+    if (closeConn) httpd_resp_set_hdr(request, "Connection", "close");
+    httpd_resp_send(request, body, static_cast<ssize_t>(used));
+
+    hit.status = static_cast<uint16_t>(status);
+    hit.bytes = static_cast<uint32_t>(used);
+    md5Hex(body, used, hit.md5);
+    strlcpy(hit.respCtype, "text/html", sizeof(hit.respCtype));
+    copyPrintable(reinterpret_cast<const uint8_t*>(body), used, hit.respHead, sizeof(hit.respHead));
+    if (responseBody) strlcpy(responseBody, body, kLastResponseCapacity);
+}
+
 struct UpstreamGuard {
     uint8_t consecutiveFailures = 0;
     uint32_t cooldownUntilMs = 0;
     uint32_t lastStaIp = 0;
 };
 
-// Per-listener upstream circuit breaker: index 0 = 4567 mothership HTTP,
-// index 1 = 443 api-prd HTTPS. Unreachable upstream hosts (blocked port/firewall
-// or private endpoint) fast-fail during cooldown instead of stalling the
-// single-threaded httpd task or starving /feature_configuration delivery.
+// Per-listener upstream circuit breaker: index 1 = 443 api-prd HTTPS.
+// Index 0 is retained for the PC 4567 reverse contract, which is now a
+// TEST-NET sink (no upstream attempt). Unreachable upstream hosts fast-fail
+// during cooldown instead of stalling the single-threaded httpd task or
+// starving /feature_configuration delivery.
 UpstreamGuard gUpstreamGuards[2];
 portMUX_TYPE gUpstreamGuardMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -948,10 +1056,27 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
     hit.reqBytes = static_cast<uint32_t>(request->content_len);
 
+    // TeslaDG/app/svc/stack.py starts the 4567 reverse with
+    // reverse:http://192.0.2.1:4567 (TEST-NET, unreachable). Non-FSD
+    // mothership requests therefore get mitmproxy's 502 instead of being
+    // forwarded to Tesla. Match that contract exactly and keep the real
+    // mothership host out of this device's reach.
+    if (localPort(request) == kMothershipHttpPort) {
+        closeConnection = true;
+        discardRequestBody(request, 8192);
+        char message[96];
+        snprintf(message, sizeof(message),
+                 "Cannot connect to %s: [Errno 113] No route to host",
+                 kMothershipBlockedUpstream);
+        sendProxyError(request, hit, responseBody, 502, message);
+        return 502;
+    }
+
     if (!upstreamReady()) {
         closeConnection = true;
         discardRequestBody(request, 8192);
-        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unavailable\"}");
+        sendProxyError(request, hit, responseBody, 502,
+                       "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unavailable");
         return 502;
     }
 
@@ -963,45 +1088,35 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         return 413;
     }
 
-    // TeslaDG reverse targets are fixed per listener:
-    //   443  -> https://api-prd.vn.cloud.tesla.cn  (keep_host_header=false)
-    //   4567 -> http://mothership.vn.teslamotors.com:4567 (keep_host_header=true)
+    // TeslaDG reverse target for 443 is
+    // reverse:https://api-prd.vn.cloud.tesla.cn@443 (keep_host_header=false).
     // The FSD hit path never reaches this function; it is only used for
     // observe mode and non-FSD passthrough.
-    const uint16_t port = localPort(request);
-    const bool secure = port != kMothershipHttpPort;
     const bool chunkedReq = isChunkedRequest(request);
     if (chunkedReq) closeConnection = true;
 
     const uint32_t staIp = static_cast<uint32_t>(WiFi.localIP());
-    if (upstreamGuardCoolingDown(secure, staIp, millis())) {
+    if (upstreamGuardCoolingDown(true, staIp, millis())) {
         closeConnection = true;
         discardRequestBody(request, 8192);
-        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unreachable\"}");
+        sendProxyError(request, hit, responseBody, 502,
+                       "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unreachable");
         return 502;
     }
 
     // Dual TLS (active car 443 session + upstream HTTPS client) needs ~24 KB.
     // Fail fast with 503 when internal RAM is already thin instead of risking
     // an OOM panic while keeping local /feature_configuration delivery alive.
-    if (secure &&
-        (ESP.getFreeHeap() < 24000 ||
-         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 8192)) {
+    if (ESP.getFreeHeap() < 24000 ||
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 8192) {
         closeConnection = true;
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 503, "{\"error\":\"low_heap\"}");
         return 503;
     }
 
-    const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;
-    char authority[kHostCapacity + 8] = {};
-    if (secure) {
-        snprintf(authority, sizeof(authority), "%s", upstreamHost);
-    } else {
-        snprintf(authority, sizeof(authority), "%s:%u", upstreamHost, static_cast<unsigned>(port));
-    }
-
-    const size_t urlLength = strlen(authority) + strlen(request->uri) + 16;
+    const char* upstreamHost = kApiPrdHost;
+    const size_t urlLength = strlen(upstreamHost) + strlen(request->uri) + 16;
     char* url = static_cast<char*>(malloc(urlLength));
     if (!url) {
         closeConnection = true;
@@ -1009,7 +1124,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         finishJsonError(request, hit, responseBody, 500, "{\"error\":\"no_memory\"}");
         return 500;
     }
-    snprintf(url, urlLength, "%s://%s%s", secure ? "https" : "http", authority, request->uri);
+    snprintf(url, urlLength, "https://%s%s", upstreamHost, request->uri);
 
     UpstreamResponseHeaders respHeaders;
     esp_http_client_config_t config = {};
@@ -1021,8 +1136,8 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     config.addr_type = HTTP_ADDR_TYPE_INET;
 #endif
     config.disable_auto_redirect = true;
-    config.transport_type = secure ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
-    config.skip_cert_common_name_check = secure;
+    config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    config.skip_cert_common_name_check = true;
     config.buffer_size = kUpstreamBufferRxBytes;
     config.buffer_size_tx = kUpstreamBufferTxBytes;
     config.event_handler = upstreamEventHandler;
@@ -1033,7 +1148,8 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         closeConnection = true;
         free(url);
         discardRequestBody(request, 8192);
-        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_init\"}");
+        sendProxyError(request, hit, responseBody, 502,
+                       "Cannot connect to api-prd.vn.cloud.tesla.cn: init failed");
         return 502;
     }
     // Remove ESP-IDF's default "ESP32 HTTP Client/1.0" User-Agent so upstream
@@ -1050,9 +1166,9 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         "X-Checksum", "X-Request-Id", "X-Correlation-Id", "X-Requested-With",
     };
     for (const char* name : kForwardHeaders) {
-        // 4567 keeps the car's Host (PC keep_host_header=true); 443 rewrites
-        // Host to api-prd, matching the default mitmproxy reverse mode.
-        if (secure && strcasecmp(name, "Host") == 0) continue;
+        // 443 rewrites Host to api-prd, matching the default mitmproxy reverse
+        // mode (keep_host_header=false). 4567 never reaches here.
+        if (strcasecmp(name, "Host") == 0) continue;
         const size_t length = httpd_req_get_hdr_value_len(request, name);
         if (length == 0) continue;
         char* value = static_cast<char*>(malloc(length + 1));
@@ -1139,11 +1255,14 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             finishJsonError(request, hit, responseBody, 400, "{\"error\":\"request_read_failed\"}");
             return 400;
         }
-        upstreamGuardRecordFailure(secure, staIp, millis());
-        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_failed\"}");
+        upstreamGuardRecordFailure(true, staIp, millis());
+        char message[128];
+        snprintf(message, sizeof(message), "Cannot connect to %s: %s",
+                 upstreamHost, esp_err_to_name(error));
+        sendProxyError(request, hit, responseBody, 502, message);
         return 502;
     }
-    upstreamGuardRecordSuccess(secure, staIp);
+    upstreamGuardRecordSuccess(true, staIp);
 
     int status = esp_http_client_get_status_code(client);
     if (status <= 0) status = 502;
@@ -1694,8 +1813,9 @@ esp_err_t handleRequest(httpd_req_t* request) {
     Capture& capture = scratch->capture;
 
     parseRequestMeta(request, hit, capture);
+    const bool selftest = strcasecmp(hit.userAgent, kSelftestUserAgent) == 0;
     const bool observe = mode() == Mode::Observe;
-    strlcpy(hit.kind, observe ? "OBSERVE" : "HIT", sizeof(hit.kind));
+    strlcpy(hit.kind, selftest ? "SELFTEST" : (observe ? "OBSERVE" : "HIT"), sizeof(hit.kind));
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
     if (observe) {
@@ -1748,7 +1868,8 @@ esp_err_t handleRequest(httpd_req_t* request) {
     unlockState();
 
     const bool chunked = isChunkedRequest(request);
-    const bool triggerAutoOff = autoOff && request->method != HTTP_HEAD;
+    // A local dashboard probe must never start the 2-minute auto-off clock.
+    const bool triggerAutoOff = autoOff && request->method != HTTP_HEAD && !selftest;
     char statusLine[32];
     httpd_resp_set_status(request, formatStatusLine(200, statusLine));
     httpd_resp_set_type(request, "application/json");
@@ -2052,6 +2173,7 @@ void clearHits() {
     gObserveTotal = 0;
     gFlowTotal = 0;
     gBlockedTotal = 0;
+    gSelftestTotal = 0;
     memset(gHits, 0, sizeof(gHits));
     portEXIT_CRITICAL(&gHitMux);
     portENTER_CRITICAL(&gLastResponseMux);
@@ -2101,6 +2223,13 @@ uint32_t flowCount() {
 uint32_t blockedCount() {
     portENTER_CRITICAL(&gHitMux);
     const uint32_t value = gBlockedTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
+uint32_t selftestCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gSelftestTotal;
     portEXIT_CRITICAL(&gHitMux);
     return value;
 }
@@ -2164,6 +2293,9 @@ void appendStatusJson(String& out) {
     out += ",\"recoveries\":"; out += String(static_cast<unsigned long>(client_config::recoveryCount()));
     out += ",\"lastError\":\""; jsonEscape(out, client_config::lastListenerError()); out += "\"";
     out += ",\"mode\":\""; out += (modeNow == Mode::Observe ? "observe" : "reply"); out += "\"";
+    out += ",\"dnsHijack\":\"";
+    out += (gActive && enabledNow ? "full" : (gActive && apiPrdFilterNow ? "api-prd" : "off"));
+    out += "\"";
     out += ",\"host\":\""; jsonEscape(out, hostNow); out += "\"";
     out += ",\"bytes\":"; out += String(static_cast<unsigned>(bytesNow));
     out += ",\"fields\":"; out += String(static_cast<unsigned>(fieldsNow));
@@ -2174,8 +2306,23 @@ void appendStatusJson(String& out) {
     out += ",\"observes\":"; out += String(static_cast<unsigned>(observeCount()));
     out += ",\"flows\":"; out += String(static_cast<unsigned>(flowCount()));
     out += ",\"blocked\":"; out += String(static_cast<unsigned>(blockedCount()));
+    out += ",\"selftests\":"; out += String(static_cast<unsigned>(selftestCount()));
     out += ",\"dnsRedirects\":"; out += String(static_cast<unsigned>(dnsTotal));
     out += ",\"dnsLast\":\""; jsonEscape(out, dnsLast); out += "\"";
+    // PC fsd_panel.py excludes its own addresses from the car view. The local
+    // dashboard probe and loopback curl tests must not look like vehicle hits.
+    out += ",\"localClients\":[\"127.0.0.1\",\"::1\"";
+    const String apAddress = WiFi.softAPIP().toString();
+    if (apAddress.length() && apAddress != "0.0.0.0") {
+        out += ",\""; out += apAddress; out += "\"";
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        const String staAddress = WiFi.localIP().toString();
+        if (staAddress.length() && staAddress != "0.0.0.0") {
+            out += ",\""; out += staAddress; out += "\"";
+        }
+    }
+    out += "]";
 
     portENTER_CRITICAL(&gHandshakeMux);
     const uint32_t hsOk = gHandshakeOk;
@@ -2223,9 +2370,11 @@ void appendStatusJson(String& out) {
     for (size_t i = 0; i < kRecentHitCapacity && shown < kStatusRecentLimit; ++i) {
         Hit recent;
         if (!readRecentHit(i, recent)) break;
-        // Windows fsd_panel's timeline only lists feature_configuration
-        // intercepts; non-FSD FLOW/BLOCK entries stay in the JSONL log.
-        if (strcmp(recent.kind, "FLOW") == 0 || strcmp(recent.kind, "BLOCK") == 0) continue;
+        // Windows fsd_panel's timeline only lists vehicle feature_configuration
+        // intercepts; non-FSD FLOW/BLOCK and local SELFTEST entries stay in the
+        // JSONL log and must not make the car look online.
+        if (strcmp(recent.kind, "FLOW") == 0 || strcmp(recent.kind, "BLOCK") == 0 ||
+            strcmp(recent.kind, "SELFTEST") == 0) continue;
         if (shown) out += ',';
         ++shown;
         out += "{\"kind\":\""; jsonEscape(out, recent.kind); out += "\"";

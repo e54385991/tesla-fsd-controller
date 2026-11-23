@@ -93,6 +93,10 @@ def check_static_contracts() -> None:
     assert "new (std::nothrow) OtaTaskArgs" in ota_src, "OTA task args allocation must be nothrow"
     assert "if (handle) esp_https_ota_abort(handle);" in ota_src, "Defensive cleanup if esp_https_ota_begin fails with non-null handle"
     assert "if (initialized) return true;" in CLIENT_CFG_SRC, "client_config::start must be idempotent (no NVS handle leak)"
+    # TeslaDG parity: local selftest + 4567 TEST-NET blackhole.
+    assert "/api/fsd-mock/selftest" in MAIN_SRC and "client_config::selfTest" in MAIN_SRC
+    assert "kMothershipBlockedUpstream" in FSD_SRC and "192.0.2.1:4567" in FSD_SRC
+    assert "sendProxyError(" in FSD_SRC, "upstream failures must use mitmproxy-compatible 502 pages"
 
     esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
     assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"

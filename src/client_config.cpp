@@ -9,13 +9,16 @@
 #include <WiFi.h>
 #include <cJSON.h>
 #include <esp_err.h>
+#include <esp_http_client.h>
 #include <esp_http_server.h>
 #include <esp_https_server.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <lwip/sockets.h>
 #include <cerrno>
+#include <cstring>
 #include <memory>
+#include <strings.h>
 
 #include "client_config_state.h"
 #include "fsd_tls_identity.h"
@@ -351,6 +354,123 @@ bool fsdHttpsStarted() {
 
 bool mothershipHttpStarted() {
     return mothershipServer != nullptr;
+}
+
+namespace {
+
+struct SelftestCapture {
+    char checksum[40] = {};
+    char ctype[64] = {};
+    char body[1025] = {};
+    size_t bodyLen = 0;
+    bool truncated = false;
+};
+
+esp_err_t selftestEventHandler(esp_http_client_event_t* event) {
+    if (!event || !event->user_data) return ESP_OK;
+    auto* capture = static_cast<SelftestCapture*>(event->user_data);
+    if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key && event->header_value) {
+        if (strcasecmp(event->header_key, "X-Checksum") == 0) {
+            strlcpy(capture->checksum, event->header_value, sizeof(capture->checksum));
+        } else if (strcasecmp(event->header_key, "Content-Type") == 0) {
+            strlcpy(capture->ctype, event->header_value, sizeof(capture->ctype));
+        }
+    } else if (event->event_id == HTTP_EVENT_ON_DATA && event->data && event->data_len > 0) {
+        const size_t remaining = sizeof(capture->body) - 1 - capture->bodyLen;
+        const size_t copy = static_cast<size_t>(event->data_len) < remaining
+            ? static_cast<size_t>(event->data_len) : remaining;
+        if (copy) {
+            memcpy(capture->body + capture->bodyLen, event->data, copy);
+            capture->bodyLen += copy;
+            capture->body[capture->bodyLen] = '\0';
+        }
+        if (copy < static_cast<size_t>(event->data_len)) capture->truncated = true;
+    }
+    return ESP_OK;
+}
+
+bool runSelftestRequest(const char* url, bool secure, const char* via, String& response) {
+    static constexpr char kProbe[] = "{\"vin\":\"WEBTEST\",\"source\":\"dashboard-probe\"}";
+    SelftestCapture capture;
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 4000;
+    config.disable_auto_redirect = true;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    config.addr_type = HTTP_ADDR_TYPE_INET;
+#endif
+    config.transport_type = secure ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
+    config.skip_cert_common_name_check = secure;
+    config.buffer_size = 512;
+    config.buffer_size_tx = 512;
+    config.event_handler = selftestEventHandler;
+    config.user_data = &capture;
+    // esp_http_client_perform() -> prepare() rewrites User-Agent from config,
+    // so the SELFTEST marker must live here (set_header would be lost).
+    config.user_agent = fsd_mock::kSelftestUserAgent;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        char body[96];
+        snprintf(body, sizeof(body),
+                 "{\"ok\":false,\"via\":\"%s\",\"error\":\"init_failed\"}", via);
+        response = body;
+        return false;
+    }
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, kProbe, strlen(kProbe));
+
+    const esp_err_t error = esp_http_client_perform(client);
+    const int status = error == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+
+    const bool ok = error == ESP_OK && status == 200 && capture.bodyLen > 0;
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        response = "{\"ok\":false,\"error\":\"no_memory\"}";
+        return false;
+    }
+    cJSON_AddBoolToObject(root, "ok", ok);
+    cJSON_AddStringToObject(root, "via", via);
+    cJSON_AddNumberToObject(root, "status", status);
+    cJSON_AddNumberToObject(root, "bytes", static_cast<double>(capture.bodyLen));
+    cJSON_AddStringToObject(root, "checksum", capture.checksum);
+    cJSON_AddStringToObject(root, "ctype", capture.ctype);
+    cJSON_AddStringToObject(root, "body", capture.body);
+    cJSON_AddBoolToObject(root, "truncated", capture.truncated);
+    if (error != ESP_OK) {
+        cJSON_AddStringToObject(root, "error", esp_err_to_name(error));
+    }
+    char* text = cJSON_PrintUnformatted(root);
+    if (text) {
+        response = text;
+        cJSON_free(text);
+    } else {
+        response = "{\"ok\":false,\"error\":\"no_memory\"}";
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+}  // namespace
+
+bool selfTest(String& response) {
+    // PC server.py prefers the plaintext 4567 listener; 443 is only used when
+    // 4567 is not running (for example api-prd-only filtering mode).
+    if (mothershipServer != nullptr) {
+        return runSelftestRequest(
+            "http://127.0.0.1:4567/vehicles/WEBTEST/feature_configuration",
+            false, "reverse:4567", response);
+    }
+    if (fsdServer != nullptr) {
+        return runSelftestRequest(
+            "https://127.0.0.1:443/mothership/vehicles/WEBTEST/feature_configuration",
+            true, "proxy:443", response);
+    }
+    response = "{\"ok\":false,\"error\":\"no_listener\"}";
+    return false;
 }
 
 bool safeModeBypassed() {

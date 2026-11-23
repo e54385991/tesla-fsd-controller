@@ -65,6 +65,8 @@ textarea{height:300px;resize:vertical}
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="apiPrdFilterEn"> api-prd 仅放行规则（其余 403）</label>
     <input type="text" id="apiPrdRules" maxlength="255" spellcheck="false" placeholder="uuid=music" style="width:200px">
     <button class="btn" id="apiPrdSaveBtn" type="button">保存规则</button>
+    <button class="btn" id="selftestBtn" type="button">本地自测</button>
+    <span class="dim" id="selftestMsg" style="font-size:12px"></span>
     <span class="dim" id="fsdHealth" style="font-size:12px">443/4567：--</span>
   </div></section>
   <div class="grid">
@@ -76,6 +78,12 @@ textarea{height:300px;resize:vertical}
     <div class="card"><div class="k">最后下发成功</div><div class="v s" id="cLastOk">--</div></div>
     <div class="card"><div class="k">车机请求总数</div><div class="v" id="cReqs">--</div></div>
     <div class="card"><div class="k">FSD DNS 重定向</div><div class="v s" id="cDns">--</div></div>
+  </div>
+  <div class="dim" style="font-size:11.5px;line-height:1.6;margin:-4px 2px 12px">
+    车机通常每 <b>12 小时 ± 2 小时</b>取一次配置；重启车机后约 <b>5–10 分钟</b>会催一次。
+    1 小时内为 0 很常见：先看「FSD DNS 重定向」和「握手」是否增长，再点「本地自测」验证 443/4567 回包。
+    本地自测单独计数，不计入「拦截次数」，也不会触发 2 分钟自动关闭。
+    希望像 PC 一样长期保持监听，请取消勾选上方「下发成功后延迟 2 分钟自动关闭」。
   </div>
 
   <section><h2>车机连接 &amp; 握手</h2>
@@ -212,8 +220,11 @@ function render(st,hits,hs,cfg,payloadText){
   document.getElementById('apiPrdFilterEn').checked=!!fm.apiPrdFilter;
   var apfInput=document.getElementById('apiPrdRules');
   if(apfInput && !apfInput.matches(':focus')) apfInput.value=fm.apiPrdRules||'';
+  var hijack=fm.dnsHijack==='full'?'全量':(fm.dnsHijack==='api-prd'?'仅api-prd':'关');
   var fh='443:'+(fm.fsd443?'监听中':'未监听')+' · 4567:'+(fm.fsd4567?'监听中':'未监听')+
+    ' · DNS劫持:'+hijack+
     (fm.apiPrdFilter?(' · 策略拦截:'+(fm.blocked||0)+'次'):'')+
+    (fm.selftests?(' · 自测:'+fm.selftests+'次'):'')+
     (fm.autoOffPending?(' · 倒计时:'+(fm.autoOffRemainingSec||0)+'s'):'')+
     (fm.recoveries?(' · 自复:'+fm.recoveries+'次'):'')+
     (fm.lastError?(' · 异常:'+fm.lastError):'');
@@ -228,10 +239,12 @@ function render(st,hits,hs,cfg,payloadText){
   linkBadge.textContent=st.upstreamConnected?('链路：'+esc(st.upstreamSSID||'已连接')):'链路：未连接';
   linkBadge.className='badge '+(st.upstreamConnected?'ok':'bad');
 
-  var intercepts=hits.filter(function(r){return r.kind==='HIT'||r.kind==='OBSERVE';});
+  var localClients=fm.localClients||['127.0.0.1','::1'];
+  function local(c){ return localClients.indexOf(String(c||''))>=0; }
+  var intercepts=hits.filter(function(r){return (r.kind==='HIT'||r.kind==='OBSERVE') && !local(r.client);});
   var lastHit=intercepts[0]||null;
   var vin='';
-  for(var i=0;i<hits.length;i++){ if(hits[i].vin){ vin=hits[i].vin; break; } }
+  for(var i=0;i<hits.length;i++){ if(!local(hits[i].client) && hits[i].vin){ vin=hits[i].vin; break; } }
   var totalReqs=(fm.hits||0)+(fm.observes||0)+(fm.flows||0)+(fm.blocked||0);
   document.getElementById('cHits').textContent=(fm.hits||0);
   document.getElementById('cLastHit').textContent=lastHit?tsText(lastHit.ts):'—';
@@ -242,6 +255,7 @@ function render(st,hits,hs,cfg,payloadText){
   var carEl=document.getElementById('cCar');
   if(lastAge!=null && lastAge<180){ carEl.textContent='在线 · '+ageText(lastAge); carEl.style.color='#3fb950'; }
   else if(totalReqs>0){ carEl.textContent='链路可达 · 最后 '+(lastHit?tsText(lastHit.ts):'—'); carEl.style.color='#d29922'; }
+  else if((fm.dnsRedirects||0)>0){ carEl.textContent='DNS 已劫持 · 等待车机 HTTP'; carEl.style.color='#d29922'; }
   else { carEl.textContent='离线 · 等待车机请求'; carEl.style.color='#f85149'; }
   document.getElementById('cLastOk').textContent=lastHit?ageText(ageFrom(lastHit.ts)):'—';
   document.getElementById('cReqs').textContent=totalReqs;
@@ -276,6 +290,7 @@ function render(st,hits,hs,cfg,payloadText){
 
   var collapsed=[];
   hits.forEach(function(r){
+    if(local(r.client)) return;
     var key=methodPath(r,true)+'|'+(r.kind||'');
     if(collapsed.length && collapsed[collapsed.length-1].key===key){ collapsed[collapsed.length-1].n++; collapsed[collapsed.length-1].ts=r.ts; }
     else collapsed.push({key:key,method:r.method||'',path:pathOf(r.url,true),n:1,ts:r.ts,kind:r.kind||''});
@@ -287,7 +302,7 @@ function render(st,hits,hs,cfg,payloadText){
   document.getElementById('recRows').innerHTML=rec||'<tr><td colspan="5" class="dim">还没有车机请求</td></tr>';
 
   var counts={};
-  hits.forEach(function(r){ var k=methodPath(r); counts[k]=(counts[k]||0)+1; });
+  hits.forEach(function(r){ if(local(r.client)) return; var k=methodPath(r); counts[k]=(counts[k]||0)+1; });
   var paths=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}).slice(0,12);
   document.getElementById('pathRows').innerHTML=paths.map(function(k){return '<tr><td><code>'+esc(k)+'</code></td><td>'+counts[k]+'</td></tr>';}).join('')||'<tr><td colspan="2" class="dim">-</td></tr>';
 
@@ -385,6 +400,22 @@ async function applyPreset(name){
   }
   else { var why='加载失败'; try{ why=JSON.parse(text).error||why; }catch(e){} setMsg('cfgMsg',why,false); if(r.status===403) showPin(); }
 }
+async function fsdSelftest(){
+  var el=document.getElementById('selftestMsg');
+  el.textContent='自测中…'; el.style.color='#8b949e';
+  try{
+    var r=await fetch(q('/api/fsd-mock/selftest'),{method:'POST'});
+    if(r.status===403){ showPin(); return; }
+    var j=await r.json();
+    if(j.ok){
+      el.textContent='自测通过 · '+(j.via||'')+' · HTTP '+(j.status||200)+' / '+(j.bytes||0)+' B / '+(j.checksum||'no-checksum');
+      el.style.color='#3fb950';
+    }else{
+      el.textContent='自测失败 · '+(j.via?j.via+' · ':'')+(j.status?('HTTP '+j.status+' '):'')+(j.error||'')+(j.body?(' · '+String(j.body).slice(0,90)):'');
+      el.style.color='#f85149';
+    }
+  }catch(e){ el.textContent='自测请求失败：'+e; el.style.color='#f85149'; }
+}
 async function toggleFsdOpts(){
   var en=document.getElementById('fsdEn').checked?1:0;
   var ao=document.getElementById('fsdAutoOff').checked?1:0;
@@ -402,6 +433,7 @@ document.getElementById('fsdEn').onchange=toggleFsdOpts;
 document.getElementById('fsdAutoOff').onchange=toggleFsdOpts;
 document.getElementById('apiPrdFilterEn').onchange=toggleFsdOpts;
 document.getElementById('apiPrdSaveBtn').onclick=toggleFsdOpts;
+document.getElementById('selftestBtn').onclick=fsdSelftest;
 document.getElementById('addBtn').onclick=addRow;
 document.getElementById('saveBtn').onclick=savePayload;
 document.getElementById('reloadBtn').onclick=function(){ editing=false; editorLoaded=false; refresh(); };

@@ -30,6 +30,10 @@ constexpr size_t kPayloadInputCapacity = 4096; // raw (pretty-printed) JSON uplo
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kApiPrdRuleCapacity = 256;
 constexpr char kDefaultApiPrdRules[] = "uuid=music";
+// Local dashboard probe marker (PC web/server.py /api/selftest parity).
+// Requests carrying this User-Agent are logged as SELFTEST and never counted
+// as vehicle HITs or allowed to trigger the post-delivery auto-off timer.
+constexpr char kSelftestUserAgent[] = "fsd-selftest";
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
 constexpr size_t kConfigHistoryCapacity = 8; // RAM ring, not persisted
@@ -43,7 +47,7 @@ enum class Mode : uint8_t {
 // Mirrors the fields written by fsd_mock.py to hits.jsonl. ts is ISO local
 // time when the clock is valid, otherwise "up:<seconds>".
 struct Hit {
-    char kind[8] = {};          // HIT / OBSERVE / FLOW / BLOCK
+    char kind[10] = {};         // HIT / OBSERVE / FLOW / BLOCK / SELFTEST
     char ts[32] = {};
     char client[46] = {};
     char method[8] = {};
@@ -130,6 +134,7 @@ uint32_t hitCount();
 uint32_t observeCount();
 uint32_t flowCount();
 uint32_t blockedCount();
+uint32_t selftestCount();
 uint32_t dnsRedirectCount();
 uint32_t autoDisabledCount();
 

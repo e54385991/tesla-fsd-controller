@@ -121,8 +121,10 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="dim" id="fsdHealth" style="font-size:12px;margin-top:6px">监听状态：--</div>
     <button class="primary" id="fsdSave">保存 FSD / 过滤设置</button>
     <button id="apiPrdReset">恢复默认规则</button>
+    <button id="fsdSelftest">本地自测（4567/443 回包）</button>
     <a class="btn" href="/fsd">编辑载荷 / 查看命中与握手</a>
     <div class="msg" id="fsdMsg"></div>
+    <div class="msg" id="fsdSelfMsg"></div>
   </div></section>
 
   <section><h2>固件 OTA</h2><div class="body">
@@ -191,9 +193,11 @@ async function refresh(){
     document.getElementById('apiPrdFilterEn').checked=!!f.apiPrdFilter;
     if(!document.getElementById('apiPrdRules').matches(':focus')) document.getElementById('apiPrdRules').value=f.apiPrdRules||'';
     var want443=!!(f.enabled||f.apiPrdFilter);
+    var hijack=f.dnsHijack==='full'?'全量':(f.dnsHijack==='api-prd'?'仅api-prd':'关');
     var fh='443:'+(f.fsd443?'监听中':'未监听')+' · 4567:'+(f.fsd4567?'监听中':'未监听')+
-      ' · DNS劫持:'+(f.active&&want443?(f.enabled?'全量':'仅api-prd'):'关')+
+      ' · DNS劫持:'+hijack+
       (f.apiPrdFilter?(' · 策略拦截:'+(f.blocked||0)+'次'):'')+
+      (f.selftests?(' · 自测:'+f.selftests+'次'):'')+
       (f.autoOffPending?(' · 倒计时:'+(f.autoOffRemainingSec||0)+'s'):'')+
       (f.recoveries?(' · 自复:'+f.recoveries+'次'):'')+
       (f.autoDisabledCount?(' · 已自动关闭:'+f.autoDisabledCount+'次'):'')+
@@ -320,6 +324,16 @@ async function resetApiPrdRules(){
   if(r.status===403)showPin();
   if(r.ok)refresh();
 }
+async function fsdSelftest(){
+  setMsg('fsdSelfMsg','自测中…',null);
+  try{
+    var r=await fetch(q('/api/fsd-mock/selftest'),{method:'POST'});
+    if(r.status===403){showPin();return;}
+    var j=await r.json();
+    if(j.ok) setMsg('fsdSelfMsg','自测通过：'+(j.via||'')+' · HTTP '+(j.status||200)+' / '+(j.bytes||0)+' B / '+(j.checksum||''),true);
+    else setMsg('fsdSelfMsg','自测失败：'+(j.via?j.via+' · ':'')+(j.status?('HTTP '+j.status+' '):'')+(j.error||'')+(j.body?(' · '+String(j.body).slice(0,80)):''),false);
+  }catch(e){setMsg('fsdSelfMsg','自测请求失败：'+e,false);}
+}
 async function otaUpload(){
   var f=document.getElementById('otaFile').files[0]; if(!f){setMsg('otaMsg','请选择 .bin',false);return;}
   var fd=new FormData();fd.append('firmware',f);setMsg('otaMsg','上传中…',null);
@@ -339,6 +353,7 @@ document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
 document.getElementById('fsdSave').onclick=saveFsd;
 document.getElementById('apiPrdReset').onclick=resetApiPrdRules;
+document.getElementById('fsdSelftest').onclick=fsdSelftest;
 document.getElementById('fsdEn').onchange=saveFsd;
 document.getElementById('fsdAutoOff').onchange=saveFsd;
 document.getElementById('fsdMode').onchange=saveFsd;

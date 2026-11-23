@@ -239,7 +239,7 @@ mothership.vn.cloud.tesla.cn
    - `X-Checksum: md5(compact body)`
    - `Cache-Control: no-store`
    - body 为当前 compact JSON 载荷
-3. **其他路径**：443 反代到 `https://api-prd.vn.cloud.tesla.cn`（Host 重写为 api-prd）；4567 反代到 `http://mothership.vn.teslamotors.com:4567`（保留车机原始 Host），与 PC 版两个 reverse 监听一致。
+3. **其他路径**：443 反代到 `https://api-prd.vn.cloud.tesla.cn`（Host 重写为 api-prd）；4567 按 PC `svc/stack.py` 的 `reverse:http://192.0.2.1:4567` 语义处理——非 FSD 路径直接返回与 mitmproxy 同格式的 `502` HTML，不再访问真实母舰，避免云端改写配置。FSD 命中路径不受影响。
 
 ### 回复 / 观察模式
 
@@ -247,6 +247,18 @@ mothership.vn.cloud.tesla.cn
 - `observe`：只记录请求并转发到上游，不返回本地载荷。
 
 可在面板「DNS → FSD 下发」卡片切换。
+
+### 为什么「拦截次数」一直是 0（1 小时并不算异常）
+
+车机通常每 **12 小时 ± 2 小时**才取一次 `feature_configuration`；重启车机后约 **5–10 分钟**会催一次。命中一次后短时间内不会再来。PC 版 README 也是同样的节奏（`Q5：等很久一直没命中？车机 12 小时才查一次`）。
+
+按下面顺序看 `/fsd` 看板，基本能定位：
+
+1. **FSD DNS 重定向** 一直是 0：车机没有把 `api-prd` / `mothership.*` 查询发到 ESP32。检查车机是否连的是 `fsd-esp32`、上游 Wi-Fi 是否已连接、是否开了私人 DNS/DoH。
+2. **DNS 重定向 > 0，但握手成功/失败都是 0**：DNS 到了，但车机没有建立 443/4567 连接，或连接被中途重置。
+3. **有握手，但车机请求总数一直是 0**：TLS 建立了但没发 HTTP，通常是车机还在等待/重试。
+4. **有请求但命中 0**：看「车机最近请求」的路径是否包含 `/feature_configuration`；本固件匹配 `/feature_configuration`、`/feature_configuration/`、`...?x`、`.../#x`，不匹配 `/feature_configurations`。
+5. **想立刻验证监听是否正常**：点看板上的 **「本地自测」**（或 `POST /api/fsd-mock/selftest`）。它会像 PC `web/server.py` 的 `/api/selftest` 一样向本机 4567（优先）或 443 发一次 `POST /vehicles/WEBTEST/feature_configuration`，返回 HTTP 状态、字节数、`X-Checksum` 和 body。自测标记为 `SELFTEST`，**不会计入「拦截次数」，也不会触发 2 分钟自动关闭**。`observe` 模式下自测按 observe 语义透传（4567 会得到 PC 同款 502），不是本地回包；要验证本地载荷请先切到 `reply`。
 
 ### 默认载荷预设
 
@@ -263,11 +275,11 @@ mothership.vn.cloud.tesla.cn
 
 - `10010`：管理面板、client-config、OTA、日志。
 - `443`：只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代）。证书 SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`mothership.vn.cloud.tesla.cn`。
-- `4567`：PC 版母舰明文 HTTP 反代（TeslaDG `svc/stack.py` 的 `reverse:http://<ip>:4567`）。命中 `/feature_configuration` 回包，其余路径转发到 `http://mothership.vn.teslamotors.com:4567`，并保留车机原始 Host（PC 的 `keep_host_header=true`）。
+- `4567`：PC 版母舰明文 HTTP 反代（TeslaDG `svc/stack.py` 的 `reverse:http://192.0.2.1:4567`）。命中 `/feature_configuration` 回包；其余路径与 PC 一样得到 `502`（`Server: mitmproxy 12.3.1` + HTML），避免真实母舰改写配置。`web/server.py` 旧面板会解析真实母舰地址，但它不是 `start_all` / `start_hotspot` 的主链路。
 - 443 使用与 Windows `--emudhra` 相同的 eMudhra 证书材料，而不是 mitmproxy 自签 CA。CA 链（EM OV TLS CA - G3C → emSign Root TLS CA - G3 → emSign ECC Root CA - G3，加 AAA 交叉签名）和私钥与 mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` 逐字节一致；车机通常已信任 emSign 根，无需安装证书。
 - Windows 版由 mitmproxy 按 SNI 动态生成短有效期叶子证书；ESP32 使用一张静态叶子证书（同样的 CA 私钥/公钥、issuer、EKU、AKI），有效期沿用 `certs2/mitmproxy-ca-cert.pem` 的 2026-11-07 → 2036-11-04，并一次覆盖 `api-prd` 和两个 `mothership` 域名。因此叶子证书不可能与 PC 每次动态生成的叶子逐字节相同，但链、密钥和校验结果一致。
 - 如果车机不信任，可通过串口 `client-config` 命令导出 `EM OV TLS CA - G3C` 中间 CA，装进车机信任库。
-- 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回 `502 {"error":"upstream_unavailable"}`。
+- 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回与 mitmproxy 同格式的 `502` HTML（`Server: mitmproxy 12.3.1`），而不是 JSON。
 
 ### TLS 版本
 
@@ -283,6 +295,7 @@ mothership.vn.cloud.tesla.cn
 | `/api/fsd-mock/payload` | GET | 当前 compact JSON |
 | `/api/fsd-mock/payload` | POST | 写入 JSON 对象，上限 2048 字节 |
 | `/api/fsd-mock/set?enabled=1&mode=reply&preset=default` | GET | 启停、切换模式、加载预设 |
+| `/api/fsd-mock/selftest` | POST | 本机 4567/443 回包自测（同 PC `web/server.py` `/api/selftest`） |
 | `/api/fsd-mock/hits` / `handshakes` | GET | RAM JSONL 导出 |
 | `/api/log` / `/api/log/download` | GET | RAM 诊断日志 / SPIFFS 持久日志 |
 

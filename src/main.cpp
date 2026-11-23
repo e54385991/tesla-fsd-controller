@@ -705,7 +705,7 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(ESP.getPsramSize()),
                   static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    Serial.printf("[wifi-diag] fsd=%d autoOff=%d(%us) apiPrdFilter=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u blk=%u dns=%u spi=%u/%u\n",
+    Serial.printf("[wifi-diag] fsd=%d autoOff=%d(%us) apiPrdFilter=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u blk=%u self=%u dns=%u spi=%u/%u\n",
                   fsd_mock::enabled() ? 1 : 0,
                   fsd_mock::autoOffOnHit() ? 1 : 0,
                   static_cast<unsigned>(client_config::autoOffRemainingSec()),
@@ -717,6 +717,7 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(fsd_mock::observeCount()),
                   static_cast<unsigned>(fsd_mock::flowCount()),
                   static_cast<unsigned>(fsd_mock::blockedCount()),
+                  static_cast<unsigned>(fsd_mock::selftestCount()),
                   static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
                   static_cast<unsigned>(SPIFFS.usedBytes()),
                   static_cast<unsigned>(SPIFFS.totalBytes()));
@@ -1551,6 +1552,16 @@ static void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         fsd_mock::clearHits();
         req->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // TeslaDG/app/web/server.py /api/selftest parity: a real loopback POST to
+    // 4567 (preferred) or 443, returning status/body/X-Checksum. This proves
+    // the listener works even when the car has not asked yet (12h cycle).
+    server.on("/api/fsd-mock/selftest", HTTP_POST, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        String result;
+        client_config::selfTest(result);
+        req->send(200, "application/json", result);
     });
 
     server.on("/api/fsd-mock/hits", HTTP_GET, [](AsyncWebServerRequest* req) {

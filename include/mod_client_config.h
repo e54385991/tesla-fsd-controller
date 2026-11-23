@@ -17,6 +17,12 @@ enum class Change : uint8_t { Publish, Rollback, Acknowledge };
 bool start(bool skipAutoListeners = false);
 bool fsdHttpsStarted();
 bool mothershipHttpStarted();
+// TeslaDG/app/web/server.py /api/selftest parity: POST a WEBTEST
+// /feature_configuration request through the local 4567 (preferred) or 443
+// listener and return the status/body/checksum as JSON. The request is marked
+// with fsd_mock::kSelftestUserAgent so it is not counted as a vehicle hit and
+// cannot trigger auto-off.
+bool selfTest(String& response);
 bool safeModeBypassed();
 uint32_t recoveryCount();
 const char* lastListenerError();

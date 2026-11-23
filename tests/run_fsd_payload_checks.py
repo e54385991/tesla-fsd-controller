@@ -109,12 +109,17 @@ def check_response_contract() -> None:
         'httpd_resp_set_hdr(request, "Cache-Control", "no-store")',
         'formatStatusLine(200, statusLine)',
         'const bool observe = mode() == Mode::Observe',
-        'strlcpy(hit.kind, observe ? "OBSERVE" : "HIT"',
+        'strlcpy(hit.kind, selftest ? "SELFTEST" : (observe ? "OBSERVE" : "HIT")',
         'gHits[gHitWrite] = hit',
         'Handshake& handshake = gHandshakes[gHandshakeWrite]',
         'esp_http_client_open(client, static_cast<int>(bodyLength))',
         'esp_http_client_delete_header(client, "User-Agent")',
         'upstream_unavailable',
+        'sendProxyError(',
+        '"Server", "mitmproxy 12.3.1"',
+        'kMothershipBlockedUpstream',
+        'SELFTEST',
+        'kSelftestUserAgent',
         'constexpr size_t kMaxForwardBodyBytes = 65536;',
         'constexpr size_t kUpstreamBufferTxBytes = 4096;',
         'HTTP_EVENT_ON_HEADER',
@@ -221,6 +226,65 @@ int main() {
             check=True,
         )
         subprocess.run([str(exe)], check=True)
+
+
+def check_proxy_error_body_parity() -> None:
+    """Compile the production mitmproxy-style 502 page and compare byte-for-byte
+    with TeslaDG's mitmproxy format_error() output."""
+    cxx = shutil.which("c++")
+    if not cxx:
+        return
+    source = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted = "\n".join((
+        _extract_block(source, "void appendHtmlEscaped("),
+        _extract_block(source, "size_t formatProxyErrorBody("),
+    ))
+    harness = r'''
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+''' + extracted + r'''
+int main(int argc, char** argv) {
+    if (argc != 3) return 2;
+    const int status = std::atoi(argv[1]);
+    char body[640];
+    const size_t n = formatProxyErrorBody(body, sizeof(body), status, argv[2]);
+    std::fwrite(body, 1, n, stdout);
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="fsd-proxyerr-") as tmp:
+        cpp = Path(tmp) / "proxyerr.cpp"
+        exe = Path(tmp) / "proxyerr"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        import html as html_mod
+        import textwrap
+        message = 'Cannot connect to <host> & "x" \'y\''
+        for status in (400, 502, 503):
+            reason = {400: "Bad Request", 502: "Bad Gateway", 503: "Service Unavailable"}[status]
+            expected = textwrap.dedent(
+                f"""
+                <html>
+                <head>
+                    <title>{status} {reason}</title>
+                </head>
+                <body>
+                    <h1>{status} {reason}</h1>
+                    <p>{html_mod.escape(message)}</p>
+                </body>
+                </html>
+                """
+            ).strip().encode()
+            actual = subprocess.run([str(exe), str(status), message], capture_output=True, check=True).stdout
+            assert actual == expected, f"{status}: proxy error body mismatch:\n  esp={actual!r}\n  pc ={expected!r}"
 
 
 def check_payload_compact_and_sum_parity() -> None:
@@ -392,8 +456,12 @@ def check_port_policy() -> None:
     assert "config.server_port = fsd_mock::kMothershipHttpPort;" in server
     assert "startMothershipHttp()" in server
     assert "mothershipHttpStarted()" in server
-    assert "const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;" in mock
-    assert 'if (secure && strcasecmp(name, "Host") == 0) continue;' in mock
+    # PC svc/stack.py reverse target is the TEST-NET sink; non-FSD 4567 must
+    # produce mitmproxy's 502 instead of reaching the real mothership.
+    assert "const char* upstreamHost = kApiPrdHost;" in mock
+    assert "kMothershipBlockedUpstream" in mock
+    assert "192.0.2.1:4567" in mock
+    assert 'if (strcasecmp(name, "Host") == 0) continue;' in mock
     assert "mothership.vn.teslamotors.com" in mock
     assert "mothership.vn.cloud.tesla.cn" in mock
     # Default external blocklist carries both mothership hosts and migrates
@@ -815,6 +883,7 @@ def main() -> None:
     check_api_prd_request_filter()
     check_response_contract()
     check_upstream_header_capture()
+    check_proxy_error_body_parity()
     check_payload_compact_and_sum_parity()
     check_port_policy()
     print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "
