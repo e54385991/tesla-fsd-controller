@@ -53,7 +53,7 @@ echo.
 echo 下一步:
 echo 1. 设备会自动重启
 echo 2. 用手机连接 WiFi 热点 "fsd-esp32"
-echo 3. 密码: 88888888
+echo 3. 密码: 058005800580
 echo 4. 浏览器访问: http://9.9.9.9:10010/
 echo.
 pause

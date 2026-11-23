@@ -170,8 +170,8 @@ def check_upstream_header_capture() -> None:
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
-constexpr size_t kMaxForwardedRespHeaders = 14;
-constexpr size_t kMaxRespHeaderTotalBytes = 2048;
+constexpr size_t kMaxForwardedRespHeaders = 22;
+constexpr size_t kMaxRespHeaderTotalBytes = 4096;
 ''' + extracted + r'''
 int main() {
     char buf[32];
@@ -365,6 +365,7 @@ int main(int argc, char** argv) {
     assert "delete obj.autoshift_dr" not in ui, "web_ui_fsd must not silently reorder autoshift_dr"
     assert "toLowerCase()" in ui, "web_ui_fsd coerce() must be case-insensitive like PC fsd_panel.py"
     assert "默认 654B" in ui, "web_ui_fsd default preset button must show 654B"
+    assert "PC 602B" in ui, "web_ui_fsd PC preset button must show 602B"
     assert "默认 653B" not in ui, "stale 653B label found in web_ui_fsd.h"
 
 
@@ -392,8 +393,12 @@ def check_port_policy() -> None:
     assert "config.server_port = fsd_mock::kMothershipHttpPort;" in server
     assert "startMothershipHttp()" in server
     assert "mothershipHttpStarted()" in server
-    assert "const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;" in mock
-    assert 'if (secure && strcasecmp(name, "Host") == 0) continue;' in mock
+    assert "const char* upstreamHost = kApiPrdHost;" in mock
+    assert "kMothershipBlockedUpstream" in mock
+    assert "192.0.2.1:4567" in mock
+    assert 'if (strcasecmp(name, "Host") == 0) continue;' in mock
+    assert "sendProxyError(" in mock
+    assert '"Server", "mitmproxy 12.3.1"' in mock
     assert "mothership.vn.teslamotors.com" in mock
     assert "mothership.vn.cloud.tesla.cn" in mock
     # Default external blocklist carries both mothership hosts and migrates
@@ -465,11 +470,23 @@ def check_tls_policy() -> None:
     # Anti-hang & self-healing contracts (Part 1 + Part 2)
     assert "config.keep_alive_enable = true;" in server
     assert "config.httpd.keep_alive_enable = true;" in server
-    assert "config.httpd.lru_purge_enable = true;" in server
+    assert "config.httpd.lru_purge_enable = false;" in server
+    assert "dnsPaused" not in server, "busy httpd must never pause DNS hijack"
     assert "config.tls_handshake_timeout_ms = 4000;" in server
+    # OOM/panic guard: never open a second TLS context when heap is thin, and
+    # fast-fail repeated upstream failures instead of handshake storms.
+    assert "ESP.getFreeHeap() < 45000" in mock
+    assert "heap_caps_get_largest_free_block" in mock
+    assert "upstreamCoolingDown(" in mock
+    assert "upstreamRecordFailure(" in mock
     assert "httpd_queue_work(" in server
     assert "kHeartbeatIntervalMs = 15000" in server
     assert "kAutoOffDelayMs = 120000" in (ROOT / "include/mod_client_config.h").read_text()
+    # The 2-minute auto-off must not race a 45-second watchdog reboot.
+    assert "kMissedRestart" not in server
+    assert "wifiBridgeTriggerRestart" not in server
+    assert "ESP.restart" not in server
+    assert "wifiBridgeTriggerRestart" not in (ROOT / "src/main.cpp").read_text()
     assert "kMaxForwardDurationMs = 15000" in mock
     assert "kMaxForwardResponseBytes = 262144" in mock
     assert "kMaxFsdRequestBodyBytes = 65536" in mock
@@ -478,11 +495,20 @@ def check_tls_policy() -> None:
     assert "client_config::scheduleAutoOff();" in mock
     assert "mbedtls_ssl_get_version" in mock
 
-    # UI must expose autoOff toggle and distinguish active vs enabled/safeMode.
+    # UI must expose autoOff toggle and distinguish active vs enabled.
     for ui_path in ("include/web_ui_manage.h", "include/web_ui_fsd.h"):
         ui_text = (ROOT / ui_path).read_text()
-        for needle in ("fsdAutoOff", "autoOffPending", "autoOffRemainingSec", "fsd443", "fsd4567", "safeMode", "lastError"):
+        for needle in ("fsdAutoOff", "autoOffPending", "autoOffRemainingSec", "fsd443", "fsd4567", "lastError"):
             assert needle in ui_text, f"{ui_path}: missing {needle}"
+
+    # Safe mode is removed completely: no status flag, no badge, no boot skip.
+    for path in ("include/mod_client_config.h", "include/web_ui_fsd.h",
+                 "include/web_ui_manage.h", "src/client_config.cpp",
+                 "src/fsd_mock.cpp", "src/main.cpp"):
+        text = (ROOT / path).read_text()
+        assert "safeMode" not in text, f"{path}: safe mode must stay removed"
+        assert "安全模式" not in text, f"{path}: safe mode badge must stay removed"
+        assert "safe_mode" not in text, f"{path}: safe mode error tag must stay removed"
 
 
 def payloads() -> list[str]:
@@ -508,8 +534,8 @@ def main() -> None:
     found = payloads()
     assert len(found) == 4, f"expected 4 payloads, found {len(found)}"
     expected = [
-        (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (602, "241cb01b81a2b9c8b9f389a471bcbc94", 20),
+        (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (476, "b61035d9dea38e737fbf8195ccb39f2c", 16),
         (282, "c212a75ca858750ac302093c138991f2", 9),
     ]
@@ -521,10 +547,15 @@ def main() -> None:
         assert b"\n" not in raw and b": " not in raw
         assert f'"{digest}"' in HEADER
 
-    default_json = json.loads(found[0])
+    pc_json = json.loads(found[0])
+    assert pc_json.get("disable_cabin_camera") is True
+    assert len(pc_json) == 20
+    default_json = json.loads(found[1])
+    assert default_json.get("disable_cabin_camera") is False
     assert default_json.get("enable_eu_fsd_behavior") is False
     assert default_json.get("autoshift_dr") is True
     assert list(default_json)[-1] == "autoshift_dr"
+    assert len(default_json) == 22
 
     true_cases = [
         "/feature_configuration",

@@ -21,7 +21,7 @@
 | 项目 | 默认值 |
 |---|---|
 | Wi-Fi 热点名称（SSID） | `fsd-esp32` |
-| Wi-Fi 密码 | `88888888` |
+| Wi-Fi 密码 | `058005800580` |
 | 设备 AP 地址 | `9.9.9.9` |
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
@@ -78,7 +78,7 @@ Windows 把串口换成 `COMx`。ESP32-S3 进入下载模式：按住 **BOOT**�
 
 ### 2. 连接设备
 
-1. 手机或电脑连接 Wi-Fi：`fsd-esp32`，密码 `88888888`。
+1. 手机或电脑连接 Wi-Fi：`fsd-esp32`，密码 `058005800580`。
 2. 浏览器打开 `http://9.9.9.9:10010/`（或 `http://fsd.local:10010/`）。
 3. 如果设备没有自动弹出配置页，手动输入地址。
 
@@ -253,7 +253,7 @@ mothership.vn.cloud.tesla.cn
 | 预设 | 字节 | md5 | 来源 |
 |---|---:|---|---|
 | ESP32 默认 22 字段 | 654 | `bd262907ff9fb2709bb54f9d3e78d07d` | Windows 20 字段（`disable_cabin_camera:false`）+ `enable_eu_fsd_behavior:false` + `autoshift_dr:true` |
-| Windows 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` 原版 |
+| PC 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` 原版（`disable_cabin_camera:true`） |
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json` |
 

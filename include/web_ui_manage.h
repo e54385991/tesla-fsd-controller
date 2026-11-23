@@ -46,7 +46,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 <div class="wrap">
   <div class="card" style="margin-bottom:12px;border-color:#238636">
     <div class="k">Wi-Fi 桥接版</div>
-    <div style="font-size:13px;margin-top:4px">本固件专注 Wi-Fi 热点/上游桥接、DNS 过滤、OTA 与日志（ESP32-S3 版含按需启停的 FSD 下发与客户端配置）。CAN 注入功能已完全移除。</div>
+    <div style="font-size:13px;margin-top:4px">本固件专注 Wi-Fi 热点/上游桥接、DNS 过滤、OTA 与日志（ESP32-S3 版含按需启停的 FSD 虚拟服务器与客户端配置）。CAN 注入功能已完全移除。</div>
   </div>
   <div class="grid">
     <div class="card"><div class="k">AP</div><div class="v s"><span id="apSsid">--</span><br><span class="dim"><span id="apIp">--</span> · 信道 <span id="apCh">--</span> · <span id="apSta">0</span> 客户端</span></div></div>
@@ -61,7 +61,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <section><h2>Wi-Fi 热点（AP）</h2><div class="body">
     <label>AP 名称（SSID）</label><input type="text" id="apSsidIn" maxlength="32">
     <label>新密码（留空不改，至少 8 位）</label><input type="password" id="apPassIn" maxlength="63">
-    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 88888888，建议立即修改。</div>
+    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 058005800580，建议立即修改。</div>
     <button class="primary" id="apSave">保存并重启</button><div class="msg" id="apMsg"></div>
   </div></section>
 
@@ -109,13 +109,13 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="msg" id="dnsMsg"></div>
   </div></section>
 
-  <section class="fsd-only"><h2>FSD 下发</h2><div class="body">
-    <label><input type="checkbox" id="fsdEn"> 启用 FSD mock（/feature_configuration，默认关闭）</label>
+  <section class="fsd-only"><h2>FSD 虚拟服务器</h2><div class="body">
+    <label><input type="checkbox" id="fsdEn"> 启动 FSD 虚拟服务器（/feature_configuration，默认关闭）</label>
     <label><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认开启，非阻塞）</label>
     <label>模式</label><select id="fsdMode"><option value="reply">reply（本地回包）</option><option value="observe">observe（只记录并转发）</option></select>
     <div class="dim" id="fsdHealth" style="font-size:12px;margin-top:6px">监听状态：--</div>
-    <button class="primary" id="fsdSave">保存 FSD 设置</button>
-    <a class="btn" href="/fsd">编辑载荷 / 查看命中与握手</a>
+    <button class="primary" id="fsdSave">保存 FSD 虚拟服务器设置</button>
+    <a class="btn" href="/fsd">PC 风格观察页 / 启动 / 编辑载荷</a>
     <div class="msg" id="fsdMsg"></div>
   </div></section>
 
@@ -160,8 +160,7 @@ async function refresh(){
     document.getElementById('bUp').textContent='上游：'+(d.upstreamConnected?(d.upstreamSSID||'已连接'):'未启用');
     document.getElementById('bUp').className='badge '+(d.upstreamConnected?'ok':'');
     var fsdBadge=document.getElementById('bFsd');
-    if(f.safeMode){fsdBadge.textContent='FSD：安全模式暂停';fsdBadge.className='badge bad';}
-    else if(f.enabled&&!f.active){fsdBadge.textContent='FSD：未监听（自动恢复中）';fsdBadge.className='badge bad';}
+    if(f.enabled&&!f.active){fsdBadge.textContent='FSD：未监听（自动恢复中）';fsdBadge.className='badge bad';}
     else if(f.enabled&&f.autoOffPending){fsdBadge.textContent='FSD：已下发 · '+(f.autoOffRemainingSec||0)+'s 后自动关闭';fsdBadge.className='badge ok';}
     else if(f.enabled){fsdBadge.textContent='FSD：开 / '+(f.mode||'--');fsdBadge.className='badge ok';}
     else{fsdBadge.textContent='FSD：关'+(f.autoDisabledCount?'（已自动关闭）':'');fsdBadge.className='badge';}
@@ -191,7 +190,7 @@ async function refresh(){
       (f.lastError?(' · 异常:'+f.lastError):'');
     var fhEl=document.getElementById('fsdHealth');
     fhEl.textContent=fh;
-    fhEl.style.color=(f.safeMode||(f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
+    fhEl.style.color=((f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
     var nets=d.upstreamNetworks||[];
     document.getElementById('netRows').innerHTML=nets.map(function(n){
       return '<tr><td>'+esc(n.ssid)+'</td><td>'+(n.connected?'<span style="color:#3fb950">已连接</span>':(n.active?'<span style="color:#d29922">连接中</span>':'<span class="dim">未连接</span>'))+'</td><td><button class="red" data-del="'+esc(n.ssid)+'">删除</button></td></tr>';
@@ -292,7 +291,7 @@ async function saveFsd(){
   var ao=document.getElementById('fsdAutoOff').checked?1:0;
   var u='/api/fsd-mock/set?enabled='+en+'&autoOff='+ao+'&mode='+encodeURIComponent(document.getElementById('fsdMode').value);
   var r=await fetch(q(u));
-  setMsg('fsdMsg',r.ok?(en?'已保存，正在同步 443/4567 监听…':'已关闭 FSD mock'):'保存失败',r.ok);
+  setMsg('fsdMsg',r.ok?(en?'已保存，正在启动 FSD 虚拟服务器…':'已停止 FSD 虚拟服务器'):'保存失败',r.ok);
   if(r.status===403)showPin();
   setTimeout(refresh,450);
 }

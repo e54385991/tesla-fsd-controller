@@ -14,10 +14,9 @@ constexpr uint32_t kAutoOffDelayMs = 120000;  // 2 minutes non-blocking grace wi
 
 enum class Change : uint8_t { Publish, Rollback, Acknowledge };
 
-bool start(bool skipAutoListeners = false);
+bool start();
 bool fsdHttpsStarted();
 bool mothershipHttpStarted();
-bool safeModeBypassed();
 uint32_t recoveryCount();
 const char* lastListenerError();
 void requestListenerSync();

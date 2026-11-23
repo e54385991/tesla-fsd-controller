@@ -7,7 +7,7 @@
 static constexpr char FSD_HTML[] = R"rawliteral(<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FSD 拦截实况 · PC 风格</title>
+<title>FSD 虚拟服务器 · PC 风格观察页</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 "Segoe UI",system-ui,sans-serif}
@@ -50,7 +50,7 @@ textarea{height:300px;resize:vertical}
 </style>
 <body>
 <header>
-  <h1>FSD 拦截实况 · PC 风格</h1>
+  <h1>FSD 虚拟服务器 · PC 风格观察页</h1>
   <span class="badge" id="fsdBadge">FSD：--</span>
   <span class="badge" id="hsBadge">握手：--</span>
   <span class="badge" id="linkBadge">链路：--</span>
@@ -60,7 +60,8 @@ textarea{height:300px;resize:vertical}
 </header>
 <div class="wrap">
   <section><div class="toolbar" style="align-items:center">
-    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdEn"> 启用 FSD mock（默认关闭）</label>
+    <button class="btn primary" id="fsdToggleBtn" type="button">启动 FSD 虚拟服务器</button>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdEn"> 启用 FSD 虚拟服务器（默认关闭）</label>
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭</label>
     <span class="dim" id="fsdHealth" style="font-size:12px">443/4567：--</span>
   </div></section>
@@ -107,7 +108,7 @@ textarea{height:300px;resize:vertical}
       <button class="btn green" id="saveBtn">保存并下发</button>
       <button class="btn" id="defaultBtn">恢复默认（22 字段）</button>
       <button class="btn" data-preset="default">默认 654B</button>
-      <button class="btn" data-preset="windows">Windows 602B</button>
+      <button class="btn" data-preset="windows">PC 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
       <button class="btn" id="rawBtn">原始 JSON</button>
@@ -198,12 +199,16 @@ function render(st,hits,hs,cfg,payloadText){
   var fm=st.fsdMock||{}; var now=new Date();
   document.getElementById('nowText').textContent=now.toLocaleString();
   var fsdBadge=document.getElementById('fsdBadge');
-  if(fm.safeMode){ fsdBadge.textContent='FSD：安全模式暂停'; fsdBadge.className='badge bad'; }
-  else if(fm.enabled && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
-  else if(fm.enabled && fm.autoOffPending){ fsdBadge.textContent='FSD：已下发 · '+(fm.autoOffRemainingSec||0)+'s 后自动关闭'; fsdBadge.className='badge warn'; }
-  else if(fm.enabled){ fsdBadge.textContent='FSD：开 / '+(fm.mode||'reply'); fsdBadge.className='badge ok'; }
-  else { fsdBadge.textContent='FSD：关'+(fm.autoDisabledCount?'（已自动关闭）':''); fsdBadge.className='badge'; }
+  if(fm.enabled && !fm.active){ fsdBadge.textContent='虚拟服务器：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
+  else if(fm.enabled && fm.autoOffPending){ fsdBadge.textContent='虚拟服务器：已下发 · '+(fm.autoOffRemainingSec||0)+'s 后自动关闭'; fsdBadge.className='badge warn'; }
+  else if(fm.enabled){ fsdBadge.textContent='虚拟服务器：开 / '+(fm.mode||'reply'); fsdBadge.className='badge ok'; }
+  else { fsdBadge.textContent='虚拟服务器：关'+(fm.autoDisabledCount?'（已自动关闭）':''); fsdBadge.className='badge'; }
   document.getElementById('fsdEn').checked=!!fm.enabled;
+  var toggleBtn=document.getElementById('fsdToggleBtn');
+  if(toggleBtn){
+    toggleBtn.textContent=fm.enabled?'停止 FSD 虚拟服务器':'启动 FSD 虚拟服务器';
+    toggleBtn.className='btn '+(fm.enabled?'red':'primary');
+  }
   document.getElementById('fsdAutoOff').checked=fm.autoOffOnHit!==false;
   var fh='443:'+(fm.fsd443?'监听中':'未监听')+' · 4567:'+(fm.fsd4567?'监听中':'未监听')+
     (fm.autoOffPending?(' · 倒计时:'+(fm.autoOffRemainingSec||0)+'s'):'')+
@@ -211,7 +216,7 @@ function render(st,hits,hs,cfg,payloadText){
     (fm.lastError?(' · 异常:'+fm.lastError):'');
   var fhEl=document.getElementById('fsdHealth');
   fhEl.textContent=fh;
-  fhEl.style.color=(fm.safeMode||(fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
+  fhEl.style.color=((fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
   var hsOk=fm.handshake?fm.handshake.ok||0:0, hsFail=fm.handshake?fm.handshake.fail||0:0;
   var hsBadge=document.getElementById('hsBadge');
   hsBadge.textContent=hsOk>0?('握手：TLS 已建立 ('+(fm.handshake.tls||'TLS')+')'):('握手：'+(hsFail>0?'失败':'未建立'));
@@ -384,6 +389,12 @@ async function toggleFsdOpts(){
   if(r.status===403){ showPin(); return; }
   setTimeout(refresh,450);
 }
+async function fsdToggle(){
+  var cb=document.getElementById('fsdEn');
+  cb.checked=!cb.checked;
+  await toggleFsdOpts();
+}
+document.getElementById('fsdToggleBtn').onclick=fsdToggle;
 document.getElementById('fsdEn').onchange=toggleFsdOpts;
 document.getElementById('fsdAutoOff').onchange=toggleFsdOpts;
 document.getElementById('addBtn').onclick=addRow;

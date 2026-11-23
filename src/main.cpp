@@ -44,8 +44,9 @@
 #endif
 
 // ── WiFi AP config (NVS-overridable) ──
+static constexpr char kDefaultApPass[] = "058005800580";
 static char apSSID[33] = "fsd-esp32";
-static char apPass[64] = "88888888";
+static char apPass[64] = "058005800580";
 
 // ── Globals ──
 static uint32_t       gBootMillis     = 0;   // captured in setup()
@@ -61,7 +62,6 @@ static Preferences    prefs;
 // Not static: mod_ota.h forward-declares this with `extern` so its background
 // task can trigger a reboot after a successful pull-update.
 volatile bool         otaPendingRestart = false;
-static bool           safeModeActive    = false;
 
 // Persist restart reason to NVS so it survives ANY reboot type (sw/panic/wdt/brownout).
 // Read back in setup() → logged as "prev: <reason>". Cleared after read.
@@ -187,7 +187,7 @@ static void migrateNvsKeys() {
 static void loadConfig() {
     prefs.begin("fsd", false);
     strlcpy(apSSID, prefs.getString(NV_AP_SSID, "fsd-esp32").c_str(), sizeof(apSSID));
-    strlcpy(apPass, prefs.getString(NV_AP_PASS, "88888888").c_str(),  sizeof(apPass));
+    strlcpy(apPass, prefs.getString(NV_AP_PASS, kDefaultApPass).c_str(), sizeof(apPass));
     prefs.end();
 
     Preferences secPrefs;
@@ -530,12 +530,6 @@ bool wifiBridgeOtaActive() {
     return otaIsActive();
 }
 
-void wifiBridgeTriggerRestart(const char* reason) {
-    saveRestartReason(reason ? reason : "fsd-watchdog");
-    flushLogsToSpiffs();
-    delay(150);
-    ESP.restart();
-}
 #endif
 
 // Serial-console helpers (see client_config::serviceSerial):
@@ -727,15 +721,14 @@ static void setupWebServer() {
         if (rejectOnLowHeap(req, 12000)) return;
         char buf[320];
         snprintf(buf, sizeof(buf),
-                 "{\"uptime\":%u,\"freeHeap\":%u,\"safeMode\":%s,"
+                 "{\"uptime\":%u,\"freeHeap\":%u,"
                  "\"pinRequired\":%s,\"apPassDefault\":%s,"
                  "\"timeSynced\":%s,\"staIP\":\"%s\",\"staOK\":%s,"
                  "\"variant\":\"%s\",\"version\":\"%s\"}",
                  (unsigned)bootUptimeSeconds(),
                  (unsigned)esp_get_free_heap_size(),
-                 safeModeActive ? "true" : "false",
                  (storedPin[0] != '\0') ? "true" : "false",
-                 (strcmp(apPass, "88888888") == 0) ? "true" : "false",
+                 (strcmp(apPass, kDefaultApPass) == 0) ? "true" : "false",
                  timeSynced ? "true" : "false",
                  (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str() : "",
                  (WiFi.status() == WL_CONNECTED) ? "true" : "false",
@@ -1096,7 +1089,7 @@ static void setupWebServer() {
         esp_wifi_get_channel(&apChannel, &apSecond);
         json += "\"apSSID\":\""; json += wifiBridgeJsonEscape(String(apSSID)); json += "\"";
         json += ",\"apIP\":\""; json += WiFi.softAPIP().toString(); json += "\"";
-        json += ",\"apPassDefault\":"; json += (strcmp(apPass, "88888888") == 0 ? "true" : "false");
+        json += ",\"apPassDefault\":"; json += (strcmp(apPass, kDefaultApPass) == 0 ? "true" : "false");
         json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
         json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
         json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());
@@ -1468,24 +1461,6 @@ void setup() {
     pinMode(PIN_LED, OUTPUT);
     digitalWrite(PIN_LED, LOW);
 
-    // ── Crash counter / safe mode ──────────────────────────────────
-    // If the device crashes 3+ times in a row within 60 s, enter safe mode
-    // (skip FSD HTTPS/HTTP listeners) so the user can recover via OTA.
-    {
-        Preferences sysPrefs;
-        sysPrefs.begin("sys", false);
-        int crashes = sysPrefs.getInt("crashes", 0) + 1;
-        if (crashes >= 3) {
-            safeModeActive = true;
-            sysPrefs.putInt("crashes", 0);
-        } else {
-            sysPrefs.putInt("crashes", crashes);
-        }
-        sysPrefs.end();
-        DLOG(safeModeActive ? "[SAFE MODE] crash count=%d, counter reset\n"
-                            : "[Boot] crash count=%d\n", crashes);
-    }
-
     // ── Watchdog: 30-second timeout ────────────────────────────────
     // ESP-IDF 5.x pre-initializes TWDT at boot (default 5 s), so call
     // esp_task_wdt_reconfigure() first and only fall back to init().
@@ -1605,10 +1580,8 @@ void setup() {
     // Start web server
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    const bool clientConfigReady = client_config::start(safeModeActive);
-    if (safeModeActive) {
-        addDiagLog(1, "SAFE MODE: FSD listeners skipped at boot (manual toggle/reboot recovers)");
-    } else if (!clientConfigReady) {
+    const bool clientConfigReady = client_config::start();
+    if (!clientConfigReady) {
         addDiagLog(1, "FSD client_config startup failed");
     } else if (!fsd_mock::enabled()) {
         addDiagLog(0, "FSD mock standby (off by default)");
