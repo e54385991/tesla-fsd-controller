@@ -719,6 +719,7 @@ void serviceListeners() {
 }
 
 bool start(bool /*skipAutoListeners*/) {
+    if (initialized) return true;
     if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
     if (!loadIdentity(storage)) {
         nvs_close(storage);

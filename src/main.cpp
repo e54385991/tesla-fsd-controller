@@ -79,6 +79,7 @@ void saveRestartReason(const char* tag) {
 static volatile uint32_t timeUnixBase   = 0;   // Unix time at sync point
 static volatile uint32_t timeMillisBase = 0;   // millis() at sync point
 static volatile bool     timeSynced     = false;
+static uint32_t          gWifiScanStartMs = 0;   // tracks uncollected async Wi-Fi scan results
 
 // Seconds since boot.
 static inline uint32_t bootUptimeSeconds() {
@@ -336,56 +337,77 @@ static void setupCaptivePortal(AsyncWebServer& portal) {
 }
 
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-// Accumulates a raw JSON body for /api/fsd-mock/payload (Windows /payload page).
-struct FsdPayloadUpload {
-    String body;
-    bool rejected = false;
-    bool tooLarge = false;
+// Plain-C flat upload buffer stored in AsyncWebServerRequest::_tempObject.
+// ESPAsyncWebServer cleans up _tempObject with plain free() on aborted client
+// connections without invoking C++ destructors, so keeping the body inline in
+// a single calloc() block guarantees zero heap leaks and zero UB on disconnect.
+struct FlatUpload {
+    size_t len;
+    size_t cap;
+    bool rejected;
+    bool tooLarge;
+    char body[1];  // flexible inline storage: cap + 1 bytes (NUL-terminated)
 };
+
+static FlatUpload* allocFlatUpload(size_t cap) {
+    auto* u = static_cast<FlatUpload*>(calloc(1, sizeof(FlatUpload) + cap));
+    if (u) u->cap = cap;
+    return u;
+}
 
 static void fsdPayloadBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
                            size_t index, size_t total) {
     if (index == 0) {
-        auto* upload = new (std::nothrow) FsdPayloadUpload();
+        if (req->_tempObject) {
+            free(req->_tempObject);
+            req->_tempObject = nullptr;
+        }
+        const bool authOk = checkToken(req);
+        const bool overCap = total > fsd_mock::kPayloadInputCapacity;
+        const size_t cap = (authOk && !overCap)
+            ? (total > 0 ? total : fsd_mock::kPayloadInputCapacity)
+            : 0;
+        FlatUpload* upload = allocFlatUpload(cap);
         req->_tempObject = upload;
         if (!upload) return;
-        if (!checkToken(req)) {
+        if (!authOk) {
             upload->rejected = true;
             return;
         }
-        if (total > fsd_mock::kPayloadInputCapacity) {
+        if (overCap) {
             upload->rejected = true;
             upload->tooLarge = true;
             return;
         }
-        upload->body.reserve(static_cast<unsigned int>(total));
     }
-    auto* upload = static_cast<FsdPayloadUpload*>(req->_tempObject);
-    if (upload && !upload->rejected) {
-        if (upload->body.length() + len > fsd_mock::kPayloadInputCapacity) {
+    auto* upload = static_cast<FlatUpload*>(req->_tempObject);
+    if (upload && !upload->rejected && len > 0) {
+        if (upload->len + len > upload->cap || upload->len + len > fsd_mock::kPayloadInputCapacity) {
             upload->rejected = true;
             upload->tooLarge = true;
             return;
         }
-        upload->body.concat(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len));
+        memcpy(upload->body + upload->len, data, len);
+        upload->len += len;
+        upload->body[upload->len] = '\0';
     }
 }
 
 static void fsdPayloadRequest(AsyncWebServerRequest* req) {
-    auto* upload = static_cast<FsdPayloadUpload*>(req->_tempObject);
+    auto* upload = static_cast<FlatUpload*>(req->_tempObject);
     req->_tempObject = nullptr;
     if (!upload) {
         req->send(400, "application/json", "{\"error\":\"missing_body\"}");
         return;
     }
     if (!checkToken(req)) {
-        delete upload;
+        free(upload);
         req->send(403, "text/plain", "UNAUTH");
         return;
     }
     if (upload->rejected) {
         const bool tooLarge = upload->tooLarge;
-        delete upload;
+        free(upload);
         req->send(tooLarge ? 413 : 403, "application/json",
                   tooLarge ? "{\"error\":\"payload_too_large\"}" : "{\"error\":\"unauthorized\"}");
         return;
@@ -397,9 +419,9 @@ static void fsdPayloadRequest(AsyncWebServerRequest* req) {
         else if (rawSource == "payload") source = "payload";
     }
     char error[48];
-    const bool ok = fsd_mock::setPayload(upload->body.c_str(), upload->body.length(),
+    const bool ok = fsd_mock::setPayload(upload->body, upload->len,
                                          error, sizeof(error), source);
-    delete upload;
+    free(upload);
     if (!ok) {
         char body[96];
         char escaped[48];
@@ -420,35 +442,40 @@ static void fsdPayloadRequest(AsyncWebServerRequest* req) {
 
 // Client-config API lives on the 10010 management server. It uses its own
 // Bearer tokens (admin/client), independent of the panel PIN token.
-struct ClientConfigUpload {
-    String body;
-    bool tooLarge = false;
-};
+static constexpr size_t kClientConfigMaxUpload = 2048;
 
 static void clientConfigBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
                              size_t index, size_t total) {
     if (index == 0) {
-        auto* upload = new (std::nothrow) ClientConfigUpload();
+        if (req->_tempObject) {
+            free(req->_tempObject);
+            req->_tempObject = nullptr;
+        }
+        const bool overCap = total > kClientConfigMaxUpload;
+        const size_t cap = !overCap ? (total > 0 ? total : kClientConfigMaxUpload) : 0;
+        FlatUpload* upload = allocFlatUpload(cap);
         req->_tempObject = upload;
         if (!upload) return;
-        if (total > 2048) {
+        if (overCap) {
             upload->tooLarge = true;
             return;
         }
-        upload->body.reserve(static_cast<unsigned int>(total));
     }
-    auto* upload = static_cast<ClientConfigUpload*>(req->_tempObject);
-    if (upload && !upload->tooLarge) {
-        if (upload->body.length() + len > 2048) {
+    auto* upload = static_cast<FlatUpload*>(req->_tempObject);
+    if (upload && !upload->tooLarge && len > 0) {
+        if (upload->len + len > upload->cap || upload->len + len > kClientConfigMaxUpload) {
             upload->tooLarge = true;
         } else {
-            upload->body.concat(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len));
+            memcpy(upload->body + upload->len, data, len);
+            upload->len += len;
+            upload->body[upload->len] = '\0';
         }
     }
 }
 
 static void sendClientConfigJson(AsyncWebServerRequest* req, int status, const String& body) {
     auto* response = req->beginResponse(status, "application/json; charset=utf-8", body);
+    if (!response) { req->send(503, "text/plain", "oom"); return; }
     response->addHeader("Cache-Control", "no-store");
     if (status == 401) response->addHeader("WWW-Authenticate", "Bearer");
     req->send(response);
@@ -462,23 +489,23 @@ static void clientConfigGet(AsyncWebServerRequest* req) {
 }
 
 static void clientConfigChange(AsyncWebServerRequest* req, client_config::Change change) {
-    auto* upload = static_cast<ClientConfigUpload*>(req->_tempObject);
+    auto* upload = static_cast<FlatUpload*>(req->_tempObject);
     req->_tempObject = nullptr;
     if (!upload) {
         sendClientConfigJson(req, 400, "{\"error\":\"missing_body\"}");
         return;
     }
     if (upload->tooLarge) {
-        delete upload;
+        free(upload);
         sendClientConfigJson(req, 413, "{\"error\":\"config_too_large\"}");
         return;
     }
     String body;
     int status = 500;
     client_config::apiChange(req->header("Authorization").c_str(),
-                             upload->body.c_str(), upload->body.length(),
+                             upload->body, upload->len,
                              change, body, status);
-    delete upload;
+    free(upload);
     sendClientConfigJson(req, status, body);
 }
 #endif
@@ -714,6 +741,7 @@ static void setupWebServer() {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", MANAGE_HTML_GZ, MANAGE_HTML_GZ_LEN);
+        if (!r) { req->send(503, "text/plain", "oom"); return; }
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         req->send(r);
@@ -722,6 +750,7 @@ static void setupWebServer() {
     server.on("/car", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", MANAGE_HTML_GZ, MANAGE_HTML_GZ_LEN);
+        if (!r) { req->send(503, "text/plain", "oom"); return; }
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         req->send(r);
@@ -732,6 +761,7 @@ static void setupWebServer() {
     server.on("/fsd", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (rejectOnLowHeap(req)) return;
         auto* r = req->beginResponse(200, "text/html", FSD_HTML_GZ, FSD_HTML_GZ_LEN);
+        if (!r) { req->send(503, "text/plain", "oom"); return; }
         r->addHeader("Content-Encoding", "gzip");
         r->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         req->send(r);
@@ -842,6 +872,7 @@ static void setupWebServer() {
         WiFi.scanNetworks(/*async=*/true, /*hidden=*/false,
                           /*passive=*/false, /*max_ms_per_chan=*/120,
                           /*channel=*/0);
+        gWifiScanStartMs = millis() | 1U;
         req->send(200, "application/json", "{\"scanning\":true}");
     });
 
@@ -852,6 +883,7 @@ static void setupWebServer() {
             req->send(200, "application/json", "{\"scanning\":true}");
             return;
         }
+        gWifiScanStartMs = 0;
         uint32_t up = bootUptimeSeconds();
         if (n <= 0) {
             char logMsg[48];
@@ -942,6 +974,7 @@ static void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (rejectOnLowHeap(req)) return;
         AsyncResponseStream* resp = req->beginResponseStream("text/plain; charset=utf-8");
+        if (!resp) { req->send(503, "text/plain", "oom"); return; }
         uint16_t cnt = diagLogCount();
         if (cnt == 0) {
             resp->print("(no log entries)\n");
@@ -970,6 +1003,7 @@ static void setupWebServer() {
         }
         AsyncWebServerResponse* resp = req->beginResponse(
             SPIFFS, SPIFFS_LOG_PATH, "text/plain");
+        if (!resp) { req->send(503, "text/plain", "oom"); return; }
         resp->addHeader("Content-Disposition",
                         "attachment; filename=\"diag.log\"");
         req->send(resp);
@@ -1002,10 +1036,26 @@ static void setupWebServer() {
     });
 
     // OTA firmware upload — flag-based restart (no delay in async context).
+    // Aborts Update on client disconnect so a dropped upload frees the 4 KB
+    // flash sector buffer instead of leaking it and wedging Update.isRunning().
+    struct OtaUploadState {
+        bool started;
+        bool finished;
+    };
     server.on(AsyncURIMatcher::exact("/api/ota"), HTTP_POST,
         [](AsyncWebServerRequest* req) {
-            if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
-            bool ok = !Update.hasError();
+            auto* st = static_cast<OtaUploadState*>(req->_tempObject);
+            req->_tempObject = nullptr;
+            if (!checkToken(req)) {
+                free(st);
+                req->send(403, "text/plain", "UNAUTH");
+                return;
+            }
+            const bool ok = st && st->started && st->finished && !Update.hasError();
+            free(st);
+            if (!ok && Update.isRunning()) {
+                Update.abort();
+            }
             req->send(200, "text/plain", ok ? "OK" : "FAIL");
             if (ok) {
                 saveRestartReason("/api/ota upload");
@@ -1016,27 +1066,47 @@ static void setupWebServer() {
            size_t index, uint8_t* data, size_t len, bool final) {
             if (!checkToken(req)) return;  // block unauthorized uploads
             if (index == 0) {
+                if (req->_tempObject) {
+                    free(req->_tempObject);
+                    req->_tempObject = nullptr;
+                }
+                auto* st = static_cast<OtaUploadState*>(calloc(1, sizeof(OtaUploadState)));
+                req->_tempObject = st;
+                if (!st) return;
+                if (Update.isRunning()) {
+                    Update.abort();
+                }
                 DLOG("OTA start: %s\n", filename.c_str());
-                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                if (Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                    st->started = true;
+                    req->onDisconnect([]() {
+                        if (Update.isRunning() && !otaPendingRestart) {
+                            Update.abort();
+                        }
+                    });
+                } else {
 #ifdef DEBUG_MODE
                     Update.printError(Serial);
 #endif
                 }
             }
-            if (Update.isRunning()) {
+            auto* st = static_cast<OtaUploadState*>(req->_tempObject);
+            if (st && st->started && Update.isRunning() && len > 0) {
                 if (Update.write(data, len) != len) {
 #ifdef DEBUG_MODE
                     Update.printError(Serial);
 #endif
                 }
             }
-            if (final) {
+            if (final && st && st->started) {
                 if (Update.end(true)) {
+                    st->finished = true;
                     DLOG("OTA done: %u bytes\n", (unsigned)(index + len));
                 } else {
 #ifdef DEBUG_MODE
                     Update.printError(Serial);
 #endif
+                    if (Update.isRunning()) Update.abort();
                 }
             }
         }
@@ -1070,13 +1140,26 @@ static void setupWebServer() {
 
     server.on("/api/ota/notes", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (!otaHasNotes()) {
+            char smallBuf[96];
+            otaNotesJson(smallBuf, sizeof(smallBuf));
+            req->send(200, "application/json", smallBuf);
+            return;
+        }
+        if (rejectOnLowHeap(req)) return;
         constexpr size_t kCap = 6144;
         char* buf = (char*)malloc(kCap);
-        if (!buf) { req->send(500, "application/json", "{\"error\":\"oom\"}"); return; }
-        otaNotesJson(buf, kCap);
-        String body(buf);
+        if (!buf) { req->send(503, "application/json", "{\"error\":\"oom\"}"); return; }
+        size_t len = otaNotesJson(buf, kCap);
+        AsyncResponseStream* resp = req->beginResponseStream("application/json", len + 16);
+        if (!resp) {
+            free(buf);
+            req->send(503, "application/json", "{\"error\":\"oom\"}");
+            return;
+        }
+        resp->write(reinterpret_cast<const uint8_t*>(buf), len);
         free(buf);
-        req->send(200, "application/json", body);
+        req->send(resp);
     });
 
     server.on("/api/ota/partinfo", HTTP_GET, [](AsyncWebServerRequest* req) {
@@ -1344,8 +1427,10 @@ static void setupWebServer() {
     // ── Self-service client config (served on the 10010 management port) ──────
     server.on(AsyncURIMatcher::exact("/client-config"), HTTP_GET, [](AsyncWebServerRequest* req) {
         if (rejectOnLowHeap(req)) return;
-        String html(client_config::dashboardHtml());
-        auto* response = req->beginResponse(200, "text/html; charset=utf-8", html);
+        const char* html = client_config::dashboardHtml();
+        auto* response = req->beginResponse(200, "text/html; charset=utf-8",
+                                            reinterpret_cast<const uint8_t*>(html), strlen(html));
+        if (!response) { req->send(503, "text/plain", "oom"); return; }
         response->addHeader("Cache-Control", "no-store");
         response->addHeader("Content-Security-Policy",
             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -1444,12 +1529,17 @@ static void setupWebServer() {
     server.on("/api/fsd-mock/payload", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         char* body = static_cast<char*>(malloc(fsd_mock::kPayloadCapacity));
-        if (!body) { req->send(500, "application/json", "{\"error\":\"no_memory\"}"); return; }
+        if (!body) { req->send(503, "application/json", "{\"error\":\"no_memory\"}"); return; }
         char md5[33] = {};
         const size_t length = fsd_mock::copyPayload(body, fsd_mock::kPayloadCapacity, md5);
-        String payloadText(body, length);
+        auto* response = req->beginResponseStream("application/json", length + 16);
+        if (!response) {
+            free(body);
+            req->send(503, "application/json", "{\"error\":\"no_memory\"}");
+            return;
+        }
+        response->write(reinterpret_cast<const uint8_t*>(body), length);
         free(body);
-        auto* response = req->beginResponse(200, "application/json", payloadText);
         response->addHeader("X-Checksum", md5);
         response->addHeader("Cache-Control", "no-store");
         req->send(response);
@@ -1467,6 +1557,7 @@ static void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
+        if (!response) { req->send(503, "text/plain", "oom"); return; }
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendHitsJsonl(*response);
         req->send(response);
@@ -1482,6 +1573,7 @@ static void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
+        if (!response) { req->send(503, "text/plain", "oom"); return; }
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendHandshakesJsonl(*response);
         req->send(response);
@@ -1491,6 +1583,7 @@ static void setupWebServer() {
         if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
         if (rejectOnLowHeap(req)) return;
         auto* response = req->beginResponseStream("application/x-ndjson");
+        if (!response) { req->send(503, "text/plain", "oom"); return; }
         response->addHeader("Cache-Control", "no-store");
         fsd_mock::appendConfigHistoryJsonl(*response);
         req->send(response);
@@ -1729,6 +1822,13 @@ void loop() {
     if (nowMs - lastFlushMs >= 3000) {
         lastFlushMs = nowMs;
         flushLogsToSpiffs();
+        // Reclaim orphaned async Wi-Fi scan result buffer (~3-6 KB) if a client
+        // closed the page before polling /api/scan/result.
+        if (gWifiScanStartMs != 0 && nowMs - gWifiScanStartMs >= 30000 &&
+            WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
+            WiFi.scanDelete();
+            gWifiScanStartMs = 0;
+        }
     }
 
     // Heap guard warning log

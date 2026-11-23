@@ -84,6 +84,15 @@ def check_static_contracts() -> None:
 
     assert "forEachBlockedDomainSorted(" in MAIN_SRC, "Status/CSV endpoints must stream blocked domains without 6.8 KB heap copy"
     assert "new (std::nothrow) DNSBlockedDomainStatEntry[" not in MAIN_SRC, "Avoid 6.8 KB DNSBlockedDomainStatEntry heap spikes"
+    # Memory-leak regression contracts
+    assert "struct FlatUpload {" in MAIN_SRC and "allocFlatUpload(" in MAIN_SRC, "Upload _tempObject must be a flat calloc/free POD (no String leak on disconnect)"
+    assert "FsdPayloadUpload" not in MAIN_SRC and "ClientConfigUpload" not in MAIN_SRC, "No C++ new/String objects in _tempObject"
+    assert "Update.abort();" in MAIN_SRC and "req->onDisconnect(" in MAIN_SRC, "Aborted /api/ota upload must call Update.abort()"
+    assert "gWifiScanStartMs" in MAIN_SRC, "Orphaned WiFi.scanNetworks results must be auto-deleted"
+    ota_src = (ROOT / "include/mod_ota.h").read_text()
+    assert "new (std::nothrow) OtaTaskArgs" in ota_src, "OTA task args allocation must be nothrow"
+    assert "if (handle) esp_https_ota_abort(handle);" in ota_src, "Defensive cleanup if esp_https_ota_begin fails with non-null handle"
+    assert "if (initialized) return true;" in CLIENT_CFG_SRC, "client_config::start must be idempotent (no NVS handle leak)"
 
     esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
     assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"

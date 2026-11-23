@@ -865,6 +865,10 @@ struct UpstreamResponseHeaders {
     size_t count = 0;
     size_t totalBytes = 0;
 
+    UpstreamResponseHeaders() = default;
+    UpstreamResponseHeaders(const UpstreamResponseHeaders&) = delete;
+    UpstreamResponseHeaders& operator=(const UpstreamResponseHeaders&) = delete;
+
     ~UpstreamResponseHeaders() {
         free(contentType);
         for (size_t i = 0; i < count; ++i) {
@@ -1356,8 +1360,10 @@ void noteHandshake(const esp_tls_t* tls) {
 }
 
 void begin() {
-    gStateMutex = xSemaphoreCreateMutex();
-    if (!gStateMutex) return;
+    if (!gStateMutex) {
+        gStateMutex = xSemaphoreCreateMutex();
+        if (!gStateMutex) return;
+    }
 
     // Older firmware persisted hit/handshake JSONL here. Logs are RAM-only
     // now, so reclaim that space for payload storage.

@@ -18,6 +18,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <new>
 #include "fsd_version.h"
 
 #ifndef OTA_RELEASE_OWNER
@@ -208,12 +209,21 @@ static bool otaParseLatest(const String& body) {
         }
         if (gOta.releaseNotes) {
             otaJsonUnescapeInto(body, bodyIdx + 8, gOta.releaseNotes, kOtaNotesCap);
-            gOta.hasNotes = (gOta.releaseNotes[0] != '\0');
+            if (gOta.releaseNotes[0] != '\0') {
+                gOta.hasNotes = true;
+            } else {
+                free(gOta.releaseNotes);
+                gOta.releaseNotes = nullptr;
+                gOta.hasNotes = false;
+            }
         } else {
             gOta.hasNotes = false;
         }
     } else {
-        if (gOta.releaseNotes) gOta.releaseNotes[0] = '\0';
+        if (gOta.releaseNotes) {
+            free(gOta.releaseNotes);
+            gOta.releaseNotes = nullptr;
+        }
         gOta.hasNotes = false;
     }
     if (notesMtx) xSemaphoreGive(notesMtx);
@@ -297,9 +307,15 @@ static bool otaApiGet(const String& url) {
     cfg.disable_auto_redirect      = false;
     cfg.max_redirection_count      = 5;
     cfg.buffer_size                = 4096;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    cfg.addr_type                  = HTTP_ADDR_TYPE_INET;
+#endif
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return false;
+    if (!client) {
+        gOtaBody = String();
+        return false;
+    }
     esp_http_client_set_header(client, "User-Agent", "tesla-can-web-2/" FIRMWARE_VERSION);
     esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
 
@@ -370,7 +386,10 @@ static esp_err_t otaTryDownload(const char* url) {
 
     esp_https_ota_handle_t handle = nullptr;
     esp_err_t err = esp_https_ota_begin(&ota_cfg, &handle);
-    if (err != ESP_OK || !handle) return (err != ESP_OK ? err : ESP_FAIL);
+    if (err != ESP_OK || !handle) {
+        if (handle) esp_https_ota_abort(handle);
+        return (err != ESP_OK ? err : ESP_FAIL);
+    }
 
     int32_t total = esp_https_ota_get_image_size(handle);
     gOta.total = (total > 0) ? (uint32_t)total : 0;
@@ -454,8 +473,9 @@ static bool otaStartCheckImpl() {
     }
     gOta.latestVersion[0] = '\0';
     gOta.latestUrl[0]     = '\0';
+    auto* a = new (std::nothrow) OtaTaskArgs{0, {0}};
+    if (!a) { otaSetMsg(OTA_ERROR, "内存不足"); return false; }
     gOta.state            = OTA_CHECKING;
-    auto* a = new OtaTaskArgs{0, {0}};
     BaseType_t r = xTaskCreatePinnedToCore(
         otaTaskEntry, "ota_chk", 16384, a, 1, nullptr, 0);
     if (r != pdPASS) { delete a; otaSetMsg(OTA_ERROR, "任务创建失败"); return false; }
@@ -471,7 +491,8 @@ static bool otaStartPullImpl(const char* url) {
         otaSetMsg(OTA_ERROR, "内存不足 (%u KB),请重启后再试", (unsigned)(freeHeap / 1024));
         return false;
     }
-    auto* a = new OtaTaskArgs{1, {0}};
+    auto* a = new (std::nothrow) OtaTaskArgs{1, {0}};
+    if (!a) { otaSetMsg(OTA_ERROR, "内存不足"); return false; }
     strlcpy(a->url, url, sizeof(a->url));
     gOta.state = OTA_DOWNLOADING;
     BaseType_t r = xTaskCreatePinnedToCore(
@@ -638,6 +659,7 @@ static inline bool   otaStartCheck()                       { return ota_impl::ot
 static inline bool   otaStartPull(const char* url)         { return ota_impl::otaStartPullImpl(url); }
 static inline size_t otaStatusJson(char* buf, size_t cap)  { return ota_impl::otaStatusJsonImpl(buf, cap); }
 static inline size_t otaNotesJson(char* buf, size_t cap)   { return ota_impl::otaNotesJsonImpl(buf, cap); }
+static inline bool   otaHasNotes()                         { return ota_impl::gOta.hasNotes; }
 static inline size_t otaPartInfoJson(char* buf, size_t cap){ return ota_impl::otaPartInfoJsonImpl(buf, cap); }
 static inline bool   otaDoRollback(char* err, size_t errCap){ return ota_impl::otaDoRollbackImpl(err, errCap); }
 static inline const char* otaLatestUrl()                   { return ota_impl::gOta.latestUrl; }
