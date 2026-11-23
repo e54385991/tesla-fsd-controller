@@ -89,10 +89,11 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <button id="dnsResetAllow">白名单恢复默认</button>
     <button id="dnsResetBlock">黑名单恢复默认</button>
     <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
-      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行：加入白名单可远程车控，但可能被封，谨慎使用。<br>
+      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行（无车控版更安全）；勾选下方「启用 hermes 远程车控」会追加到白名单末尾，可能被封，谨慎使用。<br>
       ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。<br>
       ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。
     </div>
+    <label style="margin-top:8px"><input type="checkbox" id="hermesControl"> 启用 hermes 远程车控（追加到白名单最后，谨慎）</label>
     <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
     <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">默认关闭。关闭可省去每包 lwIP 钩子开销；开启后才会拦截已拿到 IP、绕过 DNS 继续直连的黑名单流量（最多缓存 256 个 IP）。</div>
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d">
@@ -198,6 +199,8 @@ async function refresh(){
     document.querySelectorAll('[data-del]').forEach(function(b){b.onclick=function(){delNet(b.getAttribute('data-del'));};});
     if(!document.getElementById('dnsAllow').matches(':focus')) document.getElementById('dnsAllow').value=d.dnsAllow||'';
     if(!document.getElementById('dnsBlock').matches(':focus')) document.getElementById('dnsBlock').value=d.dnsBlock||'';
+    document.getElementById('hermesControl').checked =
+      (d.dnsAllow||'').split(/\s+/).indexOf('hermes-prd.vn.cloud.tesla.cn') >= 0;
     document.getElementById('dnsEn').checked=!!d.dnsEnable;
     document.getElementById('ipBlkEn').checked=!!d.ipBlockerEnabled;
     var allowCount=d.dnsAllowCount||0, modeEl=document.getElementById('dnsMode');
@@ -237,6 +240,16 @@ async function saveBridge(){
     '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
     '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
   var r=await fetch(q('/api/wifi-bridge/set?'+qs)); setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok); if(r.status===403)showPin(); refresh();
+}
+async function toggleHermes(){
+  var ta=document.getElementById('dnsAllow');
+  var hermes='hermes-prd.vn.cloud.tesla.cn';
+  var want=document.getElementById('hermesControl').checked;
+  var parts=(ta.value||'').trim().split(/\s+/).filter(Boolean);
+  parts=parts.filter(function(x){return x!==hermes;});
+  if(want) parts.push(hermes);
+  ta.value=parts.join(' ');
+  await saveBridge();
 }
 async function resetDns(which){
   var r=await fetch(q('/api/wifi-bridge/set?dnsReset='+which));
@@ -310,6 +323,7 @@ document.getElementById('netScan').onclick=scan;
 document.getElementById('dnsSave').onclick=saveBridge;
 document.getElementById('dnsResetAllow').onclick=function(){resetDns('allow');};
 document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
+document.getElementById('hermesControl').onchange=toggleHermes;
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
 document.getElementById('fsdSave').onclick=saveFsd;

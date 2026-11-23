@@ -26,7 +26,7 @@
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
-| 默认白名单 | 40 条基础 / 地图 / 音乐 / 豆包域名（见下文） |
+| 默认白名单 | 40 条基础 / 地图 / 音乐 / 豆包域名；hermes 车控可选（见下文） |
 | 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` |
 | FSD 下发 | 默认关闭（可在面板一键开启，`reply` 模式，443/4567 按需启停） |
 
@@ -178,11 +178,12 @@ mothership.vn.cloud.tesla.cn
 
 ### 特殊域名
 
-**`hermes-prd.vn.cloud.tesla.cn`（默认不放行）**
+**`hermes-prd.vn.cloud.tesla.cn`（默认不放行；车控可选，更安全）**
 
-- 手动加入白名单后可以远程车控。
-- 可能触发 Tesla 风控，甚至导致账号 / 车辆被封禁。
-- 默认不加入白名单，请谨慎使用。
+- 默认白名单**不包含**该域名（无车控版，更安全）。
+- 需要远程车控时，在管理页勾选 **「启用 hermes 远程车控」**；固件会把它追加到白名单**最后一项**。
+- 取消勾选会把它从白名单移除，其他自定义域名不受影响。
+- 可能触发 Tesla 风控，甚至导致账号 / 车辆被封禁，请谨慎使用。
 
 **`api-prd.vn.cloud.tesla.cn`（默认黑名单）**
 

@@ -414,6 +414,14 @@ def check_port_policy() -> None:
     assert "dnsReset" in main
     assert "kTeslaMinAllowV5" in main
     assert "kTeslaMinBlockV5" in main
+    # hermes is optional: the default v5 stays "no vehicle control"; the UI
+    # checkbox appends it to the end of the current allowlist at runtime.
+    assert "nav-prd-maps.tesla.cn media-server-me.tesla.cn" in bridge
+    v5 = re.search(r'kTeslaMinAllowV5\s*=\s*"(.*?)";', bridge, re.S)
+    assert v5 and "hermes-prd.vn.cloud.tesla.cn" not in v5.group(1)
+    manage_ui = (ROOT / "include/web_ui_manage.h").read_text()
+    assert "hermesControl" in manage_ui
+    assert "hermes-prd.vn.cloud.tesla.cn" in manage_ui
     # v5 default allowlist: consolidated Apple Music + Doubao domains.
     for domain in ("*.apple.com", "mzstatic.com", "baidu.com", "bdimg.com", "bcebos.com",
                    "qq.com", "tencentmusic.com", "163.com", "126.net", "netease.com",
