@@ -61,7 +61,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <section><h2>Wi-Fi 热点（AP）</h2><div class="body">
     <label>AP 名称（SSID）</label><input type="text" id="apSsidIn" maxlength="32">
     <label>新密码（留空不改，至少 8 位）</label><input type="password" id="apPassIn" maxlength="63">
-    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 88888888，建议立即修改。</div>
+    <div class="msg bad" id="apWarn" style="display:none">当前使用默认密码 058005800580，建议立即修改。</div>
     <button class="primary" id="apSave">保存并重启</button><div class="msg" id="apMsg"></div>
   </div></section>
 

@@ -44,8 +44,9 @@
 #endif
 
 // ── WiFi AP config (NVS-overridable) ──
+#define DEFAULT_AP_PASS "058005800580"
 static char apSSID[33] = "fsd-esp32";
-static char apPass[64] = "88888888";
+static char apPass[64] = DEFAULT_AP_PASS;
 
 // ── Globals ──
 static uint32_t       gBootMillis     = 0;   // captured in setup()
@@ -187,7 +188,7 @@ static void migrateNvsKeys() {
 static void loadConfig() {
     prefs.begin("fsd", false);
     strlcpy(apSSID, prefs.getString(NV_AP_SSID, "fsd-esp32").c_str(), sizeof(apSSID));
-    strlcpy(apPass, prefs.getString(NV_AP_PASS, "88888888").c_str(),  sizeof(apPass));
+    strlcpy(apPass, prefs.getString(NV_AP_PASS, DEFAULT_AP_PASS).c_str(), sizeof(apPass));
     prefs.end();
 
     Preferences secPrefs;
@@ -735,7 +736,7 @@ static void setupWebServer() {
                  (unsigned)esp_get_free_heap_size(),
                  safeModeActive ? "true" : "false",
                  (storedPin[0] != '\0') ? "true" : "false",
-                 (strcmp(apPass, "88888888") == 0) ? "true" : "false",
+                 (strcmp(apPass, DEFAULT_AP_PASS) == 0) ? "true" : "false",
                  timeSynced ? "true" : "false",
                  (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str() : "",
                  (WiFi.status() == WL_CONNECTED) ? "true" : "false",
@@ -1096,7 +1097,7 @@ static void setupWebServer() {
         esp_wifi_get_channel(&apChannel, &apSecond);
         json += "\"apSSID\":\""; json += wifiBridgeJsonEscape(String(apSSID)); json += "\"";
         json += ",\"apIP\":\""; json += WiFi.softAPIP().toString(); json += "\"";
-        json += ",\"apPassDefault\":"; json += (strcmp(apPass, "88888888") == 0 ? "true" : "false");
+        json += ",\"apPassDefault\":"; json += (strcmp(apPass, DEFAULT_AP_PASS) == 0 ? "true" : "false");
         json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
         json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
         json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());

@@ -31,7 +31,7 @@ Each environment produces two files in the repository root:
 ## Quick Start
 
 1. Flash `esp32s3_waveshare_wifi_v1.4.35.bin` at `0x0` via [ESP Web Flasher](https://esp.huhn.me/) or `esptool`.
-2. Connect to Wi-Fi **`fsd-esp32`** (default password **`88888888`**).
+2. Connect to Wi-Fi **`fsd-esp32`** (default password **`058005800580`**).
 3. Open **`http://9.9.9.9:10010/`** (or `http://fsd.local:10010/`; port `80` on `esp32-wifi`).
 4. Add your phone hotspot / router under **Upstream Wi-Fi**, verify the status turns **Connected**, then connect the vehicle to `fsd-esp32`.
 
