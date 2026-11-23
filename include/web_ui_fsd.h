@@ -62,6 +62,9 @@ textarea{height:300px;resize:vertical}
   <section><div class="toolbar" style="align-items:center">
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdEn"> 启用 FSD mock（默认关闭）</label>
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭</label>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="apiPrdFilterEn"> api-prd 仅放行规则（其余 403）</label>
+    <input type="text" id="apiPrdRules" maxlength="255" spellcheck="false" placeholder="uuid=music" style="width:200px">
+    <button class="btn" id="apiPrdSaveBtn" type="button">保存规则</button>
     <span class="dim" id="fsdHealth" style="font-size:12px">443/4567：--</span>
   </div></section>
   <div class="grid">
@@ -98,7 +101,7 @@ textarea{height:300px;resize:vertical}
   <section><h2>当前回包载荷 · X-Checksum / md5 <code id="payloadMd5"></code></h2><pre id="payloadPre">--</pre></section>
 
   <section><h2>FSD 链路计数</h2>
-    <table><thead><tr><th>命中</th><th>观察</th><th>透传</th><th>DNS 重定向</th><th>握手成功/失败</th><th>上游</th></tr></thead><tbody id="cntRows"></tbody></table>
+    <table><thead><tr><th>命中</th><th>观察</th><th>透传</th><th>策略拦截</th><th>DNS 重定向</th><th>握手成功/失败</th><th>上游</th></tr></thead><tbody id="cntRows"></tbody></table>
   </section>
 
   <section id="config"><h2>下发配置（字段编辑 / 原始 JSON）</h2>
@@ -175,9 +178,9 @@ function parseJsonl(text){ return (text||'').trim().split('\n').filter(Boolean).
 function tsText(ts){ if(!ts) return '—'; var s=String(ts).replace('T',' '); return s.slice(0,19); }
 function ageText(sec){ if(sec==null) return '—'; if(sec<60) return sec+' 秒前'; if(sec<3600) return Math.floor(sec/60)+' 分钟前'; return Math.floor(sec/3600)+' 小时前'; }
 function ageFrom(ts){ var t=Date.parse(ts); if(isNaN(t)) return null; return Math.max(0,Math.floor((Date.now()-t)/1000)); }
-function pathOf(url){ var s=String(url||''); s=s.replace(/^https?:\/\/[^/]+/,''); s=s.replace(/\?.*$/,''); s=s.replace(/\/vehicles\/[A-Za-z0-9-]{5,}\//,'/vehicles/<VIN>/'); return s||'/'; }
-function methodPath(r){ return (r.method||'?')+' '+pathOf(r.url); }
-function kindBadge(kind){ var k=String(kind||'HIT'); var c=k==='HIT'?'#3fb950':(k==='OBSERVE'?'#d29922':'#8b949e'); return '<span style="color:'+c+';font-weight:600">'+esc(k)+'</span>'; }
+function pathOf(url, keepQuery){ var s=String(url||''); s=s.replace(/^https?:\/\/[^/]+/,''); if(!keepQuery) s=s.replace(/\?.*$/,''); s=s.replace(/\/vehicles\/[A-Za-z0-9-]{5,}\//,'/vehicles/<VIN>/'); return s||'/'; }
+function methodPath(r, keepQuery){ return (r.method||'?')+' '+pathOf(r.url, keepQuery); }
+function kindBadge(kind){ var k=String(kind||'HIT'); var c=k==='HIT'?'#3fb950':(k==='OBSERVE'?'#d29922':(k==='BLOCK'?'#f85149':'#58a6ff')); return '<span style="color:'+c+';font-weight:600">'+esc(k)+'</span>'; }
 function valText(v){ if(v===true) return 'true'; if(v===false) return 'false'; if(v===null) return 'null'; if(typeof v==='object') return JSON.stringify(v); return String(v); }
 
 async function refresh(){
@@ -197,20 +200,26 @@ async function refresh(){
 function render(st,hits,hs,cfg,payloadText){
   var fm=st.fsdMock||{}; var now=new Date();
   document.getElementById('nowText').textContent=now.toLocaleString();
+  var want443=!!(fm.enabled||fm.apiPrdFilter);
   var fsdBadge=document.getElementById('fsdBadge');
-  if(fm.enabled && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
+  if(want443 && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
   else if(fm.enabled && fm.autoOffPending){ fsdBadge.textContent='FSD：已下发 · '+(fm.autoOffRemainingSec||0)+'s 后自动关闭'; fsdBadge.className='badge warn'; }
-  else if(fm.enabled){ fsdBadge.textContent='FSD：开 / '+(fm.mode||'reply'); fsdBadge.className='badge ok'; }
+  else if(fm.enabled){ fsdBadge.textContent='FSD：开 / '+(fm.mode||'reply')+(fm.apiPrdFilter?' · 过滤开':''); fsdBadge.className='badge ok'; }
+  else if(fm.apiPrdFilter){ fsdBadge.textContent='FSD：关 · api-prd 过滤开'; fsdBadge.className='badge ok'; }
   else { fsdBadge.textContent='FSD：关'+(fm.autoDisabledCount?'（已自动关闭）':''); fsdBadge.className='badge'; }
   document.getElementById('fsdEn').checked=!!fm.enabled;
   document.getElementById('fsdAutoOff').checked=fm.autoOffOnHit!==false;
+  document.getElementById('apiPrdFilterEn').checked=!!fm.apiPrdFilter;
+  var apfInput=document.getElementById('apiPrdRules');
+  if(apfInput && !apfInput.matches(':focus')) apfInput.value=fm.apiPrdRules||'';
   var fh='443:'+(fm.fsd443?'监听中':'未监听')+' · 4567:'+(fm.fsd4567?'监听中':'未监听')+
+    (fm.apiPrdFilter?(' · 策略拦截:'+(fm.blocked||0)+'次'):'')+
     (fm.autoOffPending?(' · 倒计时:'+(fm.autoOffRemainingSec||0)+'s'):'')+
     (fm.recoveries?(' · 自复:'+fm.recoveries+'次'):'')+
     (fm.lastError?(' · 异常:'+fm.lastError):'');
   var fhEl=document.getElementById('fsdHealth');
   fhEl.textContent=fh;
-  fhEl.style.color=((fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
+  fhEl.style.color=((want443&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&want443?'#3fb950':'#8b949e');
   var hsOk=fm.handshake?fm.handshake.ok||0:0, hsFail=fm.handshake?fm.handshake.fail||0:0;
   var hsBadge=document.getElementById('hsBadge');
   hsBadge.textContent=hsOk>0?('握手：TLS 已建立 ('+(fm.handshake.tls||'TLS')+')'):('握手：'+(hsFail>0?'失败':'未建立'));
@@ -223,7 +232,7 @@ function render(st,hits,hs,cfg,payloadText){
   var lastHit=intercepts[0]||null;
   var vin='';
   for(var i=0;i<hits.length;i++){ if(hits[i].vin){ vin=hits[i].vin; break; } }
-  var totalReqs=(fm.hits||0)+(fm.observes||0)+(fm.flows||0);
+  var totalReqs=(fm.hits||0)+(fm.observes||0)+(fm.flows||0)+(fm.blocked||0);
   document.getElementById('cHits').textContent=(fm.hits||0);
   document.getElementById('cLastHit').textContent=lastHit?tsText(lastHit.ts):'—';
   document.getElementById('cVin').textContent=vin||'—';
@@ -267,9 +276,9 @@ function render(st,hits,hs,cfg,payloadText){
 
   var collapsed=[];
   hits.forEach(function(r){
-    var key=methodPath(r);
-    if(collapsed.length && collapsed[collapsed.length-1].key===key){ collapsed[collapsed.length-1].n++; collapsed[collapsed.length-1].ts=r.ts; collapsed[collapsed.length-1].kind=r.kind; }
-    else collapsed.push({key:key,method:r.method||'',path:pathOf(r.url),n:1,ts:r.ts,kind:r.kind||''});
+    var key=methodPath(r,true)+'|'+(r.kind||'');
+    if(collapsed.length && collapsed[collapsed.length-1].key===key){ collapsed[collapsed.length-1].n++; collapsed[collapsed.length-1].ts=r.ts; }
+    else collapsed.push({key:key,method:r.method||'',path:pathOf(r.url,true),n:1,ts:r.ts,kind:r.kind||''});
   });
   var rec='';
   collapsed.slice(0,18).forEach(function(c){
@@ -289,7 +298,7 @@ function render(st,hits,hs,cfg,payloadText){
   var pretty=payloadText||''; try{ pretty=JSON.stringify(JSON.parse(payloadText),null,2); }catch(e){}
   document.getElementById('payloadPre').textContent=pretty||'--';
   document.getElementById('payloadMd5').textContent=fm.md5||'';
-  document.getElementById('cntRows').innerHTML='<tr><td>'+(fm.hits||0)+'</td><td>'+(fm.observes||0)+'</td><td>'+(fm.flows||0)+'</td><td>'+(fm.dnsRedirects||0)+'</td><td>'+hsOk+' / '+hsFail+'</td><td>'+esc(st.upstreamConnected?(st.upstreamSSID+' '+st.upstreamIP):'未连接')+'</td></tr>';
+  document.getElementById('cntRows').innerHTML='<tr><td>'+(fm.hits||0)+'</td><td>'+(fm.observes||0)+'</td><td>'+(fm.flows||0)+'</td><td style="color:#f85149">'+(fm.blocked||0)+'</td><td>'+(fm.dnsRedirects||0)+'</td><td>'+hsOk+' / '+hsFail+'</td><td>'+esc(st.upstreamConnected?(st.upstreamSSID+' '+st.upstreamIP):'未连接')+'</td></tr>';
 
   if(!editorLoaded){ editorLoaded=true; try{ renderRows(JSON.parse(payloadText)); }catch(e){} }
 }
@@ -379,12 +388,20 @@ async function applyPreset(name){
 async function toggleFsdOpts(){
   var en=document.getElementById('fsdEn').checked?1:0;
   var ao=document.getElementById('fsdAutoOff').checked?1:0;
-  var r=await fetch(q('/api/fsd-mock/set?enabled='+en+'&autoOff='+ao));
+  var apf=document.getElementById('apiPrdFilterEn').checked?1:0;
+  var rules=document.getElementById('apiPrdRules').value.trim();
+  var r=await fetch(q('/api/fsd-mock/set?enabled='+en+'&autoOff='+ao+'&apiPrdFilter='+apf+'&apiPrdRules='+encodeURIComponent(rules)));
   if(r.status===403){ showPin(); return; }
+  if(!r.ok){
+    var why='规则保存失败'; try{var j=await r.json(); if(j.error==='invalid_api_prd_rules') why='放行规则格式无效（需 key=子串 或 /路径，如 uuid=music）';}catch(e){}
+    setMsg('cfgMsg',why,false);
+  }
   setTimeout(refresh,450);
 }
 document.getElementById('fsdEn').onchange=toggleFsdOpts;
 document.getElementById('fsdAutoOff').onchange=toggleFsdOpts;
+document.getElementById('apiPrdFilterEn').onchange=toggleFsdOpts;
+document.getElementById('apiPrdSaveBtn').onclick=toggleFsdOpts;
 document.getElementById('addBtn').onclick=addRow;
 document.getElementById('saveBtn').onclick=savePayload;
 document.getElementById('reloadBtn').onclick=function(){ editing=false; editorLoaded=false; refresh(); };

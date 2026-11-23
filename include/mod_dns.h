@@ -65,7 +65,11 @@ void dnsIpBlockerGetStats(uint32_t* outDrops, uint32_t* outCacheCount, uint32_t*
 
 // FSD payload interception (TeslaDG dns_sink.py parity): answer these exact
 // host rules with the ESP32 AP address instead of forwarding upstream.
-void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer);
+// Set includeMothershipPrefix=false when 443 is only running for api-prd
+// selective filtering (FSD mock off / 4567 stopped) so mothership.* stays
+// governed by the DNS allowlist/blocklist.
+void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer,
+                       bool includeMothershipPrefix = true);
 void dnsGetFsdRedirectStats(uint32_t* total, char* lastDomain, size_t capacity);
 
 // Hijack matcher shared by the DNS sink and the reverse proxy. Explicit host
@@ -311,6 +315,7 @@ void dnsCacheStore(const char* domain, uint32_t ipv4Nbo, uint32_t ttlSec, uint32
 // FSD redirect snapshot shared by the DNS task and the HTTP config task.
 portMUX_TYPE gFsdRedirectMux = portMUX_INITIALIZER_UNLOCKED;
 bool gFsdRedirectEnabled = false;
+bool gFsdRedirectIncludeMothership = true;
 char gFsdRedirectHosts[128] = {};
 IPAddress gFsdRedirectAnswer;
 uint32_t gFsdRedirectTotal = 0;
@@ -698,12 +703,14 @@ bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {
     return false;
 }
 
-void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer) {
+void dnsSetFsdRedirect(bool enabled, const char* hosts, const IPAddress& answer,
+                       bool includeMothershipPrefix) {
     // Reject 0.0.0.0 as a redirect answer so a misconfigured/uninitialized AP IP
     // can never masquerade as a blocked response (ERR_ADDRESS_INVALID).
     const bool validAnswer = static_cast<uint32_t>(answer) != 0;
     portENTER_CRITICAL(&gFsdRedirectMux);
     gFsdRedirectEnabled = enabled && validAnswer && hosts != nullptr && hosts[0] != '\0';
+    gFsdRedirectIncludeMothership = includeMothershipPrefix;
     if (hosts != nullptr) {
         strlcpy(gFsdRedirectHosts, hosts, sizeof(gFsdRedirectHosts));
     } else {
@@ -1310,10 +1317,12 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     // allow/block rules. AAAA and other types get an empty answer so the
     // client falls back to A (same as build_empty in dns_sink.py).
     bool fsdRedirectEnabled = false;
+    bool fsdRedirectIncludeMothership = true;
     char fsdRedirectHosts[sizeof(gFsdRedirectHosts)] = {};
     IPAddress fsdRedirectIp;
     portENTER_CRITICAL(&gFsdRedirectMux);
     fsdRedirectEnabled = gFsdRedirectEnabled;
+    fsdRedirectIncludeMothership = gFsdRedirectIncludeMothership;
     strlcpy(fsdRedirectHosts, gFsdRedirectHosts, sizeof(fsdRedirectHosts));
     fsdRedirectIp = gFsdRedirectAnswer;
     portEXIT_CRITICAL(&gFsdRedirectMux);
@@ -1321,8 +1330,15 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     bool fsdRedirect = false;
     if (fsdRedirectEnabled && !domain.isEmpty()) {
         // Windows dns_sink.py uses exact set membership for --redirect; the
-        // mothership prefix follows arp_mitm.py's REDIRECT_PREFIX.
-        fsdRedirect = dnsFsdRedirectMatchesHost(fsdRedirectHosts, domain.c_str());
+        // mothership prefix follows arp_mitm.py's REDIRECT_PREFIX when FSD
+        // mock (4567) is enabled. When only api-prd L7 filtering is active,
+        // skip the implicit mothership.* prefix so mothership stays blocked.
+        if (fsdRedirectIncludeMothership) {
+            fsdRedirect = dnsFsdRedirectMatchesHost(fsdRedirectHosts, domain.c_str());
+        } else {
+            fsdRedirect = !domain.startsWith("mothership.") &&
+                          dnsFsdRedirectMatchesHost(fsdRedirectHosts, domain.c_str());
+        }
         if (fsdRedirect) {
             portENTER_CRITICAL(&gFsdRedirectMux);
             ++gFsdRedirectTotal;

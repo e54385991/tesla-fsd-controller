@@ -274,11 +274,12 @@ static bool matchUri(const char* registered, const char* requested, size_t) {
 }
 
 static esp_err_t catchAll(httpd_req_t* request) {
-    if (fsd_mock::isFeatureConfigurationUri(request->uri)) {
+    if (fsd_mock::isFeatureConfigurationUri(request->uri) && fsd_mock::enabled()) {
         return fsd_mock::handleRequest(request);
     }
-    // Same reverse-mode behavior as the Windows mitmdump chain: everything
-    // else goes to the real api-prd host instead of being answered locally.
+    // Non-FSD requests (and /feature_configuration when FSD mock is off while
+    // 443 stays active for api-prd selective filtering) go through
+    // forwardPassthrough(), which enforces apiPrdFilter rules before upstream.
     return fsd_mock::forwardPassthrough(request);
 }
 
@@ -474,32 +475,41 @@ static void stopFsdHttps() {
 
 static bool syncFsdListenersNow() {
     if (!initialized) return false;
-    const bool want = fsd_mock::enabled();
-    if (want) {
-        const bool httpsOk = startFsdHttps();
-        if (httpsOk) {
-            const bool httpOk = mothershipServer != nullptr || startMothershipHttp();
-            // Only redirect api-prd/mothership after 443 is actually accepting connections.
-            fsd_mock::setListenersReady(true);
-            if (httpOk) clearLastError();
-            lastHealthCheckMs = millis();
-            return httpOk;
-        }
+    const bool wantFsd = fsd_mock::enabled();
+    const bool want443 = wantFsd || fsd_mock::apiPrdFilterEnabled();
+    const bool want4567 = wantFsd;
+
+    if (!want443) {
+        // Stop DNS redirect FIRST so clients never hit a closing listener, then
+        // reclaim ~28 KB RAM, 2 Core-0 tasks, and 6 BSD sockets.
+        cancelAutoOff();
+        fsd_mock::setListenersReady(false);
+        stopMothershipHttp();
+        stopFsdHttps();
+        clearLastError();
+        retryStep = 0;
+        nextRetryMs = 0;
+        lastHealthCheckMs = 0;
+        return true;
+    }
+
+    if (!want4567) {
+        cancelAutoOff();
+        stopMothershipHttp();
+    }
+
+    const bool httpsOk = fsdServer != nullptr || startFsdHttps();
+    if (!httpsOk) {
         fsd_mock::setListenersReady(false);
         return false;
     }
 
-    // Stop DNS redirect FIRST so clients never hit a closing listener, then
-    // reclaim ~28 KB RAM, 2 Core-0 tasks, and 6 BSD sockets.
-    cancelAutoOff();
-    fsd_mock::setListenersReady(false);
-    stopMothershipHttp();
-    stopFsdHttps();
-    clearLastError();
-    retryStep = 0;
-    nextRetryMs = 0;
-    lastHealthCheckMs = 0;
-    return true;
+    const bool httpOk = !want4567 || mothershipServer != nullptr || startMothershipHttp();
+    // Only redirect api-prd/mothership after 443 is actually accepting connections.
+    fsd_mock::setListenersReady(true);
+    if (httpOk) clearLastError();
+    if (lastHealthCheckMs == 0) lastHealthCheckMs = millis();
+    return httpOk;
 }
 
 void requestListenerSync() {
@@ -619,7 +629,9 @@ void serviceListeners() {
         fsd_mock::setEnabled(false);
         fsd_mock::noteAutoDisabled();
         syncFsdListenersNow();
-        wifiBridgeLog("FSD delivered -> auto-disabled (2m delay)");
+        wifiBridgeLog(fsd_mock::apiPrdFilterEnabled()
+            ? "FSD delivered -> auto-disabled (api-prd filter active on 443)"
+            : "FSD delivered -> auto-disabled (2m delay)");
         return;
     }
 
@@ -628,11 +640,14 @@ void serviceListeners() {
         listenerSyncRequested = false;
         retryStep = 0;
         nextRetryMs = 0;
-        const bool want = fsd_mock::enabled();
+        const bool wantFsd = fsd_mock::enabled();
+        const bool want443 = wantFsd || fsd_mock::apiPrdFilterEnabled();
         const bool ok = syncFsdListenersNow();
-        if (want) {
+        if (want443) {
             if (ok) {
-                wifiBridgeLog("FSD HTTPS 443 + HTTP 4567 started");
+                wifiBridgeLog(wantFsd
+                    ? "FSD HTTPS 443 + HTTP 4567 started"
+                    : "api-prd filter HTTPS 443 started");
             } else {
                 char msg[96];
                 snprintf(msg, sizeof(msg), "FSD start failed (%.36s, heap=%u)",
@@ -642,24 +657,28 @@ void serviceListeners() {
                 retryStep = 1;
             }
         } else {
-            wifiBridgeLog("FSD mock disabled; listeners stopped");
+            wifiBridgeLog("FSD/api-prd listeners stopped");
         }
         return;
     }
 
-    if (wifiBridgeOtaActive() || !fsd_mock::enabled()) return;
+    const bool wantFsd = fsd_mock::enabled();
+    const bool want443 = wantFsd || fsd_mock::apiPrdFilterEnabled();
+    if (wifiBridgeOtaActive() || !want443) return;
 
     // 3) Missing-listener automatic retry with backoff (5s -> 15s -> 30s).
-    if (!fsdServer || !mothershipServer) {
+    const bool need443 = !fsdServer;
+    const bool need4567 = wantFsd && !mothershipServer;
+    if (need443 || need4567) {
         if (nextRetryMs == 0 || static_cast<int32_t>(now - nextRetryMs) >= 0) {
             const bool had443 = fsdServer != nullptr;
             const bool had4567 = mothershipServer != nullptr;
             const bool httpsOk = had443 || startFsdHttps();
-            const bool httpOk = httpsOk && (had4567 || startMothershipHttp());
+            const bool httpOk = !wantFsd || (httpsOk && (had4567 || startMothershipHttp()));
             if (httpsOk && !fsdHealth.dnsPaused) {
                 fsd_mock::setListenersReady(true);
             }
-            if (((!had443 && httpsOk) || (!had4567 && httpOk)) && lastHealthCheckMs == 0) {
+            if (((!had443 && httpsOk) || (wantFsd && !had4567 && httpOk)) && lastHealthCheckMs == 0) {
                 lastHealthCheckMs = now;
             }
             if (httpsOk && httpOk) {
@@ -668,7 +687,9 @@ void serviceListeners() {
                 retryStep = 0;
                 nextRetryMs = 0;
                 lastHealthCheckMs = now;
-                wifiBridgeLog("FSD listeners auto-recovered (443+4567)");
+                wifiBridgeLog(wantFsd
+                    ? "FSD listeners auto-recovered (443+4567)"
+                    : "api-prd filter listener auto-recovered (443)");
             } else {
                 const uint8_t idx = retryStep < 3 ? retryStep : 2;
                 nextRetryMs = now + kRetryBackoffMs[idx];
@@ -706,10 +727,10 @@ bool start(bool /*skipAutoListeners*/) {
     initialized = true;
 
     // Load FSD mock settings & payload first; always start 443/4567 listeners
-    // when FSD mock is enabled (with automatic backoff retry on failure) and
-    // never pause into safe mode.
+    // when FSD mock or api-prd selective filter is enabled (with automatic
+    // backoff retry on failure) and never pause into safe mode.
     fsd_mock::begin();
-    if (fsd_mock::enabled()) {
+    if (fsd_mock::enabled() || fsd_mock::apiPrdFilterEnabled()) {
         if (!syncFsdListenersNow()) {
             nextRetryMs = millis() + kRetryBackoffMs[0];
             retryStep = 1;

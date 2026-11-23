@@ -678,16 +678,18 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(ESP.getPsramSize()),
                   static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    Serial.printf("[wifi-diag] fsd=%d autoOff=%d(%us) mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u dns=%u spi=%u/%u\n",
+    Serial.printf("[wifi-diag] fsd=%d autoOff=%d(%us) apiPrdFilter=%d mode=%s payload=%u md5=%s fields=%u hits=%u obs=%u flow=%u blk=%u dns=%u spi=%u/%u\n",
                   fsd_mock::enabled() ? 1 : 0,
                   fsd_mock::autoOffOnHit() ? 1 : 0,
                   static_cast<unsigned>(client_config::autoOffRemainingSec()),
+                  fsd_mock::apiPrdFilterEnabled() ? 1 : 0,
                   fsd_mock::modeName(),
                   static_cast<unsigned>(fsd_mock::payloadBytes()), fsd_mock::payloadMd5(),
                   static_cast<unsigned>(fsd_mock::payloadFields()),
                   static_cast<unsigned>(fsd_mock::hitCount()),
                   static_cast<unsigned>(fsd_mock::observeCount()),
                   static_cast<unsigned>(fsd_mock::flowCount()),
+                  static_cast<unsigned>(fsd_mock::blockedCount()),
                   static_cast<unsigned>(fsd_mock::dnsRedirectCount()),
                   static_cast<unsigned>(SPIFFS.usedBytes()),
                   static_cast<unsigned>(SPIFFS.totalBytes()));
@@ -1377,6 +1379,18 @@ static void setupWebServer() {
             fsd_mock::setEnabled(req->getParam("enabled")->value().toInt() != 0);
             client_config::requestListenerSync();
         }
+        if (req->hasParam("apiPrdReset") && req->getParam("apiPrdReset")->value().toInt() != 0) {
+            fsd_mock::setApiPrdFilterRules(fsd_mock::kDefaultApiPrdRules);
+        } else if (req->hasParam("apiPrdRules")) {
+            if (!fsd_mock::setApiPrdFilterRules(req->getParam("apiPrdRules")->value().c_str())) {
+                req->send(400, "application/json", "{\"error\":\"invalid_api_prd_rules\"}");
+                return;
+            }
+        }
+        if (req->hasParam("apiPrdFilter")) {
+            fsd_mock::setApiPrdFilterEnabled(req->getParam("apiPrdFilter")->value().toInt() != 0);
+            client_config::requestListenerSync();
+        }
         if (req->hasParam("mode")) {
             if (!fsd_mock::setMode(req->getParam("mode")->value().c_str())) {
                 req->send(400, "application/json", "{\"error\":\"invalid_mode\"}");
@@ -1403,12 +1417,27 @@ static void setupWebServer() {
         char md5[33] = {};
         size_t fields = 0;
         const size_t bytes = fsd_mock::copyPayload(nullptr, 0, md5, &fields);
-        char body[192];
-        snprintf(body, sizeof(body),
-                 "{\"ok\":true,\"enabled\":%s,\"autoOffOnHit\":%s,\"bytes\":%u,\"fields\":%u,\"md5\":\"%s\"}",
-                 fsd_mock::enabled() ? "true" : "false",
-                 fsd_mock::autoOffOnHit() ? "true" : "false",
-                 static_cast<unsigned>(bytes), static_cast<unsigned>(fields), md5);
+        char apiPrdRulesRaw[fsd_mock::kApiPrdRuleCapacity] = {};
+        fsd_mock::copyApiPrdRules(apiPrdRulesRaw, sizeof(apiPrdRulesRaw));
+        char apiPrdRulesEsc[fsd_mock::kApiPrdRuleCapacity * 2] = {};
+        jsonEscapeInto(apiPrdRulesRaw, apiPrdRulesEsc, sizeof(apiPrdRulesEsc));
+        String body;
+        body.reserve(256 + strlen(apiPrdRulesEsc));
+        body += "{\"ok\":true,\"enabled\":";
+        body += (fsd_mock::enabled() ? "true" : "false");
+        body += ",\"autoOffOnHit\":";
+        body += (fsd_mock::autoOffOnHit() ? "true" : "false");
+        body += ",\"apiPrdFilter\":";
+        body += (fsd_mock::apiPrdFilterEnabled() ? "true" : "false");
+        body += ",\"apiPrdRules\":\"";
+        body += apiPrdRulesEsc;
+        body += "\",\"bytes\":";
+        body += String(static_cast<unsigned>(bytes));
+        body += ",\"fields\":";
+        body += String(static_cast<unsigned>(fields));
+        body += ",\"md5\":\"";
+        body += md5;
+        body += "\"}";
         req->send(200, "application/json", body);
     });
 
@@ -1616,8 +1645,13 @@ void setup() {
     const bool clientConfigReady = client_config::start(false);
     if (!clientConfigReady) {
         addDiagLog(1, "FSD client_config startup failed");
-    } else if (!fsd_mock::enabled()) {
+    } else if (!fsd_mock::enabled() && !fsd_mock::apiPrdFilterEnabled()) {
         addDiagLog(0, "FSD mock standby (off by default)");
+    } else if (!fsd_mock::enabled() && fsd_mock::apiPrdFilterEnabled()) {
+        addDiagLog(client_config::fsdHttpsStarted() ? 0 : 1,
+                   client_config::fsdHttpsStarted()
+                       ? "api-prd filter HTTPS 443 started"
+                       : "api-prd filter HTTPS 443 failed (auto-retry)");
     } else if (client_config::fsdHttpsStarted() && client_config::mothershipHttpStarted()) {
         addDiagLog(0, "FSD HTTPS 443 + mothership HTTP 4567 started");
     } else if (client_config::fsdHttpsStarted()) {

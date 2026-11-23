@@ -28,6 +28,8 @@ constexpr uint16_t kMothershipHttpPort = 4567;
 constexpr size_t kPayloadCapacity = 2049;      // compact payload limit (<= 2048 B)
 constexpr size_t kPayloadInputCapacity = 4096; // raw (pretty-printed) JSON upload limit before compacting
 constexpr size_t kHostCapacity = 96;
+constexpr size_t kApiPrdRuleCapacity = 256;
+constexpr char kDefaultApiPrdRules[] = "uuid=music";
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
 constexpr size_t kConfigHistoryCapacity = 8; // RAM ring, not persisted
@@ -41,7 +43,7 @@ enum class Mode : uint8_t {
 // Mirrors the fields written by fsd_mock.py to hits.jsonl. ts is ISO local
 // time when the clock is valid, otherwise "up:<seconds>".
 struct Hit {
-    char kind[8] = {};          // HIT / OBSERVE / FLOW
+    char kind[8] = {};          // HIT / OBSERVE / FLOW / BLOCK
     char ts[32] = {};
     char client[46] = {};
     char method[8] = {};
@@ -95,11 +97,14 @@ void noteHandshakeFailure(const char* error);
 void noteAutoDisabled();
 
 bool isFeatureConfigurationUri(const char* uri);
+bool apiPrdUriAllowed(const char* uri, const char* rules);
 esp_err_t handleRequest(struct httpd_req* request);
 esp_err_t forwardPassthrough(struct httpd_req* request);
 
 bool enabled();
 bool autoOffOnHit();
+bool apiPrdFilterEnabled();
+size_t copyApiPrdRules(char* output, size_t capacity);
 Mode mode();
 const char* modeName();
 const char* host();
@@ -111,6 +116,8 @@ size_t copyPayload(char* output, size_t capacity,
 
 bool setEnabled(bool value);
 bool setAutoOffOnHit(bool value);
+bool setApiPrdFilterEnabled(bool value);
+bool setApiPrdFilterRules(const char* value);
 bool setMode(const char* value);
 bool setHost(const char* value);
 bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
@@ -122,6 +129,7 @@ void clearHandshakes();
 uint32_t hitCount();
 uint32_t observeCount();
 uint32_t flowCount();
+uint32_t blockedCount();
 uint32_t dnsRedirectCount();
 uint32_t autoDisabledCount();
 

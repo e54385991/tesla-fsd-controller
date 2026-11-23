@@ -630,6 +630,125 @@ int main() {
         subprocess.run([str(exe)], check=True)
 
 
+def check_api_prd_request_filter() -> None:
+    """Compile and run production api-prd L7 filter helpers under ASan+UBSan."""
+    fsd_src = (ROOT / "src/fsd_mock.cpp").read_text()
+    client_src = (ROOT / "src/client_config.cpp").read_text()
+    dns_src = (ROOT / "include/mod_dns.h").read_text()
+
+    # Static integration contracts
+    assert "fsd_mock::isFeatureConfigurationUri(request->uri) && fsd_mock::enabled()" in client_src
+    assert "wantFsd || fsd_mock::apiPrdFilterEnabled()" in client_src
+    assert "dnsSetFsdRedirect(true, kApiPrdHost, answer, false)" in fsd_src
+    assert "gFsdRedirectIncludeMothership" in dns_src
+    assert '{"error":"blocked_by_policy"}' in fsd_src or '\\"error\\":\\"blocked_by_policy\\"' in fsd_src
+    assert 'strlcpy(hit.kind, "BLOCK", sizeof(hit.kind));' in fsd_src
+    # Ensure L7 block check happens inside forwardPassthrough BEFORE forwardRequest()
+    fwd_pos = fsd_src.index("esp_err_t forwardPassthrough(")
+    fwd_end = fsd_src.index("\nbool enabled()", fwd_pos)
+    fwd_body = fsd_src[fwd_pos:fwd_end]
+    assert fwd_body.index("apiPrdUriAllowed(") < fwd_body.index("forwardRequest(")
+
+    def extract_fn(source: str, sig: str) -> str:
+        start = source.index(sig)
+        brace = source.index("{", start)
+        depth = 1
+        end = brace + 1
+        while depth:
+            depth += (source[end] == "{") - (source[end] == "}")
+            end += 1
+        return source[start:end]
+
+    funcs = "\n\n".join(extract_fn(fsd_src, s) for s in (
+        "int apiPrdHexNibble(char c)",
+        "size_t apiPrdPercentDecodeOnce(const char* src, size_t srcLen, char* dst, size_t dstCap)",
+        "size_t apiPrdPercentDecodeTwice(const char* src, size_t srcLen, char* dst, size_t dstCap)",
+        "bool apiPrdContainsCI(const char* haystack, size_t hLen, const char* needle, size_t nLen)",
+        "bool apiPrdEqualsCI(const char* a, size_t aLen, const char* b, size_t bLen)",
+        "bool apiPrdPathMatches(const char* path, size_t pathLen, const char* token, size_t tokenLen)",
+        "bool apiPrdQueryMatches(const char* query, size_t queryLen,",
+        "bool isApiPrdRuleSep(unsigned char c)",
+        "bool validApiPrdRuleToken(const char* tok, size_t len)",
+        "bool normalizeApiPrdRules(const char* input, char* out, size_t outCap)",
+        "bool apiPrdUriAllowed(const char* uri, const char* rules)",
+    ))
+
+    cxx = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    assert cxx, "C++ compiler not found for api-prd filter test"
+
+    harness = r'''
+#include <cassert>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+''' + funcs + r'''
+
+int main() {
+    // 1) Real-world Tesla requests with default rule "uuid=music"
+    const char* def = "uuid=music";
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%2527music%2527", def));
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%27music%27", def));
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=music", def));
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?a=1&UUID=%2527QQMusic%2527&b=2", def));
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=my+music#frag", def));
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%ZZmusic", def));
+
+    // Must block firmware, telemetry, other UUIDs, and feature_configuration (when FSD off)
+    assert(!apiPrdUriAllowed("/firmware/packages/signature", def));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%2527telemetry%2527", def));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?other=music", def));
+    assert(!apiPrdUriAllowed("/feature_configuration", def));
+    assert(!apiPrdUriAllowed("/feature_configuration?vin=LRWGCEK4SC294768", def));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%2", def));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%25ZZ", def));
+    assert(!apiPrdUriAllowed("", def));
+    assert(!apiPrdUriAllowed(nullptr, def));
+
+    // 2) Tighter path + query rule
+    const char* tight = "/jwt_token?uuid=music";
+    assert(apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=%2527music%2527", tight));
+    assert(!apiPrdUriAllowed("/firmware/packages/signature?uuid=music", tight));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/LRWGCEK4SC294768/jwt_token?uuid=telemetry", tight));
+
+    // 3) Path-only rule & multi-rule OR semantics
+    const char* multi = "/jwt_token?uuid=music,\n/media/token; kind=audio";
+    assert(apiPrdUriAllowed("/mothership/vehicles/VIN/jwt_token?uuid=%2527music%2527", multi));
+    assert(apiPrdUriAllowed("/api/1/media/token", multi));
+    assert(apiPrdUriAllowed("/anything?kind=AUDIO_STREAM", multi));
+    assert(!apiPrdUriAllowed("/firmware/packages/signature", multi));
+
+    // 4) Empty rule list blocks everything
+    assert(!apiPrdUriAllowed("/mothership/vehicles/VIN/jwt_token?uuid=music", ""));
+    assert(!apiPrdUriAllowed("/mothership/vehicles/VIN/jwt_token?uuid=music", "   "));
+
+    // 5) Rule normalization & validation
+    char norm[256] = {};
+    assert(normalizeApiPrdRules("  uuid=music,\n /jwt_token?uuid=qq ; /media ", norm, sizeof(norm)));
+    assert(std::strcmp(norm, "uuid=music /jwt_token?uuid=qq /media") == 0);
+    assert(normalizeApiPrdRules("", norm, sizeof(norm)) && norm[0] == '\0');
+    assert(!normalizeApiPrdRules("/", norm, sizeof(norm)));
+    assert(!normalizeApiPrdRules("uuid=", norm, sizeof(norm)));
+    assert(!normalizeApiPrdRules("=music", norm, sizeof(norm)));
+    assert(!normalizeApiPrdRules("music", norm, sizeof(norm)));
+    assert(!normalizeApiPrdRules("/?uuid=music", norm, sizeof(norm)));
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="fsd-apf-") as tmp:
+        cpp = Path(tmp) / "apf.cpp"
+        exe = Path(tmp) / "apf"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        subprocess.run([str(exe)], check=True)
+
+
 def payloads() -> list[str]:
     return PATTERN.findall(HEADER)
 
@@ -693,6 +812,7 @@ def main() -> None:
     check_tls_identity()
     check_tls_policy()
     check_safe_mode_and_heartbeat()
+    check_api_prd_request_filter()
     check_response_contract()
     check_upstream_header_capture()
     check_payload_compact_and_sum_parity()

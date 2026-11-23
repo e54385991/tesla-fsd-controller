@@ -109,12 +109,18 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="msg" id="dnsMsg"></div>
   </div></section>
 
-  <section class="fsd-only"><h2>FSD 下发</h2><div class="body">
+  <section class="fsd-only"><h2>FSD 下发 &amp; api-prd 定向过滤</h2><div class="body">
     <label><input type="checkbox" id="fsdEn"> 启用 FSD mock（/feature_configuration，默认关闭）</label>
     <label><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认开启，非阻塞）</label>
     <label>模式</label><select id="fsdMode"><option value="reply">reply（本地回包）</option><option value="observe">observe（只记录并转发）</option></select>
+    <hr style="border:0;border-top:1px solid #21262d;margin:10px 0">
+    <label><input type="checkbox" id="apiPrdFilterEn"> 启用 api-prd 定向放行过滤（仅放行命中规则，其余本地 403 拦截）</label>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:2px">即使 <code>api-prd.vn.cloud.tesla.cn</code> 不在 DNS 白名单、甚至在黑名单中也能独立生效；FSD mock 关闭或 2 分钟自动关闭后 443 仍保持拦截 <code>/feature_configuration</code> 与固件校验，仅放行命中规则的请求（如音乐 JWT）。</div>
+    <label>放行规则（空格/换行分隔，默认 <code>uuid=music</code>；支持 <code>key=子串</code>、<code>/路径?key=子串</code>、<code>/路径</code>，自动双层 URL 解码）</label>
+    <input type="text" id="apiPrdRules" maxlength="255" spellcheck="false" placeholder="uuid=music">
     <div class="dim" id="fsdHealth" style="font-size:12px;margin-top:6px">监听状态：--</div>
-    <button class="primary" id="fsdSave">保存 FSD 设置</button>
+    <button class="primary" id="fsdSave">保存 FSD / 过滤设置</button>
+    <button id="apiPrdReset">恢复默认规则</button>
     <a class="btn" href="/fsd">编辑载荷 / 查看命中与握手</a>
     <div class="msg" id="fsdMsg"></div>
   </div></section>
@@ -182,15 +188,19 @@ async function refresh(){
     document.getElementById('fsdEn').checked=!!f.enabled;
     document.getElementById('fsdAutoOff').checked=f.autoOffOnHit!==false;
     document.getElementById('fsdMode').value=f.mode==='observe'?'observe':'reply';
+    document.getElementById('apiPrdFilterEn').checked=!!f.apiPrdFilter;
+    if(!document.getElementById('apiPrdRules').matches(':focus')) document.getElementById('apiPrdRules').value=f.apiPrdRules||'';
+    var want443=!!(f.enabled||f.apiPrdFilter);
     var fh='443:'+(f.fsd443?'监听中':'未监听')+' · 4567:'+(f.fsd4567?'监听中':'未监听')+
-      ' · DNS劫持:'+(f.active&&f.enabled?'开':'关')+
+      ' · DNS劫持:'+(f.active&&want443?(f.enabled?'全量':'仅api-prd'):'关')+
+      (f.apiPrdFilter?(' · 策略拦截:'+(f.blocked||0)+'次'):'')+
       (f.autoOffPending?(' · 倒计时:'+(f.autoOffRemainingSec||0)+'s'):'')+
       (f.recoveries?(' · 自复:'+f.recoveries+'次'):'')+
       (f.autoDisabledCount?(' · 已自动关闭:'+f.autoDisabledCount+'次'):'')+
       (f.lastError?(' · 异常:'+f.lastError):'');
     var fhEl=document.getElementById('fsdHealth');
     fhEl.textContent=fh;
-    fhEl.style.color=((f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
+    fhEl.style.color=((want443&&!f.active)||f.lastError)?'#f85149':(f.active&&want443?'#3fb950':'#8b949e');
     var nets=d.upstreamNetworks||[];
     document.getElementById('netRows').innerHTML=nets.map(function(n){
       return '<tr><td>'+esc(n.ssid)+'</td><td>'+(n.connected?'<span style="color:#3fb950">已连接</span>':(n.active?'<span style="color:#d29922">连接中</span>':'<span class="dim">未连接</span>'))+'</td><td><button class="red" data-del="'+esc(n.ssid)+'">删除</button></td></tr>';
@@ -289,11 +299,26 @@ async function scan(){
 async function saveFsd(){
   var en=document.getElementById('fsdEn').checked?1:0;
   var ao=document.getElementById('fsdAutoOff').checked?1:0;
-  var u='/api/fsd-mock/set?enabled='+en+'&autoOff='+ao+'&mode='+encodeURIComponent(document.getElementById('fsdMode').value);
+  var apf=document.getElementById('apiPrdFilterEn').checked?1:0;
+  var rules=document.getElementById('apiPrdRules').value.trim();
+  var u='/api/fsd-mock/set?enabled='+en+'&autoOff='+ao+
+    '&mode='+encodeURIComponent(document.getElementById('fsdMode').value)+
+    '&apiPrdFilter='+apf+'&apiPrdRules='+encodeURIComponent(rules);
   var r=await fetch(q(u));
-  setMsg('fsdMsg',r.ok?(en?'已保存，正在同步 443/4567 监听…':'已关闭 FSD mock'):'保存失败',r.ok);
+  if(r.ok){
+    setMsg('fsdMsg',(en||apf)?'已保存，正在同步监听与规则…':'已保存并关闭监听',true);
+  }else{
+    var why='保存失败'; try{var j=await r.json(); if(j.error==='invalid_api_prd_rules') why='规则格式无效（需 key=子串 或 /路径，如 uuid=music）';}catch(e){}
+    setMsg('fsdMsg',why,false);
+  }
   if(r.status===403)showPin();
   setTimeout(refresh,450);
+}
+async function resetApiPrdRules(){
+  var r=await fetch(q('/api/fsd-mock/set?apiPrdReset=1'));
+  setMsg('fsdMsg',r.ok?'已恢复默认放行规则（uuid=music）':'恢复失败',r.ok);
+  if(r.status===403)showPin();
+  if(r.ok)refresh();
 }
 async function otaUpload(){
   var f=document.getElementById('otaFile').files[0]; if(!f){setMsg('otaMsg','请选择 .bin',false);return;}
@@ -313,9 +338,11 @@ document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
 document.getElementById('fsdSave').onclick=saveFsd;
+document.getElementById('apiPrdReset').onclick=resetApiPrdRules;
 document.getElementById('fsdEn').onchange=saveFsd;
 document.getElementById('fsdAutoOff').onchange=saveFsd;
 document.getElementById('fsdMode').onchange=saveFsd;
+document.getElementById('apiPrdFilterEn').onchange=saveFsd;
 document.getElementById('upEn').onchange=saveBridge;
 document.getElementById('dnsEn').onchange=saveBridge;
 document.getElementById('ipBlkEn').onchange=saveIpBlk;

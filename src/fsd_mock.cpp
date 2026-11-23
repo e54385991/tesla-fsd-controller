@@ -80,9 +80,11 @@ static_assert(sizeof(Settings) == 4 + 4 + kHostCapacity, "Settings NVS layout mu
 struct State {
     bool enabled = false;
     bool autoOffOnHit = true;
+    bool apiPrdFilterEnabled = false;
     Mode mode = Mode::Reply;
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
+    char apiPrdRules[kApiPrdRuleCapacity] = "uuid=music";
     char payload[kPayloadCapacity] = {};
     char md5[33] = {};
     size_t bytes = 0;
@@ -117,6 +119,7 @@ portMUX_TYPE gHitMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t gHitTotal = 0;
 uint32_t gObserveTotal = 0;
 uint32_t gFlowTotal = 0;
+uint32_t gBlockedTotal = 0;
 uint32_t gAutoDisabledTotal = 0;
 
 ConfigChange gConfigHistory[kConfigHistoryCapacity];
@@ -528,13 +531,14 @@ void recordHit(const Hit& hit, const char* responseBody) {
     if (gHitCount < kRecentHitCapacity) ++gHitCount;
     if (strcmp(hit.kind, "OBSERVE") == 0) ++gObserveTotal;
     else if (strcmp(hit.kind, "FLOW") == 0) ++gFlowTotal;
+    else if (strcmp(hit.kind, "BLOCK") == 0) ++gBlockedTotal;
     else ++gHitTotal;
     portEXIT_CRITICAL(&gHitMux);
 
-    // The panel's "最新回包" is an FSD view. Non-FSD FLOW responses (for
-    // example Tesla's mTLS 400 for a command probe) stay in the log/recent
+    // The panel's "最新回包" is an FSD view. Non-FSD FLOW/BLOCK responses (for
+    // example Tesla's mTLS 400 or policy-blocked 403) stay in the log/recent
     // list but must not overwrite the last HIT/OBSERVE body.
-    if (strcmp(hit.kind, "FLOW") != 0) {
+    if (strcmp(hit.kind, "FLOW") != 0 && strcmp(hit.kind, "BLOCK") != 0) {
         portENTER_CRITICAL(&gLastResponseMux);
         strlcpy(gLastResponse.kind, hit.kind, sizeof(gLastResponse.kind));
         gLastResponse.status = hit.status;
@@ -613,28 +617,45 @@ bool loadPayloadFile(char* out, size_t capacity, size_t& length) {
 
 void syncDnsRedirect() {
     bool enabledNow;
+    bool apiPrdFilterNow;
     char hostNow[kHostCapacity];
     lockState();
     enabledNow = gState.enabled;
+    apiPrdFilterNow = gState.apiPrdFilterEnabled;
     strlcpy(hostNow, gState.host, sizeof(hostNow));
     unlockState();
     const IPAddress answer = WiFi.softAPIP();
-    dnsSetFsdRedirect(gActive && enabledNow, hostNow, answer);
+    if (gActive && enabledNow) {
+        dnsSetFsdRedirect(true, hostNow, answer, true);
+    } else if (gActive && apiPrdFilterNow) {
+        // Only hijack api-prd.vn.cloud.tesla.cn when 443 is running solely
+        // for selective request filtering (4567 is stopped; mothership.*
+        // remains governed by the DNS allowlist/blocklist).
+        dnsSetFsdRedirect(true, kApiPrdHost, answer, false);
+    } else {
+        dnsSetFsdRedirect(false, "", answer, true);
+    }
 }
 
 bool persistSettings() {
     Settings settings;
+    bool apiPrdFilterNow = false;
+    char apiPrdRulesNow[kApiPrdRuleCapacity] = {};
     lockState();
     settings.enabled = gState.enabled ? 1 : 0;
     settings.mode = static_cast<uint8_t>(gState.mode);
     settings.flags = kSettingFlagAutoOffSet;
     settings.autoOffOnHit = gState.autoOffOnHit ? 1 : 0;
     strlcpy(settings.host, gState.host, sizeof(settings.host));
+    apiPrdFilterNow = gState.apiPrdFilterEnabled;
+    strlcpy(apiPrdRulesNow, gState.apiPrdRules, sizeof(apiPrdRulesNow));
     unlockState();
 
     Preferences prefs;
     if (!prefs.begin("fsdmock", false)) return false;
     const size_t written = prefs.putBytes("cfg", &settings, sizeof(settings));
+    prefs.putBool("apf_en", apiPrdFilterNow);
+    prefs.putString("apf_rules", apiPrdRulesNow);
     prefs.end();
     return written == sizeof(settings);
 }
@@ -750,13 +771,15 @@ const char* formatStatusLine(int code, char buffer[32]) {
 }
 
 void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
-                     int status, const char* json) {
+                     int status, const char* json, bool closeConn = true) {
     char statusLine[32];
     httpd_resp_set_status(request, formatStatusLine(status, statusLine));
     httpd_resp_set_type(request, "application/json");
     // Requests that fail before their body is drained must not reuse the
     // socket; the car would otherwise keep a half-read request open.
-    httpd_resp_set_hdr(request, "Connection", "close");
+    if (closeConn) {
+        httpd_resp_set_hdr(request, "Connection", "close");
+    }
     const size_t length = strlen(json);
     httpd_resp_send(request, json, length);
     hit.status = static_cast<uint16_t>(status);
@@ -1379,6 +1402,14 @@ void begin() {
             }
             unlockState();
         }
+        const bool savedApfEn = prefs.getBool("apf_en", false);
+        const bool hasApfRules = prefs.isKey("apf_rules");
+        String savedApfRules = hasApfRules ? prefs.getString("apf_rules", kDefaultApiPrdRules)
+                                           : String(kDefaultApiPrdRules);
+        lockState();
+        gState.apiPrdFilterEnabled = savedApfEn;
+        strlcpy(gState.apiPrdRules, savedApfRules.c_str(), sizeof(gState.apiPrdRules));
+        unlockState();
         prefs.end();
     }
 
@@ -1433,6 +1464,204 @@ bool isFeatureConfigurationUri(const char* uri) {
     if (*end == '/') {
         ++end;
         return *end == '\0' || *end == '?' || *end == '#';
+    }
+    return false;
+}
+
+namespace {
+
+int apiPrdHexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
+
+size_t apiPrdPercentDecodeOnce(const char* src, size_t srcLen, char* dst, size_t dstCap) {
+    if (!dst || dstCap == 0) return 0;
+    size_t out = 0;
+    for (size_t i = 0; i < srcLen && out + 1 < dstCap; ++i) {
+        if (src[i] == '+') {
+            dst[out++] = ' ';
+        } else if (src[i] == '%' && i + 2 < srcLen) {
+            const int hi = apiPrdHexNibble(src[i + 1]);
+            const int lo = apiPrdHexNibble(src[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                dst[out++] = static_cast<char>((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+            dst[out++] = src[i];
+        } else {
+            dst[out++] = src[i];
+        }
+    }
+    dst[out] = '\0';
+    return out;
+}
+
+// Decode up to 2 percent-encoding layers (e.g. %2527music%2527 -> %27music%27 -> 'music').
+size_t apiPrdPercentDecodeTwice(const char* src, size_t srcLen, char* dst, size_t dstCap) {
+    char mid[256];
+    const size_t midLen = apiPrdPercentDecodeOnce(src, srcLen, mid, sizeof(mid));
+    return apiPrdPercentDecodeOnce(mid, midLen, dst, dstCap);
+}
+
+bool apiPrdContainsCI(const char* haystack, size_t hLen, const char* needle, size_t nLen) {
+    if (!haystack || !needle || nLen == 0 || nLen > hLen) return false;
+    for (size_t i = 0; i + nLen <= hLen; ++i) {
+        size_t j = 0;
+        while (j < nLen &&
+               tolower(static_cast<unsigned char>(haystack[i + j])) ==
+               tolower(static_cast<unsigned char>(needle[j]))) {
+            ++j;
+        }
+        if (j == nLen) return true;
+    }
+    return false;
+}
+
+bool apiPrdEqualsCI(const char* a, size_t aLen, const char* b, size_t bLen) {
+    if (aLen != bLen) return false;
+    for (size_t i = 0; i < aLen; ++i) {
+        if (tolower(static_cast<unsigned char>(a[i])) !=
+            tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool apiPrdPathMatches(const char* path, size_t pathLen, const char* token, size_t tokenLen) {
+    if (tokenLen < 2 || token[0] != '/') return false;
+    if (apiPrdContainsCI(path, pathLen, token, tokenLen)) return true;
+    char decoded[256];
+    const size_t decLen = apiPrdPercentDecodeTwice(path, pathLen, decoded, sizeof(decoded));
+    return apiPrdContainsCI(decoded, decLen, token, tokenLen);
+}
+
+bool apiPrdQueryMatches(const char* query, size_t queryLen,
+                        const char* key, size_t keyLen,
+                        const char* needle, size_t needleLen) {
+    if (!query || queryLen == 0 || keyLen == 0 || needleLen == 0) return false;
+    size_t pos = 0;
+    while (pos < queryLen) {
+        size_t end = pos;
+        while (end < queryLen && query[end] != '&') ++end;
+        const size_t pairLen = end - pos;
+        if (pairLen > 0) {
+            const char* eq = static_cast<const char*>(memchr(query + pos, '=', pairLen));
+            if (eq) {
+                const size_t kLen = static_cast<size_t>(eq - (query + pos));
+                const char* val = eq + 1;
+                const size_t vLen = static_cast<size_t>((query + end) - val);
+                if (apiPrdEqualsCI(query + pos, kLen, key, keyLen)) {
+                    char decoded[256];
+                    const size_t decLen = apiPrdPercentDecodeTwice(val, vLen, decoded, sizeof(decoded));
+                    if (apiPrdContainsCI(decoded, decLen, needle, needleLen)) return true;
+                }
+            }
+        }
+        pos = end + 1;
+    }
+    return false;
+}
+
+bool isApiPrdRuleSep(unsigned char c) {
+    return isspace(c) || c == ',' || c == ';';
+}
+
+bool validApiPrdRuleToken(const char* tok, size_t len) {
+    if (!tok || len == 0) return false;
+    for (size_t i = 0; i < len; ++i) {
+        const unsigned char c = static_cast<unsigned char>(tok[i]);
+        if (c < 0x21 || c > 0x7E) return false;
+    }
+    if (tok[0] == '/') {
+        const char* q = static_cast<const char*>(memchr(tok, '?', len));
+        if (!q) return len >= 2;
+        const size_t pathLen = static_cast<size_t>(q - tok);
+        if (pathLen < 2) return false;
+        const char* kv = q + 1;
+        const size_t kvLen = len - pathLen - 1;
+        const char* eq = static_cast<const char*>(memchr(kv, '=', kvLen));
+        return eq != nullptr && eq > kv && static_cast<size_t>((kv + kvLen) - (eq + 1)) > 0;
+    }
+    const char* eq = static_cast<const char*>(memchr(tok, '=', len));
+    return eq != nullptr && eq > tok && static_cast<size_t>((tok + len) - (eq + 1)) > 0;
+}
+
+bool normalizeApiPrdRules(const char* input, char* out, size_t outCap) {
+    if (!out || outCap == 0) return false;
+    out[0] = '\0';
+    if (!input) return true;
+    size_t pos = 0;
+    const char* p = input;
+    while (*p) {
+        while (*p && isApiPrdRuleSep(static_cast<unsigned char>(*p))) ++p;
+        if (!*p) break;
+        const char* start = p;
+        while (*p && !isApiPrdRuleSep(static_cast<unsigned char>(*p))) ++p;
+        const size_t tokLen = static_cast<size_t>(p - start);
+        if (!validApiPrdRuleToken(start, tokLen)) return false;
+        const size_t need = (pos > 0 ? 1 : 0) + tokLen;
+        if (pos + need + 1 > outCap) return false;
+        if (pos > 0) out[pos++] = ' ';
+        memcpy(out + pos, start, tokLen);
+        pos += tokLen;
+    }
+    out[pos] = '\0';
+    return true;
+}
+
+}  // namespace
+
+bool apiPrdUriAllowed(const char* uri, const char* rules) {
+    if (!uri || !uri[0] || !rules || !rules[0]) return false;
+
+    const char* hash = strchr(uri, '#');
+    const size_t uriLen = hash ? static_cast<size_t>(hash - uri) : strlen(uri);
+    const char* qmark = static_cast<const char*>(memchr(uri, '?', uriLen));
+    const char* path = uri;
+    const size_t pathLen = qmark ? static_cast<size_t>(qmark - uri) : uriLen;
+    const char* query = qmark ? (qmark + 1) : nullptr;
+    const size_t queryLen = qmark ? (uriLen - pathLen - 1) : 0;
+
+    const char* p = rules;
+    while (*p) {
+        while (*p && isApiPrdRuleSep(static_cast<unsigned char>(*p))) ++p;
+        if (!*p) break;
+        const char* tok = p;
+        while (*p && !isApiPrdRuleSep(static_cast<unsigned char>(*p))) ++p;
+        const size_t tokLen = static_cast<size_t>(p - tok);
+        if (!validApiPrdRuleToken(tok, tokLen)) continue;
+
+        if (tok[0] == '/') {
+            const char* rq = static_cast<const char*>(memchr(tok, '?', tokLen));
+            if (rq) {
+                const size_t rPathLen = static_cast<size_t>(rq - tok);
+                const char* kv = rq + 1;
+                const size_t kvLen = tokLen - rPathLen - 1;
+                const char* eq = static_cast<const char*>(memchr(kv, '=', kvLen));
+                if (eq &&
+                    apiPrdPathMatches(path, pathLen, tok, rPathLen) &&
+                    apiPrdQueryMatches(query, queryLen,
+                                       kv, static_cast<size_t>(eq - kv),
+                                       eq + 1, static_cast<size_t>((kv + kvLen) - (eq + 1)))) {
+                    return true;
+                }
+            } else if (apiPrdPathMatches(path, pathLen, tok, tokLen)) {
+                return true;
+            }
+        } else {
+            const char* eq = static_cast<const char*>(memchr(tok, '=', tokLen));
+            if (eq &&
+                apiPrdQueryMatches(query, queryLen,
+                                   tok, static_cast<size_t>(eq - tok),
+                                   eq + 1, static_cast<size_t>((tok + tokLen) - (eq + 1)))) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -1549,6 +1778,34 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     Capture& capture = scratch->capture;
 
     parseRequestMeta(request, hit, capture);
+
+    // L7 selective request filter for api-prd.vn.cloud.tesla.cn (port 443):
+    // When enabled, only URIs matching apiPrdRules (default: uuid=music) are
+    // forwarded upstream; everything else (e.g. /firmware/packages/signature,
+    // or /feature_configuration when FSD mock is off) is blocked locally with
+    // 403 without touching UpstreamGuard or opening an upstream connection.
+    const bool isApiPrd = localPort(request) != kMothershipHttpPort;
+    if (isApiPrd) {
+        bool filterOn = false;
+        char rules[kApiPrdRuleCapacity] = {};
+        lockState();
+        filterOn = gState.apiPrdFilterEnabled;
+        if (filterOn) strlcpy(rules, gState.apiPrdRules, sizeof(rules));
+        unlockState();
+        if (filterOn && !apiPrdUriAllowed(request->uri, rules)) {
+            strlcpy(hit.kind, "BLOCK", sizeof(hit.kind));
+            strlcpy(hit.mode, "block", sizeof(hit.mode));
+            strlcpy(hit.reqCtype, capture.ctype, sizeof(hit.reqCtype));
+            strlcpy(hit.vin, capture.vin, sizeof(hit.vin));
+            const bool chunkedReq = isChunkedRequest(request);
+            const bool closeConnection = chunkedReq || request->content_len > 8192;
+            discardRequestBody(request, 8192);
+            finishJsonError(request, hit, nullptr, 403, "{\"error\":\"blocked_by_policy\"}", closeConnection);
+            recordHit(hit, nullptr);
+            return closeConnection ? ESP_FAIL : ESP_OK;
+        }
+    }
+
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
 
@@ -1571,6 +1828,23 @@ bool autoOffOnHit() {
     const bool value = gState.autoOffOnHit;
     unlockState();
     return value;
+}
+
+bool apiPrdFilterEnabled() {
+    lockState();
+    const bool value = gState.apiPrdFilterEnabled;
+    unlockState();
+    return value;
+}
+
+size_t copyApiPrdRules(char* output, size_t capacity) {
+    lockState();
+    const size_t length = strlen(gState.apiPrdRules);
+    if (output && capacity > 0) {
+        strlcpy(output, gState.apiPrdRules, capacity);
+    }
+    unlockState();
+    return length;
 }
 
 Mode mode() {
@@ -1632,6 +1906,25 @@ bool setEnabled(bool value) {
 bool setAutoOffOnHit(bool value) {
     lockState();
     gState.autoOffOnHit = value;
+    unlockState();
+    return persistSettings();
+}
+
+bool setApiPrdFilterEnabled(bool value) {
+    lockState();
+    gState.apiPrdFilterEnabled = value;
+    unlockState();
+    syncDnsRedirect();
+    return persistSettings();
+}
+
+bool setApiPrdFilterRules(const char* value) {
+    char normalized[kApiPrdRuleCapacity] = {};
+    if (!normalizeApiPrdRules(value, normalized, sizeof(normalized))) {
+        return false;
+    }
+    lockState();
+    strlcpy(gState.apiPrdRules, normalized, sizeof(gState.apiPrdRules));
     unlockState();
     return persistSettings();
 }
@@ -1752,6 +2045,7 @@ void clearHits() {
     gHitTotal = 0;
     gObserveTotal = 0;
     gFlowTotal = 0;
+    gBlockedTotal = 0;
     memset(gHits, 0, sizeof(gHits));
     portEXIT_CRITICAL(&gHitMux);
     portENTER_CRITICAL(&gLastResponseMux);
@@ -1798,6 +2092,13 @@ uint32_t flowCount() {
     return value;
 }
 
+uint32_t blockedCount() {
+    portENTER_CRITICAL(&gHitMux);
+    const uint32_t value = gBlockedTotal;
+    portEXIT_CRITICAL(&gHitMux);
+    return value;
+}
+
 uint32_t dnsRedirectCount() {
     uint32_t total = 0;
     char last[128];
@@ -1818,16 +2119,20 @@ static bool readRecentHandshake(size_t index, Handshake& out);
 void appendStatusJson(String& out) {
     bool enabledNow;
     bool autoOffNow;
+    bool apiPrdFilterNow;
     Mode modeNow;
     char hostNow[kHostCapacity];
+    char apiPrdRulesNow[kApiPrdRuleCapacity];
     char md5Now[33];
     size_t bytesNow;
     size_t fieldsNow;
     lockState();
     enabledNow = gState.enabled;
     autoOffNow = gState.autoOffOnHit;
+    apiPrdFilterNow = gState.apiPrdFilterEnabled;
     modeNow = gState.mode;
     strlcpy(hostNow, gState.host, sizeof(hostNow));
+    strlcpy(apiPrdRulesNow, gState.apiPrdRules, sizeof(apiPrdRulesNow));
     strlcpy(md5Now, gState.md5, sizeof(md5Now));
     bytesNow = gState.bytes;
     fieldsNow = gState.fields;
@@ -1842,6 +2147,8 @@ void appendStatusJson(String& out) {
     out += ",\"active\":"; out += gActive ? "true" : "false";
     out += ",\"enabled\":"; out += enabledNow ? "true" : "false";
     out += ",\"autoOffOnHit\":"; out += autoOffNow ? "true" : "false";
+    out += ",\"apiPrdFilter\":"; out += apiPrdFilterNow ? "true" : "false";
+    out += ",\"apiPrdRules\":\""; jsonEscape(out, apiPrdRulesNow); out += "\"";
     out += ",\"autoOffPending\":"; out += client_config::autoOffPending() ? "true" : "false";
     out += ",\"autoOffRemainingSec\":"; out += String(static_cast<unsigned long>(client_config::autoOffRemainingSec()));
     out += ",\"autoDisabledCount\":"; out += String(static_cast<unsigned long>(autoDisabledCount()));
@@ -1860,6 +2167,7 @@ void appendStatusJson(String& out) {
     out += ",\"hits\":"; out += String(static_cast<unsigned>(hitCount()));
     out += ",\"observes\":"; out += String(static_cast<unsigned>(observeCount()));
     out += ",\"flows\":"; out += String(static_cast<unsigned>(flowCount()));
+    out += ",\"blocked\":"; out += String(static_cast<unsigned>(blockedCount()));
     out += ",\"dnsRedirects\":"; out += String(static_cast<unsigned>(dnsTotal));
     out += ",\"dnsLast\":\""; jsonEscape(out, dnsLast); out += "\"";
 
@@ -1910,8 +2218,8 @@ void appendStatusJson(String& out) {
         Hit recent;
         if (!readRecentHit(i, recent)) break;
         // Windows fsd_panel's timeline only lists feature_configuration
-        // intercepts; non-FSD FLOW entries stay in the JSONL log.
-        if (strcmp(recent.kind, "FLOW") == 0) continue;
+        // intercepts; non-FSD FLOW/BLOCK entries stay in the JSONL log.
+        if (strcmp(recent.kind, "FLOW") == 0 || strcmp(recent.kind, "BLOCK") == 0) continue;
         if (shown) out += ',';
         ++shown;
         out += "{\"kind\":\""; jsonEscape(out, recent.kind); out += "\"";
