@@ -160,8 +160,7 @@ async function refresh(){
     document.getElementById('bUp').textContent='上游：'+(d.upstreamConnected?(d.upstreamSSID||'已连接'):'未启用');
     document.getElementById('bUp').className='badge '+(d.upstreamConnected?'ok':'');
     var fsdBadge=document.getElementById('bFsd');
-    if(f.safeMode){fsdBadge.textContent='FSD：安全模式暂停';fsdBadge.className='badge bad';}
-    else if(f.enabled&&!f.active){fsdBadge.textContent='FSD：未监听（自动恢复中）';fsdBadge.className='badge bad';}
+    if(f.enabled&&!f.active){fsdBadge.textContent='FSD：未监听（自动恢复中）';fsdBadge.className='badge bad';}
     else if(f.enabled&&f.autoOffPending){fsdBadge.textContent='FSD：已下发 · '+(f.autoOffRemainingSec||0)+'s 后自动关闭';fsdBadge.className='badge ok';}
     else if(f.enabled){fsdBadge.textContent='FSD：开 / '+(f.mode||'--');fsdBadge.className='badge ok';}
     else{fsdBadge.textContent='FSD：关'+(f.autoDisabledCount?'（已自动关闭）':'');fsdBadge.className='badge';}
@@ -191,7 +190,7 @@ async function refresh(){
       (f.lastError?(' · 异常:'+f.lastError):'');
     var fhEl=document.getElementById('fsdHealth');
     fhEl.textContent=fh;
-    fhEl.style.color=(f.safeMode||(f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
+    fhEl.style.color=((f.enabled&&!f.active)||f.lastError)?'#f85149':(f.active&&f.enabled?'#3fb950':'#8b949e');
     var nets=d.upstreamNetworks||[];
     document.getElementById('netRows').innerHTML=nets.map(function(n){
       return '<tr><td>'+esc(n.ssid)+'</td><td>'+(n.connected?'<span style="color:#3fb950">已连接</span>':(n.active?'<span style="color:#d29922">连接中</span>':'<span class="dim">未连接</span>'))+'</td><td><button class="red" data-del="'+esc(n.ssid)+'">删除</button></td></tr>';

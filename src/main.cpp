@@ -468,6 +468,7 @@ static const char* resetReasonName() {
 #if ESP_IDF_VERSION_MAJOR >= 5
         case ESP_RST_USB: return "usb";
         case ESP_RST_JTAG: return "jtag";
+        case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
 #endif
         default: return "unknown";
     }
@@ -529,13 +530,6 @@ void wifiBridgeLog(const char* msg) {
 
 bool wifiBridgeOtaActive() {
     return otaIsActive();
-}
-
-void wifiBridgeTriggerRestart(const char* reason) {
-    saveRestartReason(reason ? reason : "fsd-watchdog");
-    flushLogsToSpiffs();
-    delay(150);
-    ESP.restart();
 }
 #endif
 
@@ -1166,6 +1160,7 @@ static void setupWebServer() {
             json += ",\"lastBlockedAt\":"; json += String(entries[i].lastBlockedAtUptimeSeconds);
             json += "}";
         }
+        delete[] entries;
         json += "]";
         json += ",\"heap\":"; json += String(ESP.getFreeHeap());
         json += ",\"minHeap\":"; json += String(ESP.getMinFreeHeap());
@@ -1175,7 +1170,6 @@ static void setupWebServer() {
         fsd_mock::appendStatusJson(json);
 #endif
         json += "}";
-        delete[] entries;
         req->send(200, "application/json", json);
     });
 
@@ -1469,22 +1463,20 @@ void setup() {
     pinMode(PIN_LED, OUTPUT);
     digitalWrite(PIN_LED, LOW);
 
-    // ── Crash counter / safe mode ──────────────────────────────────
-    // If the device crashes 3+ times in a row within 60 s, enter safe mode
-    // (skip FSD HTTPS/HTTP listeners) so the user can recover via OTA.
+    // ── Safe mode disabled: always self-heal automatically ─────────
+    // Never pause FSD listeners into safe mode on reboot/crash; clean any
+    // legacy NVS crash counter left by older firmware so upgrades recover
+    // automatically without manual intervention.
+    safeModeActive = false;
     {
         Preferences sysPrefs;
-        sysPrefs.begin("sys", false);
-        int crashes = sysPrefs.getInt("crashes", 0) + 1;
-        if (crashes >= 3) {
-            safeModeActive = true;
-            sysPrefs.putInt("crashes", 0);
-        } else {
-            sysPrefs.putInt("crashes", crashes);
+        if (sysPrefs.begin("sys", false)) {
+            if (sysPrefs.getInt("crashes", 0) != 0) {
+                sysPrefs.putInt("crashes", 0);
+            }
+            sysPrefs.end();
         }
-        sysPrefs.end();
-        DLOG(safeModeActive ? "[SAFE MODE] crash count=%d, counter reset\n"
-                            : "[Boot] crash count=%d\n", crashes);
+        DLOG("[Boot] reset=%s (auto-heal enabled, safe mode off)\n", resetReasonName());
     }
 
     // ── Watchdog: 30-second timeout ────────────────────────────────
@@ -1517,20 +1509,8 @@ void setup() {
 
     // Reset reason — helps diagnose field crashes without a serial cable.
     {
-        const char* why;
-        switch (esp_reset_reason()) {
-            case ESP_RST_POWERON:   why = "power-on";    break;
-            case ESP_RST_SW:        why = "sw restart";  break;
-            case ESP_RST_PANIC:     why = "PANIC";       break;
-            case ESP_RST_INT_WDT:   why = "INT_WDT";     break;
-            case ESP_RST_TASK_WDT:  why = "TASK_WDT";    break;
-            case ESP_RST_WDT:       why = "WDT other";   break;
-            case ESP_RST_BROWNOUT:  why = "BROWNOUT";    break;
-            case ESP_RST_DEEPSLEEP: why = "deepsleep";   break;
-            default:                why = "unknown";     break;
-        }
         char msg[48];
-        snprintf(msg, sizeof(msg), "reset: %s", why);
+        snprintf(msg, sizeof(msg), "reset: %s", resetReasonName());
         addDiagLog(0, msg);
 
         Preferences diag;
@@ -1606,10 +1586,8 @@ void setup() {
     // Start web server
     setupWebServer();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
-    const bool clientConfigReady = client_config::start(safeModeActive);
-    if (safeModeActive) {
-        addDiagLog(1, "SAFE MODE: FSD listeners skipped at boot (manual toggle/reboot recovers)");
-    } else if (!clientConfigReady) {
+    const bool clientConfigReady = client_config::start(false);
+    if (!clientConfigReady) {
         addDiagLog(1, "FSD client_config startup failed");
     } else if (!fsd_mock::enabled()) {
         addDiagLog(0, "FSD mock standby (off by default)");
@@ -1690,16 +1668,6 @@ void loop() {
     if (nowMs - lastFlushMs >= 3000) {
         lastFlushMs = nowMs;
         flushLogsToSpiffs();
-    }
-
-    // Clear crash counter after 60 s of healthy uptime.
-    static bool loopCrashCleared = false;
-    if (!loopCrashCleared && nowMs - gBootMillis >= 60000) {
-        loopCrashCleared = true;
-        Preferences sysPrefs;
-        sysPrefs.begin("sys", false);
-        if (sysPrefs.getInt("crashes", 0) != 0) sysPrefs.putInt("crashes", 0);
-        sysPrefs.end();
     }
 
     // Heap guard warning log

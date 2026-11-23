@@ -46,6 +46,7 @@ def check_static_contracts() -> None:
     assert "wifiBridgeRegisterEvents();" in MAIN_SRC
     assert "wifiBridgeConfigureApIpAndDns();" in MAIN_SRC
     assert "client_config::serviceListeners();" in MAIN_SRC
+    assert "safeModeActive = true" not in MAIN_SRC, "FSD bridge must never lock out listeners via safe mode"
     assert "uint8_t enabled = 0;" in FSD_SRC, "FSD mock Settings::enabled must default to 0"
     assert "bool enabled = false;" in FSD_SRC, "FSD mock State::enabled must default to false"
     assert "uint8_t autoOffOnHit = 1;" in FSD_SRC, "FSD mock autoOffOnHit must default to 1"

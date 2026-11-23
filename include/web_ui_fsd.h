@@ -198,8 +198,7 @@ function render(st,hits,hs,cfg,payloadText){
   var fm=st.fsdMock||{}; var now=new Date();
   document.getElementById('nowText').textContent=now.toLocaleString();
   var fsdBadge=document.getElementById('fsdBadge');
-  if(fm.safeMode){ fsdBadge.textContent='FSD：安全模式暂停'; fsdBadge.className='badge bad'; }
-  else if(fm.enabled && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
+  if(fm.enabled && !fm.active){ fsdBadge.textContent='FSD：未监听（自动恢复中）'; fsdBadge.className='badge bad'; }
   else if(fm.enabled && fm.autoOffPending){ fsdBadge.textContent='FSD：已下发 · '+(fm.autoOffRemainingSec||0)+'s 后自动关闭'; fsdBadge.className='badge warn'; }
   else if(fm.enabled){ fsdBadge.textContent='FSD：开 / '+(fm.mode||'reply'); fsdBadge.className='badge ok'; }
   else { fsdBadge.textContent='FSD：关'+(fm.autoDisabledCount?'（已自动关闭）':''); fsdBadge.className='badge'; }
@@ -211,7 +210,7 @@ function render(st,hits,hs,cfg,payloadText){
     (fm.lastError?(' · 异常:'+fm.lastError):'');
   var fhEl=document.getElementById('fsdHealth');
   fhEl.textContent=fh;
-  fhEl.style.color=(fm.safeMode||(fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
+  fhEl.style.color=((fm.enabled&&!fm.active)||fm.lastError)?'#f85149':(fm.active&&fm.enabled?'#3fb950':'#8b949e');
   var hsOk=fm.handshake?fm.handshake.ok||0:0, hsFail=fm.handshake?fm.handshake.fail||0:0;
   var hsBadge=document.getElementById('hsBadge');
   hsBadge.textContent=hsOk>0?('握手：TLS 已建立 ('+(fm.handshake.tls||'TLS')+')'):('握手：'+(hsFail>0?'失败':'未建立'));

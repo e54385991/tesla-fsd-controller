@@ -9,6 +9,7 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <cJSON.h>
+#include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
@@ -25,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <strings.h>
 #include <time.h>
@@ -765,9 +767,64 @@ void finishJsonError(httpd_req_t* request, Hit& hit, char* responseBody,
     if (responseBody) strlcpy(responseBody, json, kLastResponseCapacity);
 }
 
+struct UpstreamGuard {
+    uint8_t consecutiveFailures = 0;
+    uint32_t cooldownUntilMs = 0;
+    uint32_t lastStaIp = 0;
+};
+
+// Per-listener upstream circuit breaker: index 0 = 4567 mothership HTTP,
+// index 1 = 443 api-prd HTTPS. Unreachable upstream hosts (blocked port/firewall
+// or private endpoint) fast-fail during cooldown instead of stalling the
+// single-threaded httpd task or starving /feature_configuration delivery.
+UpstreamGuard gUpstreamGuards[2];
+portMUX_TYPE gUpstreamGuardMux = portMUX_INITIALIZER_UNLOCKED;
+
 bool upstreamReady() {
     return WiFi.status() == WL_CONNECTED &&
         static_cast<uint32_t>(WiFi.localIP()) != 0;
+}
+
+bool upstreamGuardCoolingDown(bool secure, uint32_t staIp, uint32_t now) {
+    const size_t idx = secure ? 1 : 0;
+    bool cooling = false;
+    portENTER_CRITICAL(&gUpstreamGuardMux);
+    UpstreamGuard& g = gUpstreamGuards[idx];
+    if (g.lastStaIp != staIp) {
+        g.lastStaIp = staIp;
+        g.consecutiveFailures = 0;
+        g.cooldownUntilMs = 0;
+    } else if (g.consecutiveFailures >= 2 &&
+               static_cast<int32_t>(now - g.cooldownUntilMs) < 0) {
+        cooling = true;
+    }
+    portEXIT_CRITICAL(&gUpstreamGuardMux);
+    return cooling;
+}
+
+void upstreamGuardRecordSuccess(bool secure, uint32_t staIp) {
+    const size_t idx = secure ? 1 : 0;
+    portENTER_CRITICAL(&gUpstreamGuardMux);
+    UpstreamGuard& g = gUpstreamGuards[idx];
+    g.lastStaIp = staIp;
+    g.consecutiveFailures = 0;
+    g.cooldownUntilMs = 0;
+    portEXIT_CRITICAL(&gUpstreamGuardMux);
+}
+
+void upstreamGuardRecordFailure(bool secure, uint32_t staIp, uint32_t now) {
+    static constexpr uint32_t kCooldownMs[] = {0, 0, 15000, 30000, 60000};
+    const size_t idx = secure ? 1 : 0;
+    portENTER_CRITICAL(&gUpstreamGuardMux);
+    UpstreamGuard& g = gUpstreamGuards[idx];
+    if (g.lastStaIp != staIp) {
+        g.lastStaIp = staIp;
+        g.consecutiveFailures = 0;
+    }
+    if (g.consecutiveFailures < 4) ++g.consecutiveFailures;
+    const uint32_t delayMs = kCooldownMs[g.consecutiveFailures];
+    g.cooldownUntilMs = delayMs ? (now + delayMs) : 0;
+    portEXIT_CRITICAL(&gUpstreamGuardMux);
 }
 
 // Captures upstream HTTP response headers via HTTP_EVENT_ON_HEADER.
@@ -888,6 +945,27 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const bool secure = port != kMothershipHttpPort;
     const bool chunkedReq = isChunkedRequest(request);
     if (chunkedReq) closeConnection = true;
+
+    const uint32_t staIp = static_cast<uint32_t>(WiFi.localIP());
+    if (upstreamGuardCoolingDown(secure, staIp, millis())) {
+        closeConnection = true;
+        discardRequestBody(request, 8192);
+        finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_unreachable\"}");
+        return 502;
+    }
+
+    // Dual TLS (active car 443 session + upstream HTTPS client) needs ~24 KB.
+    // Fail fast with 503 when internal RAM is already thin instead of risking
+    // an OOM panic while keeping local /feature_configuration delivery alive.
+    if (secure &&
+        (ESP.getFreeHeap() < 24000 ||
+         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 8192)) {
+        closeConnection = true;
+        discardRequestBody(request, 8192);
+        finishJsonError(request, hit, responseBody, 503, "{\"error\":\"low_heap\"}");
+        return 503;
+    }
+
     const char* upstreamHost = secure ? kApiPrdHost : kMothershipUpstreamHost;
     char authority[kHostCapacity + 8] = {};
     if (secure) {
@@ -910,7 +988,11 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = upstreamMethod(request->method);
-    config.timeout_ms = 5000;
+    config.timeout_ms = 2500;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    // Wi-Fi bridge routes IPv4 only; avoid 15 s IPv6 AAAA DNS timeout stalls.
+    config.addr_type = HTTP_ADDR_TYPE_INET;
+#endif
     config.disable_auto_redirect = true;
     config.transport_type = secure ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
     config.skip_cert_common_name_check = secure;
@@ -961,19 +1043,24 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     capture.requestBytes = static_cast<uint32_t>(bodyLength);
     capture.head[0] = '\0';
     capture.requestMd5[0] = '\0';
+    char buffer[512];
     bool clientReadFailed = false;
+    const uint32_t forwardStartMs = millis();
     gInUpstreamRequest = true;
     esp_err_t error = esp_http_client_open(client, static_cast<int>(bodyLength));
     if (error == ESP_OK && bodyLength > 0) {
         md5_context_t reqMd5;
         esp_rom_md5_init(&reqMd5);
-        char reqChunk[512];
         size_t remaining = bodyLength;
         size_t captured = 0;
         int timeouts = 0;
         while (remaining > 0) {
-            const size_t want = remaining < sizeof(reqChunk) ? remaining : sizeof(reqChunk);
-            const int received = httpd_req_recv(request, reqChunk, want);
+            if (millis() - forwardStartMs >= kMaxForwardDurationMs) {
+                error = ESP_FAIL;
+                break;
+            }
+            const size_t want = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+            const int received = httpd_req_recv(request, buffer, want);
             if (received == HTTPD_SOCK_ERR_TIMEOUT) {
                 if (++timeouts > 3) {
                     clientReadFailed = true;
@@ -988,9 +1075,9 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
                 break;
             }
             const size_t receivedSize = static_cast<size_t>(received);
-            esp_rom_md5_update(&reqMd5, reqChunk, static_cast<uint32_t>(received));
-            captureBodyHead(reqChunk, receivedSize, capture, captured);
-            const int written = esp_http_client_write(client, reqChunk, received);
+            esp_rom_md5_update(&reqMd5, buffer, static_cast<uint32_t>(received));
+            captureBodyHead(buffer, receivedSize, capture, captured);
+            const int written = esp_http_client_write(client, buffer, received);
             if (written != received) {
                 error = ESP_FAIL;
                 break;
@@ -1005,7 +1092,9 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
         }
     }
-    if (error == ESP_OK && esp_http_client_fetch_headers(client) < 0) {
+    if (error == ESP_OK &&
+        (millis() - forwardStartMs >= kMaxForwardDurationMs ||
+         esp_http_client_fetch_headers(client) < 0)) {
         error = ESP_FAIL;
     }
     gInUpstreamRequest = false;
@@ -1023,9 +1112,11 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             finishJsonError(request, hit, responseBody, 400, "{\"error\":\"request_read_failed\"}");
             return 400;
         }
+        upstreamGuardRecordFailure(secure, staIp, millis());
         finishJsonError(request, hit, responseBody, 502, "{\"error\":\"upstream_failed\"}");
         return 502;
     }
+    upstreamGuardRecordSuccess(secure, staIp);
 
     int status = esp_http_client_get_status_code(client);
     if (status <= 0) status = 502;
@@ -1049,13 +1140,11 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const bool noBodyResponse = (request->method == HTTP_HEAD || status == 204 || status == 304);
     md5_context_t md5;
     esp_rom_md5_init(&md5);
-    char buffer[512];
     size_t total = 0;
     size_t preview = 0;
     size_t bodyStored = 0;
     bool sendOk = true;
     bool streamCapped = false;
-    const uint32_t streamStartMs = millis();
     if (!noBodyResponse) {
         int read = 0;
         while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
@@ -1083,7 +1172,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
             // Hard wall-clock & byte bounds keep a slow/huge upstream FLOW from
             // monopolizing the single-threaded 443 server.
-            if (millis() - streamStartMs >= kMaxForwardDurationMs ||
+            if (millis() - forwardStartMs >= kMaxForwardDurationMs ||
                 total >= kMaxForwardResponseBytes) {
                 streamCapped = true;
                 closeConnection = true;
@@ -1348,21 +1437,39 @@ bool isFeatureConfigurationUri(const char* uri) {
     return false;
 }
 
+struct RequestScratch {
+    Hit hit;
+    Capture capture;
+};
+
+static esp_err_t sendNoMemoryError(httpd_req_t* request) {
+    httpd_resp_set_status(request, "500 Internal Server Error");
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Connection", "close");
+    httpd_resp_send(request, "{\"error\":\"no_memory\"}", 21);
+    return ESP_FAIL;
+}
+
 esp_err_t handleRequest(httpd_req_t* request) {
     if (!enabled()) return forwardPassthrough(request);
 
-    Hit hit;
-    Capture capture;
+    std::unique_ptr<RequestScratch> scratch(new (std::nothrow) RequestScratch());
+    if (!scratch) return sendNoMemoryError(request);
+    Hit& hit = scratch->hit;
+    Capture& capture = scratch->capture;
+
     parseRequestMeta(request, hit, capture);
     const bool observe = mode() == Mode::Observe;
     strlcpy(hit.kind, observe ? "OBSERVE" : "HIT", sizeof(hit.kind));
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
     if (observe) {
-        char responseBody[kLastResponseCapacity];
+        std::unique_ptr<char[]> responseBody(new (std::nothrow) char[kLastResponseCapacity]);
         bool closeConnection = false;
-        forwardRequest(request, capture, hit, responseBody, sizeof(responseBody), closeConnection);
-        recordHit(hit, responseBody);
+        forwardRequest(request, capture, hit,
+                       responseBody.get(), responseBody ? kLastResponseCapacity : 0,
+                       closeConnection);
+        recordHit(hit, responseBody.get());
         return closeConnection ? ESP_FAIL : ESP_OK;
     }
 
@@ -1436,13 +1543,16 @@ esp_err_t handleRequest(httpd_req_t* request) {
 }
 
 esp_err_t forwardPassthrough(httpd_req_t* request) {
-    Hit hit;
-    Capture capture;
+    std::unique_ptr<RequestScratch> scratch(new (std::nothrow) RequestScratch());
+    if (!scratch) return sendNoMemoryError(request);
+    Hit& hit = scratch->hit;
+    Capture& capture = scratch->capture;
+
     parseRequestMeta(request, hit, capture);
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
 
-    // FLOW records do not overwrite gLastResponse, so avoid a stack buffer.
+    // FLOW records do not overwrite gLastResponse, so avoid a response buffer.
     bool closeConnection = false;
     forwardRequest(request, capture, hit, nullptr, 0, closeConnection);
     recordHit(hit, nullptr);

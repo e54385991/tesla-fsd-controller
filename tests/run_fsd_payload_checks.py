@@ -462,27 +462,172 @@ def check_tls_policy() -> None:
     assert "config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
     assert "config.max_resp_headers = kFsdMaxRespHeaders;" in server
     assert "config.httpd.max_resp_headers = kFsdMaxRespHeaders;" in server
-    # Anti-hang & self-healing contracts (Part 1 + Part 2)
+    # Anti-hang & self-healing contracts (zero manual intervention, no safe-mode lockout, no auto-reboot)
     assert "config.keep_alive_enable = true;" in server
     assert "config.httpd.keep_alive_enable = true;" in server
     assert "config.httpd.lru_purge_enable = true;" in server
     assert "config.tls_handshake_timeout_ms = 4000;" in server
     assert "httpd_queue_work(" in server
     assert "kHeartbeatIntervalMs = 15000" in server
+    assert "HTTPD_SSL_USER_CB_SESS_CREATE" in server
+    assert "health.pingQueued" in server
+    assert "wifiBridgeTriggerRestart" not in server, "FSD monitor must never auto-reboot the device"
+    assert "ESP.restart" not in server, "FSD monitor must never auto-reboot the device"
+    assert "safe_mode" not in server, "FSD listeners must never pause into safe_mode"
+    assert "safeModeActive = true" not in (ROOT / "src/main.cpp").read_text(), "safeModeActive must never lock out FSD"
     assert "kAutoOffDelayMs = 120000" in (ROOT / "include/mod_client_config.h").read_text()
     assert "kMaxForwardDurationMs = 15000" in mock
     assert "kMaxForwardResponseBytes = 262144" in mock
     assert "kMaxFsdRequestBodyBytes = 65536" in mock
+    assert "upstream_unreachable" in mock
+    assert "HTTP_ADDR_TYPE_INET" in mock
+    assert "struct UpstreamGuard" in mock
+    assert "struct RequestScratch" in mock
     assert "uint8_t enabled = 0;" in mock
     assert "uint8_t autoOffOnHit = 1;" in mock
     assert "client_config::scheduleAutoOff();" in mock
     assert "mbedtls_ssl_get_version" in mock
 
-    # UI must expose autoOff toggle and distinguish active vs enabled/safeMode.
+    # UI must expose autoOff toggle and auto-recovery status without safe-mode lockout/buttons.
     for ui_path in ("include/web_ui_manage.h", "include/web_ui_fsd.h"):
         ui_text = (ROOT / ui_path).read_text()
-        for needle in ("fsdAutoOff", "autoOffPending", "autoOffRemainingSec", "fsd443", "fsd4567", "safeMode", "lastError"):
+        for needle in ("fsdAutoOff", "autoOffPending", "autoOffRemainingSec", "fsd443", "fsd4567", "lastError"):
             assert needle in ui_text, f"{ui_path}: missing {needle}"
+        assert "安全模式暂停" not in ui_text, f"{ui_path}: safe-mode lockout banner must be removed"
+        assert "fsdRecover" not in ui_text, f"{ui_path}: manual recover button must not exist"
+
+
+def check_safe_mode_and_heartbeat() -> None:
+    """Compile production UpstreamGuard + checkServerHeartbeat under ASan/UBSan."""
+    cxx = shutil.which("c++")
+    if not cxx:
+        return
+    server_src = (ROOT / "src/client_config.cpp").read_text()
+    mock_src = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted_hb = "\n".join((
+        _extract_block(server_src, "struct ListenerHealth {"),
+        _extract_block(server_src, "static void heartbeatWork("),
+        _extract_block(server_src, "static void checkServerHeartbeat("),
+    ))
+    extracted_guard = "\n".join((
+        _extract_block(mock_src, "struct UpstreamGuard {"),
+        "static UpstreamGuard gUpstreamGuards[2];",
+        "static int gUpstreamGuardMux = 0;",
+        _extract_block(mock_src, "bool upstreamGuardCoolingDown("),
+        _extract_block(mock_src, "void upstreamGuardRecordSuccess("),
+        _extract_block(mock_src, "void upstreamGuardRecordFailure("),
+    ))
+    harness = r'''
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+#define portENTER_CRITICAL(x) do { (void)(x); } while (0)
+#define portEXIT_CRITICAL(x) do { (void)(x); } while (0)
+
+typedef int esp_err_t;
+constexpr esp_err_t ESP_OK = 0;
+constexpr esp_err_t ESP_FAIL = -1;
+typedef void* httpd_handle_t;
+typedef void (*httpd_work_fn_t)(void*);
+
+static constexpr uint8_t kMissedPauseDns = 2;
+static uint32_t gRecoveryCount = 0;
+static std::string gLastError;
+static int gListenersReady = 1;
+static int gQueueCalls = 0;
+static bool gFailNextQueue = false;
+static bool gRunQueuedWork = true;
+
+static void setLastErrorText(const char* text) { gLastError = text ? text : ""; }
+static void clearLastError() { gLastError.clear(); }
+static void wifiBridgeLog(const char*) {}
+namespace fsd_mock {
+static void setListenersReady(bool ready) { gListenersReady = ready ? 1 : 0; }
+}
+static esp_err_t httpd_queue_work(httpd_handle_t, httpd_work_fn_t fn, void* arg) {
+    ++gQueueCalls;
+    if (gFailNextQueue) {
+        gFailNextQueue = false;
+        return ESP_FAIL;
+    }
+    if (gRunQueuedWork && fn) fn(arg);
+    return ESP_OK;
+}
+''' + extracted_guard + "\n" + extracted_hb + r'''
+int main() {
+    // 1) Upstream circuit breaker isolates 4567 vs 443, cools down after 2 failures,
+    //    auto-probes after cooldown, and resets on success or STA IP change.
+    const uint32_t ipA = 0x0A000002u;
+    const uint32_t ipB = 0x0A000003u;
+    assert(!upstreamGuardCoolingDown(false, ipA, 1000));
+    upstreamGuardRecordFailure(false, ipA, 1000);  // 1st fail: no cooldown yet
+    assert(!upstreamGuardCoolingDown(false, ipA, 1001));
+    upstreamGuardRecordFailure(false, ipA, 2000);  // 2nd fail: 15s cooldown on 4567
+    assert(upstreamGuardCoolingDown(false, ipA, 2001));
+    assert(upstreamGuardCoolingDown(false, ipA, 16999));
+    assert(!upstreamGuardCoolingDown(true, ipA, 2001));  // 443 unaffected!
+    assert(!upstreamGuardCoolingDown(false, ipA, 17000));  // cooldown expired -> probe allowed
+    upstreamGuardRecordFailure(false, ipA, 17000);  // 3rd fail: 30s cooldown
+    assert(upstreamGuardCoolingDown(false, ipA, 46999));
+    assert(!upstreamGuardCoolingDown(false, ipA, 47000));
+    // STA IP change resets cooldown immediately.
+    upstreamGuardRecordFailure(false, ipA, 47000);  // 4th fail: 60s cooldown
+    assert(upstreamGuardCoolingDown(false, ipA, 50000));
+    assert(!upstreamGuardCoolingDown(false, ipB, 50000));
+    // Success resets failure streak.
+    upstreamGuardRecordFailure(true, ipB, 51000);
+    upstreamGuardRecordFailure(true, ipB, 52000);
+    assert(upstreamGuardCoolingDown(true, ipB, 53000));
+    upstreamGuardRecordSuccess(true, ipB);
+    assert(!upstreamGuardCoolingDown(true, ipB, 53001));
+
+    // 2) Single transient httpd_queue_work failure must retry and recover cleanly.
+    int dummyServer = 1;
+    ListenerHealth h;
+    gFailNextQueue = true;
+    gRunQueuedWork = true;
+    checkServerHeartbeat(&dummyServer, h, "443", "https_443_unresponsive", true);
+    assert(h.sentSeq == 1 && h.pongSeq == 0 && !h.pingQueued);
+    checkServerHeartbeat(&dummyServer, h, "443", "https_443_unresponsive", true);
+    assert(h.missed == 1 && h.pongSeq == 1 && gListenersReady == 1);
+    checkServerHeartbeat(&dummyServer, h, "443", "https_443_unresponsive", true);
+    assert(h.missed == 0 && gRecoveryCount == 1);
+
+    // 3) Unresponsive 443 pauses DNS at missed=2, does not flood ctrl mailbox,
+    //    never triggers reboot, and automatically resumes DNS once pong arrives.
+    ListenerHealth slow;
+    gRunQueuedWork = false;
+    gQueueCalls = 0;
+    gListenersReady = 1;
+    checkServerHeartbeat(&dummyServer, slow, "443", "https_443_unresponsive", true);
+    assert(gQueueCalls == 1 && slow.pingQueued);
+    for (int m = 1; m <= 6; ++m) {
+        checkServerHeartbeat(&dummyServer, slow, "443", "https_443_unresponsive", true);
+        assert(slow.missed == m && gQueueCalls == 1);
+        assert(gListenersReady == (m < 2 ? 1 : 0));
+    }
+    // Simulate delayed heartbeat completion -> automatically restores DNS and clears error.
+    heartbeatWork(&slow);
+    gRunQueuedWork = true;
+    checkServerHeartbeat(&dummyServer, slow, "443", "https_443_unresponsive", true);
+    assert(slow.missed == 0 && !slow.dnsPaused && gListenersReady == 1 && gLastError.empty());
+    return 0;
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="fsd-hb-") as tmp:
+        cpp = Path(tmp) / "hb.cpp"
+        exe = Path(tmp) / "hb"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        subprocess.run([str(exe)], check=True)
 
 
 def payloads() -> list[str]:
@@ -547,6 +692,7 @@ def main() -> None:
         assert not matches(uri), uri
     check_tls_identity()
     check_tls_policy()
+    check_safe_mode_and_heartbeat()
     check_response_contract()
     check_upstream_header_capture()
     check_payload_compact_and_sum_parity()
