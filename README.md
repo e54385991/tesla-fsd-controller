@@ -26,8 +26,8 @@
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
-| 默认白名单 | 40 条基础 / 地图 / 音乐 / 豆包域名；hermes 车控可选（见下文） |
-| 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn` |
+| 默认白名单 | 38 条基础 / 地图 / 音乐 / 豆包域名；hermes 车控可选（见下文） |
+| 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.*` + `assistant-api.prd.cnn1.vn.cloud.tesla.cn` |
 | FSD 下发 | 默认关闭（可在面板一键开启，`reply` 模式，443/4567 按需启停） |
 
 > 首次启动、恢复出厂或执行 `erase_flash` 后，设备使用上述默认值。之后在面板里改过的配置会保存在 NVS，重启不会丢失。
@@ -115,14 +115,12 @@ Windows 把串口换成 `COMx`。ESP32-S3 进入下载模式：按住 **BOOT**�
 
 ### 默认白名单
 
-首次启动会写入以下 40 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
+首次启动会写入以下 38 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
 
 ```text
-connman.vn.cloud.tesla.cn
 nav-prd-maps.tesla.cn
 media-server-me.tesla.cn
 maps-cn-prd.go.tesla.services
-www.tesla.cn
 
 volcengine.com
 volces.com
@@ -166,7 +164,7 @@ snssdk.com
 bytedance.com
 ```
 
-> 说明：`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
+> 说明：v6 已移除 `connman.vn.cloud.tesla.cn` 与 `www.tesla.cn`；老版本默认列表会自动迁移到 v6，自定义过的列表不动。`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
 
 ### 默认黑名单
 
@@ -174,6 +172,7 @@ bytedance.com
 api-prd.vn.cloud.tesla.cn
 mothership.vn.teslamotors.com
 mothership.vn.cloud.tesla.cn
+assistant-api.prd.cnn1.vn.cloud.tesla.cn
 ```
 
 ### 特殊域名
@@ -181,9 +180,10 @@ mothership.vn.cloud.tesla.cn
 **`hermes-prd.vn.cloud.tesla.cn`（默认不放行；车控可选，更安全）**
 
 - 默认白名单**不包含**该域名（无车控版，更安全）。
-- 需要远程车控时，在管理页勾选 **「启用 hermes 远程车控」**；固件会把它追加到白名单**最后一项**。
-- 取消勾选会把它从白名单移除，其他自定义域名不受影响。
-- 可能触发 Tesla 风控，甚至导致账号 / 车辆被封禁，请谨慎使用。
+- 需要远程车控时，在管理页勾选 **「启用 hermes 远程车控」**；会弹出 **10 秒倒计时确认**，倒计时结束前「确认启用」按钮不可点。
+- 确认后固件把它追加到白名单**最后一项**；取消勾选立即移除，其他自定义域名不受影响。
+- FSD 下发时可能需要保持开启，让车机认为在线并主动请求配置。
+- 如果你之前用过 CAN 模块，或开通 / 改动过 FSD，存在被 Tesla 封禁 FSD 权限的风险；风险自担。
 
 **`api-prd.vn.cloud.tesla.cn`（默认黑名单）**
 
@@ -192,6 +192,11 @@ mothership.vn.cloud.tesla.cn
 - 放行后 Tesla 云端可能改写 FSD 配置，需要自行承担风险。
 - **音乐软件恢复后请立刻把它移回黑名单，或直接断开 Wi-Fi**，不要长期放行。
 - FSD 下发的劫持判断排在 DNS 黑白名单之前：只要「FSD 下发」开启，即使 `api-prd` 在黑名单中，`/feature_configuration` 仍会被本地劫持。
+
+**`assistant-api.prd.cnn1.vn.cloud.tesla.cn`（默认外网黑名单）**
+
+- 语音助手 / 配置相关端点，默认阻断直连，避免云端下发配置。
+- 如语音助手异常且确认需要，可临时加入白名单（同长度白名单优先），用完移回黑名单。
 
 **`mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn`（默认外网黑名单 / 本地劫持）**
 

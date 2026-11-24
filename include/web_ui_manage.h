@@ -89,9 +89,10 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <button id="dnsResetAllow">白名单恢复默认</button>
     <button id="dnsResetBlock">黑名单恢复默认</button>
     <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
-      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行（无车控版更安全）；勾选下方「启用 hermes 远程车控」会追加到白名单末尾，可能被封，谨慎使用。<br>
+      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行（无车控版更安全）；勾选「启用 hermes 远程车控」需等待 10 秒确认，确认后追加到白名单末尾。FSD 下发时可能需要保持开启让车机认为在线；用过 CAN 模块或改过 FSD 的存在被封禁 FSD 权限的风险。<br>
       ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。<br>
-      ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。
+      ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。<br>
+      ⛔ assistant-api.prd.cnn1.vn.cloud.tesla.cn 默认在外网黑名单（语音助手 / 配置端点），避免云端下发配置。
     </div>
     <label style="margin-top:8px"><input type="checkbox" id="hermesControl"> 启用 hermes 远程车控（追加到白名单最后，谨慎）</label>
     <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
@@ -143,10 +144,24 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <button class="primary" id="pinBtn">进入</button><div class="msg bad" id="pinMsg"></div>
 </div></div>
 
+<div class="overlay" id="hermesConfirm"><div class="box" style="max-width:540px">
+  <h3 style="color:#e3b341">⚠️ 启用 hermes 远程车控？</h3>
+  <div style="font-size:12px;line-height:1.8;color:#e3b341">
+    • 启用后会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 追加到白名单最后一项。<br>
+    • FSD 下发时可能需要保持开启，让车机认为在线并主动请求配置。<br>
+    • 如果你之前用过 CAN 模块，或开通 / 改动过 FSD，存在被 Tesla 封禁 FSD 权限的风险。<br>
+    • 风险自担；不需要远程车控时请随时取消勾选。
+  </div>
+  <div class="dim" id="hermesCountdown" style="font-size:12px;margin-top:10px">请阅读以上风险，倒计时结束后才能确认。</div>
+  <button class="primary" id="hermesConfirmBtn" disabled>确认启用（10s）</button>
+  <button id="hermesCancelBtn">取消</button>
+</div></div>
+
 <script>
 'use strict';
 var token=''; try{token=sessionStorage.getItem('fsd_tok')||'';}catch(e){}
 var busy=false;
+var pendingAfterPin=null;
 function q(u){return u+(token?(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token):'');}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function showPin(){document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
@@ -239,17 +254,59 @@ async function saveBridge(){
     '&ipBlockerEnabled='+(document.getElementById('ipBlkEn').checked?1:0)+
     '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
     '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
-  var r=await fetch(q('/api/wifi-bridge/set?'+qs)); setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok); if(r.status===403)showPin(); refresh();
+  var r=await fetch(q('/api/wifi-bridge/set?'+qs));
+  setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok);
+  if(r.status===403){
+    // Keep the local edits (e.g. the hermes tail entry) and retry after PIN.
+    showPin(); pendingAfterPin=saveBridge; return false;
+  }
+  refresh();
+  return r.ok;
 }
-async function toggleHermes(){
+var hermesTimer=null;
+function closeHermesConfirm(){
+  if(hermesTimer){clearInterval(hermesTimer);hermesTimer=null;}
+  document.getElementById('hermesConfirm').style.display='none';
+}
+function showHermesConfirm(){
+  var overlay=document.getElementById('hermesConfirm');
+  var btn=document.getElementById('hermesConfirmBtn');
+  var cd=document.getElementById('hermesCountdown');
+  var left=10;
+  btn.disabled=true; btn.textContent='确认启用（'+left+'s）';
+  cd.textContent='请阅读以上风险，倒计时结束后才能确认。';
+  overlay.style.display='flex';
+  if(hermesTimer) clearInterval(hermesTimer);
+  hermesTimer=setInterval(function(){
+    left--;
+    if(left>0){
+      btn.textContent='确认启用（'+left+'s）';
+    }else{
+      clearInterval(hermesTimer); hermesTimer=null;
+      btn.disabled=false; btn.textContent='确认启用';
+      cd.textContent='倒计时结束，可以确认启用了。';
+    }
+  },1000);
+}
+function applyHermes(want){
   var ta=document.getElementById('dnsAllow');
   var hermes='hermes-prd.vn.cloud.tesla.cn';
-  var want=document.getElementById('hermesControl').checked;
   var parts=(ta.value||'').trim().split(/\s+/).filter(Boolean);
   parts=parts.filter(function(x){return x!==hermes;});
   if(want) parts.push(hermes);
   ta.value=parts.join(' ');
-  await saveBridge();
+}
+async function toggleHermes(){
+  var box=document.getElementById('hermesControl');
+  if(!box.checked){
+    // Disabling is safe and immediate: just remove it from the tail.
+    applyHermes(false);
+    await saveBridge();
+    return;
+  }
+  // Never enable on a single click: revert and require the 10s confirmation.
+  box.checked=false;
+  showHermesConfirm();
 }
 async function resetDns(which){
   var r=await fetch(q('/api/wifi-bridge/set?dnsReset='+which));
@@ -324,6 +381,16 @@ document.getElementById('dnsSave').onclick=saveBridge;
 document.getElementById('dnsResetAllow').onclick=function(){resetDns('allow');};
 document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
 document.getElementById('hermesControl').onchange=toggleHermes;
+document.getElementById('hermesCancelBtn').onclick=function(){
+  closeHermesConfirm();
+  document.getElementById('hermesControl').checked=false;
+};
+document.getElementById('hermesConfirmBtn').onclick=async function(){
+  closeHermesConfirm();
+  document.getElementById('hermesControl').checked=true;
+  applyHermes(true);
+  await saveBridge();
+};
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
 document.getElementById('fsdSave').onclick=saveFsd;
@@ -340,7 +407,8 @@ document.getElementById('logClear').onclick=logClear;
 document.getElementById('reboot').onclick=reboot;
 document.getElementById('pinBtn').onclick=async function(){
   var r=await fetch('/api/pin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pin='+encodeURIComponent(document.getElementById('pinInput').value)});
-  if(r.ok){token=(await r.text()).trim();try{sessionStorage.setItem('fsd_tok',token);}catch(e){}document.getElementById('pinOverlay').style.display='none';refresh();}
+  if(r.ok){token=(await r.text()).trim();try{sessionStorage.setItem('fsd_tok',token);}catch(e){}document.getElementById('pinOverlay').style.display='none';
+    if(pendingAfterPin){var fn=pendingAfterPin;pendingAfterPin=null;fn();}else refresh();}
   else setMsg('pinMsg','PIN 错误',false);
 };
 document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});

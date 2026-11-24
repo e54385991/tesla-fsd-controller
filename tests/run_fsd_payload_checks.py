@@ -409,7 +409,8 @@ def check_port_policy() -> None:
     # Default external blocklist carries both mothership hosts and migrates
     # the v4 api-prd-only default.
     assert "mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn" in bridge
-    assert "kTeslaMinBlockV5" in bridge
+    assert "assistant-api.prd.cnn1.vn.cloud.tesla.cn" in bridge
+    assert "kTeslaMinBlockV6" in bridge
     for path in ("include/web_ui_manage.h",):
         text = (ROOT / path).read_text()
         assert "mothership.vn.teslamotors.com" in text, f"{path}: missing mothership blocklist entry"
@@ -417,16 +418,35 @@ def check_port_policy() -> None:
         assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
     # Default reset is served from the firmware constants, not duplicated JS.
     assert "dnsReset" in main
-    assert "kTeslaMinAllowV5" in main
-    assert "kTeslaMinBlockV5" in main
-    # hermes is optional: the default v5 stays "no vehicle control"; the UI
+    assert "kTeslaMinAllowV6" in main
+    assert "kTeslaMinBlockV6" in main
+    # hermes is optional: the default v6 stays "no vehicle control"; the UI
     # checkbox appends it to the end of the current allowlist at runtime.
-    assert "nav-prd-maps.tesla.cn media-server-me.tesla.cn" in bridge
-    v5 = re.search(r'kTeslaMinAllowV5\s*=\s*"(.*?)";', bridge, re.S)
-    assert v5 and "hermes-prd.vn.cloud.tesla.cn" not in v5.group(1)
+    v6 = re.search(r'kTeslaMinAllowV6\s*=\s*"(.*?)";', bridge, re.S)
+    assert v6
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v6.group(1)
+    # v6: no connman / www.tesla.cn, 38 entries; blocklist adds assistant-api.
+    assert "connman.vn.cloud.tesla.cn" not in v6.group(1)
+    assert "www.tesla.cn" not in v6.group(1)
+    assert len(v6.group(1).split()) == 38
+    b6 = re.search(r'kTeslaMinBlockV6\s*=\s*"(.*?)";', bridge, re.S)
+    assert b6 and len(b6.group(1).split()) == 4
+    assert "assistant-api.prd.cnn1.vn.cloud.tesla.cn" in b6.group(1)
     manage_ui = (ROOT / "include/web_ui_manage.h").read_text()
     assert "hermesControl" in manage_ui
     assert "hermes-prd.vn.cloud.tesla.cn" in manage_ui
+    # Ticking the hermes checkbox must auto-save (no manual DNS save needed)
+    # and must survive a missing PIN by retrying after auth.
+    toggle = re.search(r"async function toggleHermes\(\).*?\n\}", manage_ui, re.S)
+    assert toggle and "await saveBridge()" in toggle.group(0), "hermes toggle must save immediately"
+    assert "pendingAfterPin" in manage_ui, "DNS save must retry after PIN auth"
+    # Enabling remote control requires a 10-second countdown confirmation that
+    # explains the online-config need, CAN/FSD history, and ban risk.
+    assert "hermesConfirm" in manage_ui and "hermesConfirmBtn" in manage_ui
+    assert 'var left=10;' in manage_ui, "hermes confirmation must start at 10s"
+    assert 'btn.disabled=true' in manage_ui, "confirm button must stay disabled during countdown"
+    for phrase in ("CAN 模块", "封禁 FSD", "认为在线"):
+        assert phrase in manage_ui, f"hermes confirmation missing warning: {phrase}"
     # v5 default allowlist: consolidated Apple Music + Doubao domains.
     for domain in ("*.apple.com", "mzstatic.com", "baidu.com", "bdimg.com", "bcebos.com",
                    "qq.com", "tencentmusic.com", "163.com", "126.net", "netease.com",
