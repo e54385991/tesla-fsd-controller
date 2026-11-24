@@ -111,6 +111,7 @@ textarea{height:300px;resize:vertical}
       <button class="btn" data-preset="windows">PC 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
+      <button class="btn" data-preset="1466">CN 全量 1466B</button>
       <button class="btn" id="rawBtn">原始 JSON</button>
       <button class="btn" id="reloadBtn">重新读取</button>
     </div>
@@ -158,7 +159,32 @@ var NOTES = {
   disable_cabin_camera:'禁用车内摄像头（默认 false）',
   wifi_disabled_mode:'Wi-Fi 禁用模式',
   enable_eu_fsd_behavior:'启用欧盟 FSD 行为（默认 false）',
-  autoshift_dr:'自动换挡（默认 true）'
+  autoshift_dr:'自动换挡（默认 true）',
+  lane_support_system:'车道支持系统',
+  enable_active_traffic_on_route:'启用路线实时路况',
+  disable_online_routing:'禁用在线路径规划',
+  enable_tesla_tts_service:'启用 Tesla TTS 语音服务',
+  autopilot_monarch_enabled:'启用 Autopilot Monarch',
+  autopilot_monarch_backup:'Autopilot Monarch 备份',
+  autopilot_snapshots:'Autopilot 快照',
+  ulc_without_confirm:'无确认变道（ULC）',
+  das_acm_override_fleet_speed:'ACM 覆盖车队限速',
+  enable_speed_limit_from_signs:'按道路标志限速',
+  force_valhalla_speed_limits:'强制 Valhalla 限速',
+  enable_average_speed_zone:'启用平均速度区间',
+  use_map_matched_car_location:'使用地图匹配车辆位置',
+  autopilot_telemetry_in_china:'中国区 Autopilot 遥测',
+  disable_map_manager_internal_reroute:'禁用地图管理器内部重规划',
+  enable_city_streets_reroute:'启用城市道路重规划',
+  enable_use_way_lane_prob:'启用车道概率（way lane prob）',
+  enable_latest_map_support:'启用最新地图支持',
+  disable_start_fsd_from_park:'禁止停车状态启动 FSD（"0" 表示允许）',
+  disable_actually_smart_summon:'禁用真正智能召唤（"0" 表示允许）',
+  disable_avoid_uturn:'禁用避免掉头',
+  enable_navigation_mpp_support:'启用导航 MPP 支持',
+  eu_fsd_allow_region_override:'覆盖欧盟 FSD 地区限制',
+  eu_fsd_allowed_country_codes:'允许的欧盟国家代码（CHN）',
+  lab_diagnostic_marker:'实验诊断标记'
 };
 function q(url){ return url + (token ? (url.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token) : ''); }
 function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }

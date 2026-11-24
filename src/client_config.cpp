@@ -753,9 +753,11 @@ void serviceSerial() {
                                   static_cast<unsigned>(ESP.getFreeHeap()));
                 } else if (strcmp(command, "fsd-default") == 0 ||
                            strcmp(command, "fsd-16f") == 0 ||
+                           strcmp(command, "fsd-1466") == 0 ||
                            strcmp(command, "fsd-282b") == 0) {
                     const char* preset = strcmp(command, "fsd-default") == 0 ? "default" :
-                        (strcmp(command, "fsd-16f") == 0 ? "16f" : "282b");
+                        (strcmp(command, "fsd-16f") == 0 ? "16f" :
+                         (strcmp(command, "fsd-1466") == 0 ? "1466" : "282b"));
                     char error[48] = {};
                     const bool ok = fsd_mock::loadPreset(preset, error, sizeof(error));
                     Serial.printf("fsd preset %s: %s (%u B, md5 %s)\n", preset,

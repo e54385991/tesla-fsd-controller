@@ -1798,6 +1798,11 @@ bool loadPreset(const char* name, char* error, size_t errorSize) {
         strcasecmp(name, "official") == 0) {
         return setPayload(kFsdPayload282b, strlen(kFsdPayload282b), error, errorSize, "preset");
     }
+    if (strcasecmp(name, "1466") == 0 || strcasecmp(name, "payload-1466") == 0 ||
+        strcasecmp(name, "cn") == 0 || strcasecmp(name, "cn46") == 0 ||
+        strcasecmp(name, "full") == 0) {
+        return setPayload(kFsdPayloadCnFull, strlen(kFsdPayloadCnFull), error, errorSize, "preset");
+    }
     snprintf(error, errorSize, "unknown_preset");
     return false;
 }

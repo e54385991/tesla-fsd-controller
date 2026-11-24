@@ -257,6 +257,7 @@ mothership.vn.cloud.tesla.cn
 | PC 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` 原版（`disable_cabin_camera:true`） |
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json` |
+| CN 全量 46 字段 | 1466 | `0ea421e01be6b6e8f66a8fb752970bb3` | 用户提供的 CN 配置（Monarch / 限速 / 城市重规划 / CHN 地区覆盖） |
 
 默认载荷保存到 SPIFFS，重启保持。命中 / 握手日志只保存在 RAM，重启清空，不占闪存。
 
@@ -347,7 +348,7 @@ ESP32-S3 Wi-Fi 桥接固件在 `http://9.9.9.9:10010/client-config` 提供配置
 | 命令 | 作用 |
 |---|---|
 | `fsd-payload` | 打印当前 compact JSON |
-| `fsd-default` / `fsd-16f` / `fsd-282b` | 加载预设并写入 SPIFFS |
+| `fsd-default` / `fsd-16f` / `fsd-282b` / `fsd-1466` | 加载预设并写入 SPIFFS |
 | `net-test` | 检查上游 DNS + TCP 到 `api-prd` |
 | `wifi-diag` | 打印载荷 / 命中 / 握手计数、堆、PSRAM、SPIFFS |
 | `wifi-list` | 列出已保存上游 |

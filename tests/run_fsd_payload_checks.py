@@ -129,9 +129,9 @@ def check_response_contract() -> None:
     assert 'esp_http_client_get_header(' not in code_lines, (
         "must capture upstream response headers via HTTP_EVENT_ON_HEADER, not esp_http_client_get_header()"
     )
-    # Last-response preview must hold the full 654 B default payload without truncation.
+    # Last-response preview must hold the full 1466 B CN preset without truncation.
     m = re.search(r"kLastResponseCapacity\s*=\s*(\d+)", mock_header)
-    assert m and int(m.group(1)) >= 655, "kLastResponseCapacity too small for 654 B default payload"
+    assert m and int(m.group(1)) >= 1467, "kLastResponseCapacity too small for 1466 B CN payload"
     # Only removal of the old persisted logs is allowed; no append handles.
     assert 'open("/fsd_hits.jsonl"' not in source
     assert 'open("/fsd_handshake.log"' not in source
@@ -367,6 +367,11 @@ int main(int argc, char** argv) {
     assert "默认 654B" in ui, "web_ui_fsd default preset button must show 654B"
     assert "PC 602B" in ui, "web_ui_fsd PC preset button must show 602B"
     assert "默认 653B" not in ui, "stale 653B label found in web_ui_fsd.h"
+    assert 'data-preset="1466"' in ui, "web_ui_fsd must expose the 46-field CN preset"
+    assert "CN 全量 1466B" in ui, "web_ui_fsd CN preset button label drifted"
+    assert "eu_fsd_allowed_country_codes" in ui, "web_ui_fsd field docs missing CN preset keys"
+    mock = (ROOT / "src/fsd_mock.cpp").read_text()
+    assert 'strcasecmp(name, "1466")' in mock, "loadPreset must accept the 1466 preset"
 
 
 def check_port_policy() -> None:
@@ -540,12 +545,13 @@ def matches(uri: str) -> bool:
 
 def main() -> None:
     found = payloads()
-    assert len(found) == 4, f"expected 4 payloads, found {len(found)}"
+    assert len(found) == 5, f"expected 5 payloads, found {len(found)}"
     expected = [
         (602, "241cb01b81a2b9c8b9f389a471bcbc94", 20),
         (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (476, "b61035d9dea38e737fbf8195ccb39f2c", 16),
         (282, "c212a75ca858750ac302093c138991f2", 9),
+        (1466, "0ea421e01be6b6e8f66a8fb752970bb3", 46),
     ]
     for text, (size, digest, fields) in zip(found, expected):
         raw = text.encode("utf-8")

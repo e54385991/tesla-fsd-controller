@@ -31,7 +31,7 @@ constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
 constexpr size_t kConfigHistoryCapacity = 8; // RAM ring, not persisted
-constexpr size_t kLastResponseCapacity = 769;   // full 654B default payload + headroom
+constexpr size_t kLastResponseCapacity = 1536;  // full 1466B CN preset payload + headroom
 
 enum class Mode : uint8_t {
     Reply = 0,
