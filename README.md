@@ -26,7 +26,7 @@
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
-| 默认白名单 | 38 条基础 / 地图 / 音乐 / 豆包域名；hermes 车控可选（见下文） |
+| 默认白名单 | 39 条基础 / 地图 / 音乐 / 豆包域名；hermes 车控可选（见下文） |
 | 默认黑名单 | `api-prd.vn.cloud.tesla.cn` + `mothership.*` + `assistant-api.prd.cnn1.vn.cloud.tesla.cn` |
 | FSD 下发 | 默认关闭（可在面板一键开启，`reply` 模式，443/4567 按需启停） |
 
@@ -115,9 +115,10 @@ Windows 把串口换成 `COMx`。ESP32-S3 进入下载模式：按住 **BOOT**�
 
 ### 默认白名单
 
-首次启动会写入以下 38 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
+首次启动会写入以下 39 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
 
 ```text
+connman.vn.cloud.tesla.cn
 nav-prd-maps.tesla.cn
 media-server-me.tesla.cn
 maps-cn-prd.go.tesla.services
@@ -164,7 +165,7 @@ snssdk.com
 bytedance.com
 ```
 
-> 说明：v6 已移除 `connman.vn.cloud.tesla.cn` 与 `www.tesla.cn`；老版本默认列表会自动迁移到 v6，自定义过的列表不动。`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
+> 说明：v7 把 `connman.vn.cloud.tesla.cn` 加回白名单首位，仍不放行 `www.tesla.cn`；老版本默认列表会自动迁移到 v7，自定义过的列表不动。`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
 
 ### 默认黑名单
 
@@ -180,10 +181,12 @@ assistant-api.prd.cnn1.vn.cloud.tesla.cn
 **`hermes-prd.vn.cloud.tesla.cn`（默认不放行；车控可选，更安全）**
 
 - 默认白名单**不包含**该域名（无车控版，更安全）。
+- **仅 Model 3/Y 可能需要开启**（让车机认为在线并请求配置）；
+  **Model S/X 不开启也会请求配置，且 S/X 请勿开启本项**。
 - 需要远程车控时，在管理页勾选 **「启用 hermes 远程车控」**；会弹出 **10 秒倒计时确认**，倒计时结束前「确认启用」按钮不可点。
 - 确认后固件把它追加到白名单**最后一项**；取消勾选立即移除，其他自定义域名不受影响。
 - FSD 下发时可能需要保持开启，让车机认为在线并主动请求配置。
-- 如果你之前用过 CAN 模块，或开通 / 改动过 FSD，存在被 Tesla 封禁 FSD 权限的风险；风险自担。
+- 存在被 Tesla 封禁 FSD 权限的风险；风险自担。
 
 **`api-prd.vn.cloud.tesla.cn`（默认黑名单）**
 
@@ -262,9 +265,14 @@ assistant-api.prd.cnn1.vn.cloud.tesla.cn
 | PC 20 字段 | 602 | `241cb01b81a2b9c8b9f389a471bcbc94` | `payload.json` 原版（`disable_cabin_camera:true`） |
 | 16 字段 | 476 | `b61035d9dea38e737fbf8195ccb39f2c` | `payload-16f.json` |
 | 官方 282B | 282 | `c212a75ca858750ac302093c138991f2` | `payload-282b.json` |
-| CN 全量 46 字段 | 1466 | `0ea421e01be6b6e8f66a8fb752970bb3` | 用户提供的 CN 配置（Monarch / 限速 / 城市重规划 / CHN 地区覆盖） |
+| CN 全量 62 字段 | 2020 | `1e4f78a38afb0c5adaf775683d6157d6` | 用户提供的 CN 配置（Monarch / 限速 / 城市与备选路线 / 红绿灯倒计时 / CHN 地区覆盖） |
+| CN 旧版 46 字段 | 1466 | `0ea421e01be6b6e8f66a8fb752970bb3` | 上一版 CN 配置（保留以便回退，字段集合更少） |
 
-默认载荷保存到 SPIFFS，重启保持。命中 / 握手日志只保存在 RAM，重启清空，不占闪存。
+默认载荷保存到 SPIFFS，重启保持。**下发记录保留最近 5 条并写入 NVS，重启保持**；命中 / 握手 / 请求明细日志只保存在 RAM，重启清空，不占闪存。
+
+字段含义以 `docs/FeatureConfig.docx`（Tesla 2026.26.6.1，反汇编 Observed）为准；
+CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说明见
+[`docs/featureconfig-vs-cn.md`](docs/featureconfig-vs-cn.md)。
 
 ### 端口与证书
 
@@ -353,7 +361,7 @@ ESP32-S3 Wi-Fi 桥接固件在 `http://9.9.9.9:10010/client-config` 提供配置
 | 命令 | 作用 |
 |---|---|
 | `fsd-payload` | 打印当前 compact JSON |
-| `fsd-default` / `fsd-16f` / `fsd-282b` / `fsd-1466` | 加载预设并写入 SPIFFS |
+| `fsd-default` / `fsd-16f` / `fsd-282b` / `fsd-2020` / `fsd-1466` | 加载预设并写入 SPIFFS（`fsd-1466` = 旧版 46 字段） |
 | `net-test` | 检查上游 DNS + TCP 到 `api-prd` |
 | `wifi-diag` | 打印载荷 / 命中 / 握手计数、堆、PSRAM、SPIFFS |
 | `wifi-list` | 列出已保存上游 |

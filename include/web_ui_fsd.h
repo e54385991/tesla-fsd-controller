@@ -92,7 +92,7 @@ textarea{height:300px;resize:vertical}
     <table><thead><tr><th>接口</th><th>次数</th></tr></thead><tbody id="pathRows"></tbody></table>
   </section>
 
-  <section><h2>配置变更记录</h2>
+  <section><h2>下发记录（最近 5 条 · 重启保持）</h2>
     <table><thead><tr><th>时间</th><th>来源</th><th>字节</th><th>md5</th><th>字段数</th></tr></thead><tbody id="cfgRows"></tbody></table>
   </section>
 
@@ -111,11 +111,12 @@ textarea{height:300px;resize:vertical}
       <button class="btn" data-preset="windows">PC 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
-      <button class="btn" data-preset="1466">CN 全量 1466B</button>
+      <button class="btn" data-preset="2020">CN 全量 2020B</button>
+      <button class="btn" data-preset="1466">CN 旧版 1466B</button>
       <button class="btn" id="rawBtn">原始 JSON</button>
       <button class="btn" id="reloadBtn">重新读取</button>
     </div>
-    <div class="hint">字段说明为中文注释，非官方定义；支持任意增删改，保存时保持字段顺序并按紧凑 UTF-8 JSON 重算 <code>X-Checksum</code>（MD5，与 PC 版一致）。</div>
+    <div class="hint">字段说明参考 docs/FeatureConfig.docx（Tesla 2026.26.6.1，反汇编 Observed），非官方定义；支持任意增删改，保存时保持字段顺序并按紧凑 UTF-8 JSON 重算 <code>X-Checksum</code>（MD5，与 PC 版一致）。</div>
     <table class="rows"><thead><tr><th style="width:26%">字段名</th><th style="width:24%">值（true/false/字符串）</th><th>中文说明</th><th style="width:60px">操作</th></tr></thead><tbody id="rows"></tbody></table>
     <textarea id="rawJson" style="display:none"></textarea>
     <div class="msg" id="cfgMsg"></div>
@@ -138,53 +139,69 @@ try { token = sessionStorage.getItem('fsd_tok') || ''; } catch(e) {}
 var editing = false, rawVisible = false, editorLoaded = false, busy = false;
 var DEFAULT_OBJ = {"audio_log_alsa_device_delay_verbose":false,"audio_log_awe_stats":false,"delivered":true,"disable_eng_voice_recording_uploads":true,"drive_on_nav_maps":true,"enable_autocomplete_telemetry":false,"enable_failure_log_upload":false,"enable_fsd_auto_nav":true,"ethtrace_auto_capture":false,"ethtrace_auto_upload":false,"fsd_navigation_supported":true,"fsd_stops_maps":true,"full_self_driving":true,"latched_delivered":true,"log_upload_without_wifi":false,"tcpdump_enabled":false,"suspend_full_self_driving":false,"enable_seat_adjustment_from_ui":true,"disable_cabin_camera":false,"wifi_disabled_mode":true,"enable_eu_fsd_behavior":false,"autoshift_dr":true};
 var NOTES = {
-  audio_log_alsa_device_delay_verbose:'音频 ALSA 设备延迟详细日志',
-  audio_log_awe_stats:'音频 AWE 统计日志',
-  delivered:'已交付/已激活',
-  disable_eng_voice_recording_uploads:'禁止上传工程语音录音',
-  drive_on_nav_maps:'导航地图上行驶',
-  enable_autocomplete_telemetry:'启用自动补全遥测',
-  enable_failure_log_upload:'启用故障日志上传',
-  enable_fsd_auto_nav:'启用 FSD 自动导航',
-  ethtrace_auto_capture:'以太网抓包自动捕获',
-  ethtrace_auto_upload:'以太网抓包自动上传',
-  fsd_navigation_supported:'支持 FSD 导航',
-  fsd_stops_maps:'FSD 地图停车点',
-  full_self_driving:'完全自动驾驶',
-  latched_delivered:'锁存已交付状态',
-  log_upload_without_wifi:'无 Wi-Fi 也上传日志',
-  tcpdump_enabled:'启用 tcpdump',
-  suspend_full_self_driving:'暂停完全自动驾驶',
-  enable_seat_adjustment_from_ui:'允许 UI 调整座椅',
-  disable_cabin_camera:'禁用车内摄像头（默认 false）',
-  wifi_disabled_mode:'Wi-Fi 禁用模式',
-  enable_eu_fsd_behavior:'启用欧盟 FSD 行为（默认 false）',
-  autoshift_dr:'自动换挡（默认 true）',
-  lane_support_system:'车道支持系统',
-  enable_active_traffic_on_route:'启用路线实时路况',
-  disable_online_routing:'禁用在线路径规划',
-  enable_tesla_tts_service:'启用 Tesla TTS 语音服务',
-  autopilot_monarch_enabled:'启用 Autopilot Monarch',
-  autopilot_monarch_backup:'Autopilot Monarch 备份',
-  autopilot_snapshots:'Autopilot 快照',
-  ulc_without_confirm:'无确认变道（ULC）',
-  das_acm_override_fleet_speed:'ACM 覆盖车队限速',
-  enable_speed_limit_from_signs:'按道路标志限速',
-  force_valhalla_speed_limits:'强制 Valhalla 限速',
-  enable_average_speed_zone:'启用平均速度区间',
-  use_map_matched_car_location:'使用地图匹配车辆位置',
-  autopilot_telemetry_in_china:'中国区 Autopilot 遥测',
-  disable_map_manager_internal_reroute:'禁用地图管理器内部重规划',
-  enable_city_streets_reroute:'启用城市道路重规划',
-  enable_use_way_lane_prob:'启用车道概率（way lane prob）',
-  enable_latest_map_support:'启用最新地图支持',
-  disable_start_fsd_from_park:'禁止停车状态启动 FSD（"0" 表示允许）',
-  disable_actually_smart_summon:'禁用真正智能召唤（"0" 表示允许）',
-  disable_avoid_uturn:'禁用避免掉头',
-  enable_navigation_mpp_support:'启用导航 MPP 支持',
-  eu_fsd_allow_region_override:'覆盖欧盟 FSD 地区限制',
-  eu_fsd_allowed_country_codes:'允许的欧盟国家代码（CHN）',
-  lab_diagnostic_marker:'实验诊断标记'
+  audio_log_alsa_device_delay_verbose:'音频 ALSA 设备延迟详细日志（audioLogAlsaDevicesDelayVerbose，需重启）',
+  audio_log_awe_stats:'音频 AWE 统计日志（audioLogAweStats，需重启）',
+  delivered:'已交付/已激活（交付标记，非 FeatureConfigs 项）',
+  disable_eng_voice_recording_uploads:'禁止上传工程语音录音（disableEngVoiceRecUploads）',
+  drive_on_nav_maps:'允许在导航地图上启用 FSD（dasDriveOnNavMapsOkay）',
+  enable_autocomplete_telemetry:'启用自动补全遥测（enableAutocompleteTelemetry，需重启）',
+  enable_failure_log_upload:'启用故障日志上传（enableFailureLogUpload，需重启）',
+  enable_fsd_auto_nav:'启用 FSD 自动导航（2026.26.6.1 表中无此键，属兼容字段）',
+  ethtrace_auto_capture:'以太网抓包自动捕获（ethtraceAutoCapture，需重启）',
+  ethtrace_auto_upload:'以太网抓包自动上传（ethtraceAutoUpload，需重启）',
+  fsd_navigation_supported:'FSD 导航地图支持（hasFullSelfDrivingNavMaps，需重启）',
+  fsd_stops_maps:'FSD 地图停车点（dasHasFSDStopsMaps）',
+  full_self_driving:'完全自动驾驶 FSD（fullSelfDriving，需重启）',
+  latched_delivered:'锁存“已交付”状态（交付标记，非 FeatureConfigs 项）',
+  log_upload_without_wifi:'无 Wi-Fi 也上传日志（logUploadWithoutWiFi，需重启）',
+  tcpdump_enabled:'启用 tcpdump 抓包（tcpdumpEnabled，需重启）',
+  suspend_full_self_driving:'暂停完全自动驾驶（suspendFullSelfDriving）',
+  enable_seat_adjustment_from_ui:'允许 UI 调整座椅/后视镜（enableSeatAdjustment）',
+  disable_cabin_camera:'禁用车内摄像头（cabinCameraDisabled，需重启）',
+  wifi_disabled_mode:'Wi-Fi 禁用模式（wifiDisabledMode，需重启）',
+  enable_eu_fsd_behavior:'启用欧盟 FSD 行为（enableEUFSDBehavior，默认 false）',
+  autoshift_dr:'自动换挡 autoshiftDREnabled（默认 true）',
+  lane_support_system:'车道支持系统（dasLaneSupportSystemEnabled，需重启）',
+  enable_active_traffic_on_route:'启用路线实时路况（enableActiveTrafficOnRoute）',
+  disable_online_routing:'禁用在线路线规划（disableOnlineRouting，需重启）',
+  enable_tesla_tts_service:'启用 Tesla TTS 语音服务（enableTeslaTtsService）',
+  autopilot_monarch_enabled:'启用 Autopilot Monarch（autopilotMonarchEnabled，需重启）',
+  autopilot_monarch_backup:'Autopilot Monarch 备份（autopilotMonarchBackup，需重启）',
+  autopilot_snapshots:'Autopilot 快照 / 行车记录仪 Clip Recorder（autopilotSnapshots）',
+  ulc_without_confirm:'ULC 变道免确认（dasNoConfirmULCEnabled，需重启）',
+  das_acm_override_fleet_speed:'ACM 覆盖车队限速（hasDasACMOverrideFleetSpeed）',
+  enable_speed_limit_from_signs:'按道路标志限速（enableSpeedLimitFromSigns，需重启）',
+  force_valhalla_speed_limits:'强制 Valhalla 路由限速（forceValhallaSpeedLimits）',
+  enable_average_speed_zone:'平均速度区间测速（hasSpeedRadarZoneView）',
+  use_map_matched_car_location:'使用地图匹配的车辆位置（useMapMatchedCarLocation）',
+  autopilot_telemetry_in_china:'中国区 Autopilot 遥测（autopilotTelemetryInChina，需重启）',
+  disable_map_manager_internal_reroute:'禁用地图管理器内部重规划（disableMapManagerInternalReroute，需重启）',
+  enable_city_streets_reroute:'启用城市道路重规划（enableCityStreetsReroute，需重启）',
+  enable_use_way_lane_prob:'启用车道概率模型（useWayLaneProb，需重启）',
+  enable_latest_map_support:'启用最新地图支持（enableLatestMapSupport，需重启）',
+  disable_start_fsd_from_park:'禁止停车启动 FSD；字符串 "0"=允许（取反键 enableStartFsdFromPark）',
+  disable_actually_smart_summon:'禁止真正智能召唤；字符串 "0"=启用（取反键 actuallySmartSummonEnabled）',
+  disable_avoid_uturn:'禁用“避免掉头”（disableAvoidUTurn，需重启）',
+  enable_navigation_mpp_support:'启用导航 MPP 支持（enableNavigationMPPSupport，需重启）',
+  eu_fsd_allow_region_override:'覆盖欧盟 FSD 地区限制（euFsdAllowRegionOverride，需重启）',
+  eu_fsd_allowed_country_codes:'欧盟 FSD 允许国家代码，字符串如 "CHN"（euFsdAllowedCountryCodes）',
+  disable_alternative_trip_plans:'禁用备选行程计划（disableAlternativeTripPlans，需重启）',
+  enable_alternative_routes:'启用备选路线（enableAlternativeRoutes，需重启）',
+  enable_nav_voice_download:'启用导航语音包下载（enableNavVoiceDownload，需重启）',
+  tesla_autopark_disabled:'禁用 Tesla 自动泊车（teslaAutoparkDisabled）',
+  disable_r79_restrictions:'禁用 R79 法规限制（EU 认证，disableR79Restrictions）',
+  enable_alternative_routes_when_driving:'行驶中启用备选路线（enableAlternativeRoutesWhenDriving，需重启）',
+  enable_traffic_light_countdown:'红绿灯倒计时（2026.26.6.1 表中无此键）',
+  enable_tesla_lane_position_algo:'Tesla 车道定位算法（enableTeslaLanePositionAlgo；此版本 FS=0 不支持）',
+  enable_trigger_off_route_reroute:'偏航后触发重规划（enableTriggerOffRouteReroute，需重启）',
+  enable_vendor_maneuver:'启用供应商机动指令（enableVendorManeuver，需重启）',
+  enable_proactive_reroutes:'启用主动重规划（enableProactiveReroutes，需重启）',
+  enable_better_route_available:'更优路线提示（enableBetterRouteAvailable，需重启）',
+  route_avoid_construction:'路线避开施工路段（enableRouteAvoidConstruction，需重启）',
+  enable_junction_view:'启用路口视图（enableJunctionView，需重启）',
+  enable_speed_cam_alerts:'测速摄像头提醒（enableSpeedCamAlerts，需重启）',
+  disable_passenger_play:'禁用副驾 Play / 游戏（disablePassengerPlay）',
+  lab_diagnostic_marker:'实验诊断标记（非官方字段）'
 };
 function q(url){ return url + (token ? (url.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token) : ''); }
 function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -316,7 +333,7 @@ function render(st,hits,hs,cfg,payloadText){
 
   var cfgHtml='';
   cfg.slice(0,12).forEach(function(r){ cfgHtml+='<tr><td>'+esc(tsText(r.ts))+'</td><td>'+esc(r.source||'')+'</td><td>'+esc(r.bytes||0)+'</td><td><code>'+esc((r.md5||'').slice(0,14))+'…</code></td><td>'+esc(r.fields||0)+'</td></tr>'; });
-  document.getElementById('cfgRows').innerHTML=cfgHtml||'<tr><td colspan="5" class="dim">还没有配置变更记录</td></tr>';
+  document.getElementById('cfgRows').innerHTML=cfgHtml||'<tr><td colspan="5" class="dim">还没有下发记录</td></tr>';
 
   var pretty=payloadText||''; try{ pretty=JSON.stringify(JSON.parse(payloadText),null,2); }catch(e){}
   document.getElementById('payloadPre').textContent=pretty||'--';

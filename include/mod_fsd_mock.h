@@ -30,8 +30,8 @@ constexpr size_t kPayloadInputCapacity = 4096; // raw (pretty-printed) JSON uplo
 constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
-constexpr size_t kConfigHistoryCapacity = 8; // RAM ring, not persisted
-constexpr size_t kLastResponseCapacity = 1536;  // full 1466B CN preset payload + headroom
+constexpr size_t kConfigHistoryCapacity = 5; // last 5 下发记录, persisted to NVS
+constexpr size_t kLastResponseCapacity = 2100;  // full 2020B CN preset payload + headroom
 
 enum class Mode : uint8_t {
     Reply = 0,

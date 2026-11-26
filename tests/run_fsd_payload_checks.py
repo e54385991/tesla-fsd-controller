@@ -129,9 +129,9 @@ def check_response_contract() -> None:
     assert 'esp_http_client_get_header(' not in code_lines, (
         "must capture upstream response headers via HTTP_EVENT_ON_HEADER, not esp_http_client_get_header()"
     )
-    # Last-response preview must hold the full 1466 B CN preset without truncation.
+    # Last-response preview must hold the full 2020 B CN preset without truncation.
     m = re.search(r"kLastResponseCapacity\s*=\s*(\d+)", mock_header)
-    assert m and int(m.group(1)) >= 1467, "kLastResponseCapacity too small for 1466 B CN payload"
+    assert m and int(m.group(1)) >= 2021, "kLastResponseCapacity too small for 2020 B CN payload"
     # Only removal of the old persisted logs is allowed; no append handles.
     assert 'open("/fsd_hits.jsonl"' not in source
     assert 'open("/fsd_handshake.log"' not in source
@@ -367,11 +367,14 @@ int main(int argc, char** argv) {
     assert "默认 654B" in ui, "web_ui_fsd default preset button must show 654B"
     assert "PC 602B" in ui, "web_ui_fsd PC preset button must show 602B"
     assert "默认 653B" not in ui, "stale 653B label found in web_ui_fsd.h"
-    assert 'data-preset="1466"' in ui, "web_ui_fsd must expose the 46-field CN preset"
-    assert "CN 全量 1466B" in ui, "web_ui_fsd CN preset button label drifted"
+    assert 'data-preset="2020"' in ui, "web_ui_fsd must expose the 62-field CN preset"
+    assert "CN 全量 2020B" in ui, "web_ui_fsd CN preset button label drifted"
+    assert 'data-preset="1466"' in ui, "web_ui_fsd must keep the 46-field CN preset"
+    assert "CN 旧版 1466B" in ui, "web_ui_fsd CN 1466 button label drifted"
     assert "eu_fsd_allowed_country_codes" in ui, "web_ui_fsd field docs missing CN preset keys"
     mock = (ROOT / "src/fsd_mock.cpp").read_text()
-    assert 'strcasecmp(name, "1466")' in mock, "loadPreset must accept the 1466 preset"
+    assert 'strcasecmp(name, "2020")' in mock, "loadPreset must accept the 2020 preset"
+    assert 'strcasecmp(name, "cn46")' in mock, "loadPreset must keep the 1466 preset"
 
 
 def check_port_policy() -> None:
@@ -418,20 +421,27 @@ def check_port_policy() -> None:
         assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
     # Default reset is served from the firmware constants, not duplicated JS.
     assert "dnsReset" in main
-    assert "kTeslaMinAllowV6" in main
+    assert "kTeslaMinAllowV7" in main
     assert "kTeslaMinBlockV6" in main
-    # hermes is optional: the default v6 stays "no vehicle control"; the UI
+    # hermes is optional: the default v7 stays "no vehicle control"; the UI
     # checkbox appends it to the end of the current allowlist at runtime.
-    v6 = re.search(r'kTeslaMinAllowV6\s*=\s*"(.*?)";', bridge, re.S)
-    assert v6
-    assert "hermes-prd.vn.cloud.tesla.cn" not in v6.group(1)
-    # v6: no connman / www.tesla.cn, 38 entries; blocklist adds assistant-api.
-    assert "connman.vn.cloud.tesla.cn" not in v6.group(1)
-    assert "www.tesla.cn" not in v6.group(1)
-    assert len(v6.group(1).split()) == 38
+    v7 = re.search(r'kTeslaMinAllowV7\s*=\s*"(.*?)";', bridge, re.S)
+    assert v7
+    v7_items = v7.group(1).split()
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v7_items
+    # v7: connman back at the head, www.tesla.cn still absent, 39 entries.
+    assert v7_items[0] == "connman.vn.cloud.tesla.cn"
+    assert "www.tesla.cn" not in v7_items
+    assert len(v7_items) == 39
     b6 = re.search(r'kTeslaMinBlockV6\s*=\s*"(.*?)";', bridge, re.S)
     assert b6 and len(b6.group(1).split()) == 4
     assert "assistant-api.prd.cnn1.vn.cloud.tesla.cn" in b6.group(1)
+    # Last 5 下发记录 must survive reboot (NVS "cfglog", not a RAM ring).
+    mock_src = (ROOT / "src/fsd_mock.cpp").read_text()
+    assert "kConfigHistoryCapacity = 5" in (ROOT / "include/mod_fsd_mock.h").read_text()
+    assert '"cfglog"' in mock_src and "persistConfigLog()" in mock_src
+    assert mock_src.count("persistConfigLog()") >= 2, "record path must persist"
+    assert 'getBytesLength("cfglog")' in mock_src, "boot path must restore the ring"
     manage_ui = (ROOT / "include/web_ui_manage.h").read_text()
     assert "hermesControl" in manage_ui
     assert "hermes-prd.vn.cloud.tesla.cn" in manage_ui
@@ -440,12 +450,24 @@ def check_port_policy() -> None:
     toggle = re.search(r"async function toggleHermes\(\).*?\n\}", manage_ui, re.S)
     assert toggle and "await saveBridge()" in toggle.group(0), "hermes toggle must save immediately"
     assert "pendingAfterPin" in manage_ui, "DNS save must retry after PIN auth"
+    # Unchecking must strip hermes from ANY position: tokenise like the firmware
+    # (space/newline/comma/semicolon), compare case-insensitively, dedupe.
+    assert "function dnsTokens" in manage_ui and r"split(/[\s,;]+/)" in manage_ui
+    assert "function isHermesDomain" in manage_ui and "toLowerCase()" in manage_ui
+    assert "function stripHermes" in manage_ui
+    assert "listHasHermes(document.getElementById('dnsAllow').value)" in manage_ui
+    toggle_src = re.search(r"async function toggleHermes\(\).*?\n\}", manage_ui, re.S)
+    assert toggle_src and "applyHermes(false)" in toggle_src.group(0)
+    apply_src = re.search(r"function applyHermes\(want\).*?\n\}", manage_ui, re.S)
+    assert apply_src and "stripHermes(ta.value)" in apply_src.group(0)
+    assert "parts.push(HERMES_DOMAIN)" in apply_src.group(0)
     # Enabling remote control requires a 10-second countdown confirmation that
     # explains the online-config need, CAN/FSD history, and ban risk.
     assert "hermesConfirm" in manage_ui and "hermesConfirmBtn" in manage_ui
     assert 'var left=10;' in manage_ui, "hermes confirmation must start at 10s"
     assert 'btn.disabled=true' in manage_ui, "confirm button must stay disabled during countdown"
-    for phrase in ("CAN 模块", "封禁 FSD", "认为在线"):
+    for phrase in ("封禁 FSD", "认为在线",
+                   "Model 3/Y", "Model S/X", "S/X 请勿开启"):
         assert phrase in manage_ui, f"hermes confirmation missing warning: {phrase}"
     # v5 default allowlist: consolidated Apple Music + Doubao domains.
     for domain in ("*.apple.com", "mzstatic.com", "baidu.com", "bdimg.com", "bcebos.com",
@@ -565,12 +587,13 @@ def matches(uri: str) -> bool:
 
 def main() -> None:
     found = payloads()
-    assert len(found) == 5, f"expected 5 payloads, found {len(found)}"
+    assert len(found) == 6, f"expected 6 payloads, found {len(found)}"
     expected = [
         (602, "241cb01b81a2b9c8b9f389a471bcbc94", 20),
         (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (476, "b61035d9dea38e737fbf8195ccb39f2c", 16),
         (282, "c212a75ca858750ac302093c138991f2", 9),
+        (2020, "1e4f78a38afb0c5adaf775683d6157d6", 62),
         (1466, "0ea421e01be6b6e8f66a8fb752970bb3", 46),
     ]
     for text, (size, digest, fields) in zip(found, expected):

@@ -126,6 +126,15 @@ size_t gConfigCount = 0;
 size_t gConfigWrite = 0;
 portMUX_TYPE gConfigMux = portMUX_INITIALIZER_UNLOCKED;
 
+// Persistent ring of the last 5 下发记录 (NVS namespace "fsdmock", key "cfglog").
+constexpr uint32_t kConfigLogMagic = 0x43464731;  // "CFG1"
+struct ConfigLogBlob {
+    uint32_t magic;
+    uint16_t count;
+    uint16_t write;
+    ConfigChange items[kConfigHistoryCapacity];
+};
+
 Handshake gHandshakes[kHandshakeCapacity];
 size_t gHandshakeCount = 0;
 size_t gHandshakeWrite = 0;
@@ -639,6 +648,22 @@ bool persistSettings() {
     const size_t written = prefs.putBytes("cfg", &settings, sizeof(settings));
     prefs.end();
     return written == sizeof(settings);
+}
+
+// Snapshot the ring under the mutex, then write outside it (NVS may block).
+void persistConfigLog() {
+    ConfigLogBlob blob = {};
+    blob.magic = kConfigLogMagic;
+    portENTER_CRITICAL(&gConfigMux);
+    blob.count = static_cast<uint16_t>(gConfigCount);
+    blob.write = static_cast<uint16_t>(gConfigWrite);
+    memcpy(blob.items, gConfigHistory, sizeof(gConfigHistory));
+    portEXIT_CRITICAL(&gConfigMux);
+
+    Preferences prefs;
+    if (!prefs.begin("fsdmock", false)) return;
+    prefs.putBytes("cfglog", &blob, sizeof(blob));
+    prefs.end();
 }
 
 // ── request body ────────────────────────────────────────────────────────────
@@ -1455,6 +1480,19 @@ void begin() {
             }
             unlockState();
         }
+        // Restore the persisted 下发记录 ring (survives reboot).
+        ConfigLogBlob log = {};
+        if (prefs.getBytesLength("cfglog") == sizeof(log) &&
+            prefs.getBytes("cfglog", &log, sizeof(log)) == sizeof(log) &&
+            log.magic == kConfigLogMagic &&
+            log.count <= kConfigHistoryCapacity &&
+            log.write < kConfigHistoryCapacity) {
+            portENTER_CRITICAL(&gConfigMux);
+            memcpy(gConfigHistory, log.items, sizeof(gConfigHistory));
+            gConfigCount = log.count;
+            gConfigWrite = log.write;
+            portEXIT_CRITICAL(&gConfigMux);
+        }
         prefs.end();
     }
 
@@ -1742,6 +1780,7 @@ void recordConfigChange(const char* source, size_t bytes, size_t fields,
     gConfigWrite = (gConfigWrite + 1) % kConfigHistoryCapacity;
     if (gConfigCount < kConfigHistoryCapacity) ++gConfigCount;
     portEXIT_CRITICAL(&gConfigMux);
+    persistConfigLog();
 }
 
 bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
@@ -1798,10 +1837,14 @@ bool loadPreset(const char* name, char* error, size_t errorSize) {
         strcasecmp(name, "official") == 0) {
         return setPayload(kFsdPayload282b, strlen(kFsdPayload282b), error, errorSize, "preset");
     }
-    if (strcasecmp(name, "1466") == 0 || strcasecmp(name, "payload-1466") == 0 ||
-        strcasecmp(name, "cn") == 0 || strcasecmp(name, "cn46") == 0 ||
+    if (strcasecmp(name, "2020") == 0 || strcasecmp(name, "payload-2020") == 0 ||
+        strcasecmp(name, "cn") == 0 || strcasecmp(name, "cn62") == 0 ||
         strcasecmp(name, "full") == 0) {
         return setPayload(kFsdPayloadCnFull, strlen(kFsdPayloadCnFull), error, errorSize, "preset");
+    }
+    if (strcasecmp(name, "1466") == 0 || strcasecmp(name, "payload-1466") == 0 ||
+        strcasecmp(name, "cn46") == 0) {
+        return setPayload(kFsdPayloadCn46, strlen(kFsdPayloadCn46), error, errorSize, "preset");
     }
     snprintf(error, errorSize, "unknown_preset");
     return false;
