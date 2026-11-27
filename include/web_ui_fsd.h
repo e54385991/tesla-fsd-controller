@@ -111,7 +111,7 @@ textarea{height:300px;resize:vertical}
       <button class="btn" data-preset="windows">PC 602B</button>
       <button class="btn" data-preset="16f">16 字段 476B</button>
       <button class="btn" data-preset="282b">官方 282B</button>
-      <button class="btn" data-preset="2020">CN 全量 2020B</button>
+      <button class="btn" data-preset="2031">CN 全量 2031B</button>
       <button class="btn" data-preset="1466">CN 旧版 1466B</button>
       <button class="btn" id="rawBtn">原始 JSON</button>
       <button class="btn" id="reloadBtn">重新读取</button>
@@ -188,13 +188,13 @@ var NOTES = {
   disable_alternative_trip_plans:'禁用备选行程计划（disableAlternativeTripPlans，需重启）',
   enable_alternative_routes:'启用备选路线（enableAlternativeRoutes，需重启）',
   enable_nav_voice_download:'启用导航语音包下载（enableNavVoiceDownload，需重启）',
+  enable_voice_guidance_mode_option:'开启语音导航模式选项（enableVoiceGuidanceModeOption，需重启）',
   tesla_autopark_disabled:'禁用 Tesla 自动泊车（teslaAutoparkDisabled）',
   disable_r79_restrictions:'禁用 R79 法规限制（EU 认证，disableR79Restrictions）',
   enable_alternative_routes_when_driving:'行驶中启用备选路线（enableAlternativeRoutesWhenDriving，需重启）',
   enable_traffic_light_countdown:'红绿灯倒计时（2026.26.6.1 表中无此键）',
   enable_tesla_lane_position_algo:'Tesla 车道定位算法（enableTeslaLanePositionAlgo；此版本 FS=0 不支持）',
   enable_trigger_off_route_reroute:'偏航后触发重规划（enableTriggerOffRouteReroute，需重启）',
-  enable_vendor_maneuver:'启用供应商机动指令（enableVendorManeuver，需重启）',
   enable_proactive_reroutes:'启用主动重规划（enableProactiveReroutes，需重启）',
   enable_better_route_available:'更优路线提示（enableBetterRouteAvailable，需重启）',
   route_avoid_construction:'路线避开施工路段（enableRouteAvoidConstruction，需重启）',

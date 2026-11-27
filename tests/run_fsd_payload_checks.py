@@ -367,13 +367,13 @@ int main(int argc, char** argv) {
     assert "默认 654B" in ui, "web_ui_fsd default preset button must show 654B"
     assert "PC 602B" in ui, "web_ui_fsd PC preset button must show 602B"
     assert "默认 653B" not in ui, "stale 653B label found in web_ui_fsd.h"
-    assert 'data-preset="2020"' in ui, "web_ui_fsd must expose the 62-field CN preset"
-    assert "CN 全量 2020B" in ui, "web_ui_fsd CN preset button label drifted"
+    assert 'data-preset="2031"' in ui, "web_ui_fsd must expose the 62-field CN preset"
+    assert "CN 全量 2031B" in ui, "web_ui_fsd CN preset button label drifted"
     assert 'data-preset="1466"' in ui, "web_ui_fsd must keep the 46-field CN preset"
     assert "CN 旧版 1466B" in ui, "web_ui_fsd CN 1466 button label drifted"
     assert "eu_fsd_allowed_country_codes" in ui, "web_ui_fsd field docs missing CN preset keys"
     mock = (ROOT / "src/fsd_mock.cpp").read_text()
-    assert 'strcasecmp(name, "2020")' in mock, "loadPreset must accept the 2020 preset"
+    assert 'strcasecmp(name, "2031")' in mock, "loadPreset must accept the 2031 preset"
     assert 'strcasecmp(name, "cn46")' in mock, "loadPreset must keep the 1466 preset"
 
 
@@ -421,21 +421,43 @@ def check_port_policy() -> None:
         assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
     # Default reset is served from the firmware constants, not duplicated JS.
     assert "dnsReset" in main
-    assert "kTeslaMinAllowV7" in main
-    assert "kTeslaMinBlockV6" in main
-    # hermes is optional: the default v7 stays "no vehicle control"; the UI
+    assert "kTeslaMinAllowV8" in main
+    assert "kTeslaMinBlockV7" in main
+    # hermes is optional: the default v8 stays "no vehicle control"; the UI
     # checkbox appends it to the end of the current allowlist at runtime.
-    v7 = re.search(r'kTeslaMinAllowV7\s*=\s*"(.*?)";', bridge, re.S)
-    assert v7
-    v7_items = v7.group(1).split()
-    assert "hermes-prd.vn.cloud.tesla.cn" not in v7_items
-    # v7: connman back at the head, www.tesla.cn still absent, 39 entries.
-    assert v7_items[0] == "connman.vn.cloud.tesla.cn"
-    assert "www.tesla.cn" not in v7_items
-    assert len(v7_items) == 39
-    b6 = re.search(r'kTeslaMinBlockV6\s*=\s*"(.*?)";', bridge, re.S)
-    assert b6 and len(b6.group(1).split()) == 4
-    assert "assistant-api.prd.cnn1.vn.cloud.tesla.cn" in b6.group(1)
+    v8 = re.search(r'kTeslaMinAllowV8\s*=\s*"(.*?)";', bridge, re.S)
+    assert v8
+    v8_items = v8.group(1).split()
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v8_items
+    # v8: connman at the head, www.tesla.cn absent, QQ explicit entries added.
+    assert v8_items[0] == "connman.vn.cloud.tesla.cn"
+    assert "www.tesla.cn" not in v8_items
+    assert len(v8_items) == 47
+    for domain in ("qplaycloud.y.qq.com", "y.gtimg.cn", "y.qq.com",
+                   "stat6.y.qq.com", "music-file.y.qq.com", "qpic.y.qq.com",
+                   "isure6.stream.qqmusic.qq.com",
+                   "isure6-stream-qqmusic.a.bdycdn.cn"):
+        assert domain in v8_items, f"v8 allowlist missing {domain}"
+    # Legacy v7 must stay for migration detection.
+    assert 'kTeslaMinAllowV7' in bridge
+    b7 = re.search(r'kTeslaMinBlockV7\s*=\s*"(.*?)";', bridge, re.S)
+    assert b7
+    b7_items = b7.group(1).split()
+    assert len(b7_items) == 12
+    for domain in ("assistant-api.prd.cnn1.vn.cloud.tesla.cn",
+                   "telemetry-prd.vn.cloud.tesla.cn",
+                   "hermes-stream-prd.vn.cloud.tesla.cn",
+                   "hermes-prd.vn.cloud.tesla.cn",
+                   "apigateway-x2-trigger.tesla.cn",
+                   "vehicle-files.prd.cnn1.vn.cloud.tesla.cn",
+                   "vehicle-files.prd.cn1.vn.cloud.tesla.cn",
+                   "upgrade.vn.cloud.tesla.cn",
+                   "amazonaws.com.cn",
+                   "api-prd.vn.cloud.tesla.cn"):
+        assert domain in b7_items, f"v7 blocklist missing {domain}"
+    # hermes must be blocklisted by default but never allowlisted.
+    assert "hermes-prd.vn.cloud.tesla.cn" in b7_items
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v8_items
     # Last 5 下发记录 must survive reboot (NVS "cfglog", not a RAM ring).
     mock_src = (ROOT / "src/fsd_mock.cpp").read_text()
     assert "kConfigHistoryCapacity = 5" in (ROOT / "include/mod_fsd_mock.h").read_text()
@@ -461,6 +483,13 @@ def check_port_policy() -> None:
     apply_src = re.search(r"function applyHermes\(want\).*?\n\}", manage_ui, re.S)
     assert apply_src and "stripHermes(ta.value)" in apply_src.group(0)
     assert "parts.push(HERMES_DOMAIN)" in apply_src.group(0)
+    # Enabling must temporarily drop hermes from the blacklist; disabling adds
+    # it back (default protection restored).
+    assert "function applyHermesBlock" in manage_ui
+    blk_src = re.search(r"function applyHermesBlock\(want\).*?\n\}", manage_ui, re.S)
+    assert blk_src and "stripHermes(tb.value)" in blk_src.group(0)
+    assert "if(!want) parts.push(HERMES_DOMAIN)" in blk_src.group(0)
+    assert "applyHermesBlock(want)" in apply_src.group(0)
     # Enabling remote control requires a 10-second countdown confirmation that
     # explains the online-config need, CAN/FSD history, and ban risk.
     assert "hermesConfirm" in manage_ui and "hermesConfirmBtn" in manage_ui
@@ -593,7 +622,7 @@ def main() -> None:
         (654, "bd262907ff9fb2709bb54f9d3e78d07d", 22),
         (476, "b61035d9dea38e737fbf8195ccb39f2c", 16),
         (282, "c212a75ca858750ac302093c138991f2", 9),
-        (2020, "1e4f78a38afb0c5adaf775683d6157d6", 62),
+        (2031, "f69da5d74c1a4bcae4a6bbdf1128c91a", 62),
         (1466, "0ea421e01be6b6e8f66a8fb752970bb3", 46),
     ]
     for text, (size, digest, fields) in zip(found, expected):

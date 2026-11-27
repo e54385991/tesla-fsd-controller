@@ -1837,7 +1837,8 @@ bool loadPreset(const char* name, char* error, size_t errorSize) {
         strcasecmp(name, "official") == 0) {
         return setPayload(kFsdPayload282b, strlen(kFsdPayload282b), error, errorSize, "preset");
     }
-    if (strcasecmp(name, "2020") == 0 || strcasecmp(name, "payload-2020") == 0 ||
+    if (strcasecmp(name, "2031") == 0 || strcasecmp(name, "payload-2031") == 0 ||
+        strcasecmp(name, "1990") == 0 || strcasecmp(name, "2020") == 0 ||
         strcasecmp(name, "cn") == 0 || strcasecmp(name, "cn62") == 0 ||
         strcasecmp(name, "full") == 0) {
         return setPayload(kFsdPayloadCnFull, strlen(kFsdPayloadCnFull), error, errorSize, "preset");

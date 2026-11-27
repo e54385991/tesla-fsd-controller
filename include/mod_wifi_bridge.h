@@ -622,7 +622,7 @@ static inline void syncNATState() {
 // Uses the "fsd" namespace (shared with main.cpp) and its own key prefixes
 // (ub_*) to avoid collision.
 
-// Tesla 推荐方案 — 当前 (v7): 基础服务 + 百度地图 + QQ/网易云/Apple Music
+// Tesla 推荐方案 — 当前 (v8): 基础服务 + 百度地图 + QQ/网易云/Apple Music
 // + 豆包（Doubao）相关域名。
 // v7 相比 v6：把 connman.vn.cloud.tesla.cn 加回白名单首位（用户指定）；
 // www.tesla.cn 仍不放行。黑名单沿用 v6（含 assistant-api.prd.cnn1）。
@@ -640,7 +640,13 @@ static inline void syncNATState() {
 //     或断开 Wi-Fi。
 //
 // ⚠️ 一键恢复默认通过 /api/wifi-bridge/set?dnsReset=allow|block|all 直接使用
-//    本文件的 kTeslaMinAllowV7 / kTeslaMinBlockV6，前端不再维护重复的预设常量。
+//    本文件的 kTeslaMinAllowV8 / kTeslaMinBlockV7，前端不再维护重复的预设常量。
+// v8 默认 allowlist：在 v7 基础上补上 QQ 音乐显式域名
+// （父域规则已覆盖，这里按用户要求显式列出）。
+static const char* kTeslaMinAllowV8 =
+    "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
+
+// v7 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v8
 static const char* kTeslaMinAllowV7 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
 
@@ -668,10 +674,15 @@ static const char* kTeslaMinAllowV2 =
 static const char* kTeslaMinAllowV1 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn hermes-prd.vn.cloud.tesla.cn signaling.vn.cloud.tesla.cn media-server-me.tesla.cn www.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com";
 
-// v6 默认黑名单（外网）：api-prd 是 Tesla 手机 App 控车 / 车辆配置端点；
-// mothership.* 是车辆母舰配置端点；assistant-api.prd.cnn1 是语音助手/配置
-// 相关端点。FSD 劫持开启时它们由本地 443/4567 接管；劫持关闭时按黑名单阻断，
-// 避免车机直连外网被云端改写配置。
+// v7 默认黑名单（外网）：控车/配置、母舰、语音助手、遥测、文件与升级端点，
+// 以及 amazonaws.com.cn。FSD 劫持开启时其中 mothership/api-prd 由本地
+// 443/4567 接管；劫持关闭时按黑名单阻断，避免车机直连外网被云端改写配置。
+// hermes-prd 默认也在这里；启用「hermes 远程车控」时前端会把它从黑名单
+// 临时移除，关闭车控后再加回。
+static const char* kTeslaMinBlockV7 =
+    "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn assistant-api.prd.cnn1.vn.cloud.tesla.cn telemetry-prd.vn.cloud.tesla.cn hermes-stream-prd.vn.cloud.tesla.cn hermes-prd.vn.cloud.tesla.cn apigateway-x2-trigger.tesla.cn vehicle-files.prd.cnn1.vn.cloud.tesla.cn vehicle-files.prd.cn1.vn.cloud.tesla.cn upgrade.vn.cloud.tesla.cn amazonaws.com.cn";
+
+// v6 默认黑名单 — 仅用于识别未自定义过的配置并迁移到 v7
 static const char* kTeslaMinBlockV6 =
     "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn assistant-api.prd.cnn1.vn.cloud.tesla.cn";
 
@@ -721,8 +732,8 @@ static inline void wifiBridgeLoadConfig() {
     // the ub_init flag persists so we never overwrite their choices.
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV7);
-        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV6);
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
+        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
         Preferences p2;
         p2.begin("fsd", false);
         p2.putBool("ub_dnsEn", true);
@@ -734,9 +745,9 @@ static inline void wifiBridgeLoadConfig() {
     }
 
     // Migration: 老用户如果 allowlist 完全等于 v1~v6 默认值（未自定义过），
-    // 自动升级到 v7（把 connman 加回首位；黑名单仍为 v6）。
-    // 黑名单只要仍是旧默认值（v3 整段 tesla.*、v4 仅 api-prd、v5 含 mothership）
-    // 就升级到 v6；用户改过则不动，尊重用户选择。
+    // 自动升级到 v7（把 connman 加回首位）。
+    // 黑名单只要仍是旧默认值（v3/v4/v5/v6）就升级到 v7（新增遥测/文件/升级等
+    // 端点与 hermes 默认阻断）；用户改过则不动，尊重用户选择。
     bool allowChanged = false;
     bool blockChanged = false;
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
@@ -744,14 +755,15 @@ static inline void wifiBridgeLoadConfig() {
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV3) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV4) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV5) == 0 ||
-        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV6) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV7);
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV6) == 0 ||
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV7) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
         allowChanged = true;
     }
     if (strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0 ||
         strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV4) == 0 ||
         strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV5) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV6);
+        wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
         blockChanged = true;
     }
     if (allowChanged || blockChanged) {

@@ -89,13 +89,13 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <button id="dnsResetAllow">白名单恢复默认</button>
     <button id="dnsResetBlock">黑名单恢复默认</button>
     <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
-      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认不放行（无车控版更安全）。仅 <b>Model 3/Y</b> 可能需要开启，以便 FSD 下发时让车机认为在线并请求配置；<b>Model S/X 不开启也会请求配置，且 S/X 请勿开启</b>。勾选需等待 10 秒确认，确认后追加到白名单末尾；存在被封禁 FSD 权限的风险。<br>
+      ⚠️ hermes-prd.vn.cloud.tesla.cn 默认在<b>黑名单</b>（无车控版更安全）。仅 <b>Model 3/Y</b> 可能需要开启，以便 FSD 下发时让车机认为在线并请求配置；<b>Model S/X 不开启也会请求配置，且 S/X 请勿开启</b>。勾选需等待 10 秒确认，确认后追加到白名单末尾并<b>临时从黑名单移除</b>，取消勾选后自动恢复黑名单；存在被封禁 FSD 权限的风险。<br>
       ⛔ api-prd.vn.cloud.tesla.cn 默认在黑名单：车机恢复出厂后如 QQ 音乐无法显示扫码登录 / 网易云音乐异常，可先加入白名单（同长度白名单优先）；放行后云端可能改写 FSD 配置，风险自担。音乐恢复后请立刻移回黑名单或断开 Wi-Fi。<br>
       ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。<br>
       ⛔ assistant-api.prd.cnn1.vn.cloud.tesla.cn 默认在外网黑名单（语音助手 / 配置端点），避免云端下发配置。
     </div>
     <label style="margin-top:8px"><input type="checkbox" id="hermesControl"> 启用 hermes 远程车控（默认关闭；仅 3/Y 可能需要，S/X 勿开）</label>
-    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">取消勾选会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 从白名单中<strong>任意位置</strong>移除（不区分大小写/分隔符）。</div>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">取消勾选会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 从白名单<strong>任意位置</strong>移除（不区分大小写/分隔符），并重新加回黑名单。</div>
     <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
     <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">默认关闭。关闭可省去每包 lwIP 钩子开销；开启后才会拦截已拿到 IP、绕过 DNS 继续直连的黑名单流量（最多缓存 256 个 IP）。</div>
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d">
@@ -148,7 +148,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 <div class="overlay" id="hermesConfirm"><div class="box" style="max-width:540px">
   <h3 style="color:#e3b341">⚠️ 启用 hermes 远程车控？</h3>
   <div style="font-size:12px;line-height:1.8;color:#e3b341">
-    • 启用后会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 追加到白名单最后一项。<br>
+    • 启用后会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 追加到白名单最后一项，并<b>临时从黑名单移除</b>（取消勾选后恢复黑名单）。<br>
     • <b>仅 Model 3/Y 可能需要开启</b>，让车机认为在线并主动请求配置。<br>
     • <b>Model S/X 不开启也会请求配置；S/X 请勿开启本项</b>。<br>
     • 存在被 Tesla 封禁 FSD 权限的风险。<br>
@@ -302,6 +302,14 @@ function showHermesConfirm(){
     }
   },1000);
 }
+function applyHermesBlock(want){
+  // hermes sits in the default blacklist. Enabling vehicle control temporarily
+  // removes it; disabling puts it back so direct access stays blocked.
+  var tb=document.getElementById('dnsBlock');
+  var parts=stripHermes(tb.value);
+  if(!want) parts.push(HERMES_DOMAIN);
+  tb.value=parts.join(' ');
+}
 function applyHermes(want){
   var ta=document.getElementById('dnsAllow');
   // Removing always strips every occurrence wherever it sits (head/middle/tail,
@@ -309,6 +317,7 @@ function applyHermes(want){
   var parts=stripHermes(ta.value);
   if(want) parts.push(HERMES_DOMAIN);
   ta.value=parts.join(' ');
+  applyHermesBlock(want);
 }
 async function toggleHermes(){
   var box=document.getElementById('hermesControl');
