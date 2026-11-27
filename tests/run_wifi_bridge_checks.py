@@ -72,7 +72,9 @@ def check_static_contracts() -> None:
         "CONFIG_ESP_WIFI_RX_BA_WIN=16",
         "CONFIG_ESP_WIFI_TX_BA_WIN=16",
         "CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y",
-        "CONFIG_LWIP_MAX_SOCKETS=16",
+        "CONFIG_LWIP_MAX_SOCKETS=20",
+        "CONFIG_SPIRAM=y",
+        "CONFIG_SPIRAM_IGNORE_NOTFOUND=y",
         "CONFIG_LWIP_UDP_RECVMBOX_SIZE=32",
         "CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64",
         "CONFIG_LWIP_TCP_SACK_OUT=y",
@@ -396,8 +398,10 @@ int main() {
     assert(sysStatsComputeUsagePct(2000000ULL, 2000000ULL, false) == 0.0f);
     assert(sysStatsComputeUsagePct(2500000ULL, 2000000ULL, false) == 0.0f);
     assert(sysStatsComputeUsagePct(1500000ULL, 2000000ULL, false) == 25.0f);
-    assert(sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) > 12.3f &&
-           sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) < 12.4f);
+    assert(sysStatsComputeUsagePct(1754000ULL, 2000000ULL, false) > 12.25f &&
+           sysStatsComputeUsagePct(1754000ULL, 2000000ULL, false) < 12.35f);
+    assert(sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) > 12.35f &&
+           sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) < 12.45f);
     assert(sysStatsComputeMemPct(0, 0) == 0.0f);
     assert(sysStatsComputeMemPct(100000, 100000) == 0.0f);
     assert(sysStatsComputeMemPct(120000, 100000) == 0.0f);

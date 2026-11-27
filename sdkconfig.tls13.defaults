@@ -18,7 +18,8 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # TLS + NAPT + OTA (NAPT L3 forwarding bypasses local TCP buffers).
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
-CONFIG_LWIP_MAX_SOCKETS=16
+# 20 BSD sockets: 443 (1+1+3) + 4567 (1+1+3) + DNS (2) + async proxy (2) + headroom.
+CONFIG_LWIP_MAX_SOCKETS=20
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
@@ -61,14 +62,38 @@ CONFIG_LWIP_IPV4_NAPT=y
 # httpd scratch buffers are realloc'd on demand per request and freed on exit,
 # so 8192 B adds zero idle RAM overhead.
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+# Disable unused HTTP/HTTPS server default-event-loop posts on every recv/send.
+# CONFIG_ESP_HTTPS_SERVER_EVENTS is not set
+# CONFIG_HTTPD_ENABLE_EVENTS is not set
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=8192
 CONFIG_HTTPD_MAX_URI_LEN=1024
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=6144
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Keep DYNAMIC_BUFFER disabled: IDF 6.1.1 esp_ssl_srv.c:58 frees the RX buffer
+# without checking ssl->keep_current_message on TLS 1.3->1.2 ClientHello fallback,
+# deadlocking TLS 1.2 clients. Use 8 MB Octal PSRAM (with safe IGNORE_NOTFOUND
+# fallback) + DEFAULT_MEM_ALLOC so multi-socket TLS uses PSRAM without OOM.
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# Match aa0a69f8b hardware-only MPI and trim unused mbedTLS self-tests.
+# CONFIG_MBEDTLS_LARGE_KEY_SOFTWARE_MPI is not set
+# CONFIG_MBEDTLS_SELF_TEST is not set
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
 CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
+
+# ── PSRAM (Waveshare ESP32-S3R8 8 MB Octal PSRAM; safe fallback if absent) ───
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
 # Upstream is intentionally insecure, matching TeslaDG start_hotspot.ps1
 # (mitmdump --set ssl_insecure=true). Tesla's api-prd certificate is issued

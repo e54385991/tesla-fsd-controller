@@ -9,10 +9,15 @@
 #include <WiFi.h>
 #include <cJSON.h>
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_https_server.h>
+#include <esp_tls.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <lwip/sockets.h>
+#include <mbedtls/platform.h>
+#include <mbedtls/ssl.h>
 #include <cerrno>
 #include <memory>
 
@@ -303,17 +308,16 @@ static bool startMothershipHttp() {
     config.max_uri_len = kFsdMaxUriLen;
     config.max_resp_headers = kFsdMaxRespHeaders;
     config.core_id = 0;
-    config.stack_size = 8192;
-    config.max_open_sockets = 1;
-    config.backlog_conn = 1;
-    // Do not evict the active socket under burst load: each extra TLS
-    // handshake allocates AES/SSL heap and can OOM. Queue one reconnect and
-    // refuse the rest instead.
-    config.lru_purge_enable = false;
+    config.stack_size = 6144;
+    config.max_open_sockets = 3;
+    config.backlog_conn = 4;
+    // Allow concurrent keep-alive sockets and evict the oldest idle socket
+    // under burst load (esp_http_server never evicts sockets busy in async proxy).
+    config.lru_purge_enable = true;
     config.keep_alive_enable = true;
     config.keep_alive_idle = 5;
-    config.keep_alive_interval = 5;
-    config.keep_alive_count = 3;
+    config.keep_alive_interval = 3;
+    config.keep_alive_count = 2;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
 
@@ -364,14 +368,20 @@ const char* lastListenerError() {
     return snapshot;
 }
 
-// esp_https_server calls this only after a successful TLS handshake, with the
-// negotiated TLS context. It lets the dashboard show the same TLS state that
-// Windows mitmproxy prints in handshake.log.
+// esp_https_server calls this on session create/close/error. Recording
+// SESS_CREATE mirrors mitmproxy's handshake_ok. Failures are counted only by
+// the aa0a69f8b log hook; SESS_ERROR (IDF 6+) never counts, it only appends
+// the peer's TLS alert when the logged error is -0x7780.
 static void tlsUserCallback(esp_https_server_user_cb_arg_t* argument) {
     if (!argument || !argument->tls) return;
     if (argument->user_cb_state == HTTPD_SSL_USER_CB_SESS_CREATE) {
         fsd_mock::noteHandshake(argument->tls);
     }
+#if ESP_IDF_VERSION_MAJOR >= 6
+    else if (argument->user_cb_state == HTTPD_SSL_USER_CB_SESS_ERROR) {
+        fsd_mock::noteHandshakeError(argument->tls);
+    }
+#endif
 }
 
 static bool startFsdHttps() {
@@ -403,12 +413,14 @@ static bool startFsdHttps() {
     config.httpd.max_uri_len = kFsdMaxUriLen;
     config.httpd.max_resp_headers = kFsdMaxRespHeaders;
     config.httpd.core_id = 0;
-    config.httpd.stack_size = 10240;
+    config.httpd.stack_size = 12288;  // IDF 6.1.1 PSA/mbedTLS 4 needs more than 10240
+    // ClientHello/accept policy is identical to aa0a69f8b:
     // One vehicle TLS socket at a time. A second concurrent car connection
     // plus the upstream esp_http_client TLS context can exhaust internal RAM.
     // Do NOT lru-purge: under bursts, purging causes a handshake storm and
-    // mbedtls_ssl_handshake -0x7F00 (ALLOC_FAILED). Queue one reconnect and
-    // refuse the rest; keep-alive idle is short so the socket frees quickly.
+    // mbedtls_ssl_handshake -0x0084 / -0x7F00 (esp-aes / SSL alloc failed).
+    // Queue one reconnect and refuse the rest; keep-alive idle is short so the
+    // socket frees quickly.
     config.httpd.max_open_sockets = 1;
     config.httpd.backlog_conn = 1;  // serialize reconnects; car uses one TLS socket
     config.httpd.lru_purge_enable = false;
@@ -442,6 +454,7 @@ static bool startFsdHttps() {
         fsdServer = nullptr;
         return false;
     }
+    fsd_mock::startProxyWorker();
     resetHealth(fsdHealth);
     return true;
 }
@@ -454,6 +467,7 @@ static void stopMothershipHttp() {
 }
 
 static void stopFsdHttps() {
+    fsd_mock::stopProxyWorker();
     if (!fsdServer) return;
     httpd_ssl_stop(fsdServer);
     fsdServer = nullptr;
@@ -477,10 +491,11 @@ static bool syncFsdListenersNow() {
         return false;
     }
 
-    // Stop DNS redirect FIRST so clients never hit a closing listener, then
-    // reclaim ~28 KB RAM, 2 Core-0 tasks, and 6 BSD sockets.
+    // Stop DNS redirect FIRST so clients never hit a closing listener, drain
+    // any in-flight async proxy job, then reclaim tasks and BSD sockets.
     cancelAutoOff();
     fsd_mock::setListenersReady(false);
+    fsd_mock::stopProxyWorker();
     stopMothershipHttp();
     stopFsdHttps();
     clearLastError();
@@ -663,7 +678,28 @@ void serviceListeners() {
                          "http_4567_unresponsive");
 }
 
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+static void* psramPreferMbedtlsCalloc(size_t n, size_t size) {
+    return heap_caps_calloc_prefer(n, size, 2,
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void psramPreferMbedtlsFree(void* ptr) {
+    heap_caps_free(ptr);
+}
+#endif
+
 bool start() {
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) {
+        // Route all mbedTLS/TF-PSA-Crypto dynamic allocations (including
+        // sub-4 KB SSL/X.509/PSA structs) to PSRAM first with automatic
+        // internal-RAM fallback, keeping internal DMA SRAM free for Wi-Fi,
+        // lwIP, and AES-DMA bounce buffers under concurrent TLS sessions.
+        mbedtls_platform_set_calloc_free(psramPreferMbedtlsCalloc, psramPreferMbedtlsFree);
+    }
+#endif
     if (nvs_open("client-config", NVS_READWRITE, &storage) != ESP_OK) return false;
     if (!loadIdentity(storage)) {
         nvs_close(storage);
@@ -682,6 +718,124 @@ bool start() {
         }
     }
     return true;
+}
+
+static volatile bool gSelfTestRunning = false;
+
+static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
+                                bool keepOpen, esp_tls_t** outKeep) {
+    if (outKeep) *outKeep = nullptr;
+    esp_tls_cfg_t cfg = {};
+    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
+    cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
+    cfg.common_name = "api-prd.vn.cloud.tesla.cn";
+    cfg.timeout_ms = 4000;
+    cfg.tls_version = ver;
+
+    const uint32_t t0 = millis();
+    esp_tls_t* tls = esp_tls_init();
+    if (!tls) {
+        Serial.printf("[fsd-selftest] %s FAIL alloc\n", label);
+        return false;
+    }
+    const int rc = esp_tls_conn_new_sync("127.0.0.1", 9, kFsdPort, &cfg, tls);
+    const uint32_t hsMs = millis() - t0;
+    if (rc != 1) {
+        esp_tls_error_handle_t eh = nullptr;
+        int mbedErr = 0, mbedFlags = 0;
+        if (esp_tls_get_error_handle(tls, &eh) == ESP_OK && eh) {
+            esp_tls_get_and_clear_last_error(eh, &mbedErr, &mbedFlags);
+        }
+        Serial.printf("[fsd-selftest] %s FAIL hs rc=%d mbed=-0x%04x flags=0x%x ms=%lu heap=%u\n",
+                      label, rc, mbedErr, mbedFlags, static_cast<unsigned long>(hsMs),
+                      static_cast<unsigned>(ESP.getFreeHeap()));
+        esp_tls_conn_destroy(tls);
+        return false;
+    }
+
+    const char* tlsVer = "?";
+    const char* cipher = "?";
+    auto* ssl = static_cast<mbedtls_ssl_context*>(esp_tls_get_ssl_context(tls));
+    if (ssl) {
+        const char* v = mbedtls_ssl_get_version(ssl);
+        const char* c = mbedtls_ssl_get_ciphersuite(ssl);
+        if (v) tlsVer = v;
+        if (c) cipher = c;
+    }
+
+    char req[192];
+    const int reqLen = snprintf(req, sizeof(req),
+        "HEAD /feature_configuration HTTP/1.1\r\n"
+        "Host: api-prd.vn.cloud.tesla.cn\r\n"
+        "Connection: %s\r\n\r\n",
+        keepOpen ? "keep-alive" : "close");
+    int sent = 0;
+    while (sent < reqLen) {
+        const ssize_t w = esp_tls_conn_write(tls, req + sent, static_cast<size_t>(reqLen - sent));
+        if (w == ESP_TLS_ERR_SSL_WANT_READ || w == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (w <= 0) break;
+        sent += static_cast<int>(w);
+    }
+
+    char resp[512] = {};
+    size_t got = 0;
+    const uint32_t readDeadline = millis() + 3000;
+    while (got + 1 < sizeof(resp) && static_cast<int32_t>(readDeadline - millis()) > 0) {
+        const ssize_t r = esp_tls_conn_read(tls, resp + got, sizeof(resp) - 1 - got);
+        if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (r <= 0) break;
+        got += static_cast<size_t>(r);
+        resp[got] = '\0';
+        if (strstr(resp, "\r\n\r\n") != nullptr) break;
+    }
+
+    const uint32_t totalMs = millis() - t0;
+    const bool ok = (sent == reqLen) &&
+                    (strstr(resp, "200 OK") != nullptr) &&
+                    (strstr(resp, "X-Checksum:") != nullptr);
+    Serial.printf("[fsd-selftest] %s %s ver=%s cipher=%s hs=%lums total=%lums heap=%u minHeap=%u psram=%u\n",
+                  label, ok ? "PASS" : "FAIL", tlsVer, cipher,
+                  static_cast<unsigned long>(hsMs),
+                  static_cast<unsigned long>(totalMs),
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()),
+                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    if (ok && keepOpen && outKeep) {
+        *outKeep = tls;
+    } else {
+        esp_tls_conn_destroy(tls);
+    }
+    return ok;
+}
+
+static void fsdSelfTestTask(void*) {
+    int passed = 0;
+    Serial.printf("[fsd-selftest] start heap=%u minHeap=%u\n",
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "tls12-verify", false, nullptr)) ++passed;
+    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-verify", false, nullptr)) ++passed;
+
+    // aa0a69f8b single-socket policy: a keep-alive session must free its only
+    // slot on close so an immediate reconnect is accepted (no stuck ClientHello).
+    esp_tls_t* sockA = nullptr;
+    const bool okA = runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "serial-sockA-keepalive", true, &sockA);
+    if (sockA) esp_tls_conn_destroy(sockA);
+    const bool okB = okA && runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "serial-sockB-reconnect", false, nullptr);
+    if (okA && okB) ++passed;
+
+    Serial.printf("[fsd-selftest] done pass=%d/3 heap=%u minHeap=%u\n",
+                  passed,
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    gSelfTestRunning = false;
+    vTaskDelete(nullptr);
 }
 
 void serviceSerial() {
@@ -735,6 +889,19 @@ void serviceSerial() {
                             Serial.printf("net-test tcp=%d errno=%d heap=%u\n", connected, errno,
                                           static_cast<unsigned>(ESP.getFreeHeap()));
                             close(sock);
+                        }
+                    }
+                } else if (strcmp(command, "fsd-selftest") == 0) {
+                    if (!fsdHttpsStarted()) {
+                        Serial.println("[fsd-selftest] FAIL fsd443 not started (run fsd-on first)");
+                    } else if (gSelfTestRunning) {
+                        Serial.println("[fsd-selftest] already running");
+                    } else {
+                        gSelfTestRunning = true;
+                        if (xTaskCreatePinnedToCore(fsdSelfTestTask, "FsdSelfTest", 8192,
+                                                    nullptr, 1, nullptr, 1) != pdPASS) {
+                            gSelfTestRunning = false;
+                            Serial.println("[fsd-selftest] FAIL task_create");
                         }
                     }
                 } else if (strcmp(command, "fsd-on") == 0) {

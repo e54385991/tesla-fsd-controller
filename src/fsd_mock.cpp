@@ -16,8 +16,11 @@
 #include <esp_rom_md5.h>
 #include <esp_tls.h>
 #include <esp_idf_version.h>
+#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <lwip/sockets.h>
 #include <mbedtls/ssl.h>
 
@@ -153,8 +156,21 @@ LastResponse gLastResponse;
 portMUX_TYPE gLastResponseMux = portMUX_INITIALIZER_UNLOCKED;
 
 vprintf_like_t gPreviousLog = nullptr;
-volatile bool gInUpstreamRequest = false;
+volatile TaskHandle_t gUpstreamTask = nullptr;
 volatile uint32_t gLastMbedtlsFailureMs = 0;
+
+struct ProxyJob {
+    httpd_req_t* req = nullptr;
+    Hit hit;
+    Capture capture;
+    bool observe = false;
+};
+
+portMUX_TYPE gProxyMux = portMUX_INITIALIZER_UNLOCKED;
+QueueHandle_t gProxyQueue = nullptr;
+TaskHandle_t gProxyWorkerTask = nullptr;
+volatile bool gProxyShuttingDown = false;
+uint32_t gProxyInFlight = 0;
 
 // ── basic helpers ───────────────────────────────────────────────────────────
 
@@ -983,9 +999,9 @@ esp_err_t upstreamEventHandler(esp_http_client_event_t* event) {
     return ESP_OK;
 }
 
-int forwardRequest(httpd_req_t* request, Capture& capture,
-                   Hit& hit, char* responseBody, size_t responseCapacity,
-                   bool& closeConnection) {
+bool fastRejectForward(httpd_req_t* request, Capture& capture,
+                       Hit& hit, char* responseBody, size_t responseCapacity,
+                       bool& closeConnection) {
     closeConnection = false;
     hit.status = 0;
     hit.bytes = 0;
@@ -1010,7 +1026,14 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
                  "Cannot connect to %s: [Errno 113] No route to host",
                  kMothershipBlockedUpstream);
         sendProxyError(request, hit, responseBody, 502, message);
-        return 502;
+        return true;
+    }
+
+    if (gProxyShuttingDown) {
+        closeConnection = true;
+        discardRequestBody(request, 8192);
+        sendProxyError(request, hit, responseBody, 503, "proxy_stopping");
+        return true;
     }
 
     if (!upstreamReady()) {
@@ -1018,7 +1041,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 502,
                        "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unavailable");
-        return 502;
+        return true;
     }
 
     const size_t bodyLength = request->content_len;
@@ -1026,20 +1049,23 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         closeConnection = true;
         discardRequestBody(request, 8192);
         finishJsonError(request, hit, responseBody, 413, "{\"error\":\"request_too_large\"}");
-        return 413;
+        return true;
     }
 
     // A second TLS context (upstream api-prd) needs ~20-24 KB contiguous
     // internal RAM. Under concurrent 443 handshakes, trying anyway causes
-    // mbedtls_ssl_handshake -0x7F00 (ALLOC_FAILED), esp-aes OOM spam and
-    // panic/reboot. Fail this passthrough fast; FSD /feature_configuration
-    // stays local and unaffected.
-    if (ESP.getFreeHeap() < 45000 ||
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 20000) {
+    // mbedtls_ssl_handshake -0x0084 / -0x7F00 (ALLOC_FAILED), esp-aes OOM spam
+    // and panic/reboot. Fail this passthrough fast; FSD /feature_configuration
+    // stays local and unaffected. (Same internal guard as aa0a69f8b; PSRAM, when
+    // present, must additionally have room for the mbedTLS structs.)
+    const bool lowHeap = ESP.getFreeHeap() < 45000 ||
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 20000 ||
+        (ESP.getPsramSize() > 0 && ESP.getFreePsram() < 65536);
+    if (lowHeap) {
         closeConnection = true;
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 503, "low_heap");
-        return 503;
+        return true;
     }
 
     const uint32_t staIp = static_cast<uint32_t>(WiFi.localIP());
@@ -1048,8 +1074,20 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 502,
                        "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unreachable");
-        return 502;
+        return true;
     }
+
+    return false;
+}
+
+int forwardRequest(httpd_req_t* request, Capture& capture,
+                   Hit& hit, char* responseBody, size_t responseCapacity,
+                   bool& closeConnection) {
+    if (fastRejectForward(request, capture, hit, responseBody, responseCapacity, closeConnection)) {
+        return hit.status;
+    }
+
+    const size_t bodyLength = request->content_len;
 
     // TeslaDG reverse target for 443 is
     // reverse:https://api-prd.vn.cloud.tesla.cn@443 (keep_host_header=false).
@@ -1116,7 +1154,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         if (strcasecmp(name, "Host") == 0) continue;
         const size_t length = httpd_req_get_hdr_value_len(request, name);
         if (length == 0) continue;
-        char stackValue[256];
+        char stackValue[128];
         char* value = (length < sizeof(stackValue)) ? stackValue : static_cast<char*>(malloc(length + 1));
         if (!value) continue;
         if (httpd_req_get_hdr_value_str(request, name, value, length + 1) == ESP_OK) {
@@ -1133,16 +1171,16 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     capture.head[0] = '\0';
     capture.requestMd5[0] = '\0';
     bool clientReadFailed = false;
-    gInUpstreamRequest = true;
+    gUpstreamTask = xTaskGetCurrentTaskHandle();
     esp_err_t error = esp_http_client_open(client, static_cast<int>(bodyLength));
     if (error == ESP_OK && bodyLength > 0) {
         md5_context_t reqMd5;
         esp_rom_md5_init(&reqMd5);
-        char reqChunk[1024];
+        char reqChunk[512];
         size_t remaining = bodyLength;
         size_t captured = 0;
         int timeouts = 0;
-        while (remaining > 0) {
+        while (remaining > 0 && !gProxyShuttingDown) {
             const size_t want = remaining < sizeof(reqChunk) ? remaining : sizeof(reqChunk);
             const int received = httpd_req_recv(request, reqChunk, want);
             if (received == HTTPD_SOCK_ERR_TIMEOUT) {
@@ -1168,6 +1206,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
             remaining -= receivedSize;
         }
+        if (remaining > 0 && error == ESP_OK) error = ESP_FAIL;
         if (error == ESP_OK) {
             uint8_t digest[16];
             esp_rom_md5_final(digest, &reqMd5);
@@ -1176,10 +1215,12 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
         }
     }
-    if (error == ESP_OK && esp_http_client_fetch_headers(client) < 0) {
+    if (error == ESP_OK && !gProxyShuttingDown && esp_http_client_fetch_headers(client) < 0) {
+        error = ESP_FAIL;
+    } else if (gProxyShuttingDown) {
         error = ESP_FAIL;
     }
-    gInUpstreamRequest = false;
+    gUpstreamTask = nullptr;
 
     strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
     strlcpy(hit.reqHead, capture.head, sizeof(hit.reqHead));
@@ -1189,12 +1230,12 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         free(url);
-        if (bodyLength > 0) discardRequestBody(request, 8192);
+        if (bodyLength > 0 && !gProxyShuttingDown) discardRequestBody(request, 8192);
         if (clientReadFailed) {
             finishJsonError(request, hit, responseBody, 400, "{\"error\":\"request_read_failed\"}");
             return 400;
         }
-        upstreamRecordFailure(millis());
+        if (!gProxyShuttingDown) upstreamRecordFailure(millis());
         char message[128];
         snprintf(message, sizeof(message), "Cannot connect to %s: %s",
                  upstreamHost, esp_err_to_name(error));
@@ -1225,7 +1266,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const bool noBodyResponse = (request->method == HTTP_HEAD || status == 204 || status == 304);
     md5_context_t md5;
     esp_rom_md5_init(&md5);
-    char buffer[1400];
+    char buffer[512];
     size_t total = 0;
     size_t preview = 0;
     size_t bodyStored = 0;
@@ -1234,7 +1275,8 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const uint32_t streamStartMs = millis();
     if (!noBodyResponse) {
         int read = 0;
-        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
+        while (!gProxyShuttingDown &&
+               (read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
             esp_rom_md5_update(&md5, buffer, static_cast<uint32_t>(read));
             if (preview < sizeof(hit.respHead) - 1) {
                 const size_t copy = (sizeof(hit.respHead) - 1 - preview) < static_cast<size_t>(read)
@@ -1258,13 +1300,17 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
                 break;
             }
             // Hard wall-clock & byte bounds keep a slow/huge upstream FLOW from
-            // monopolizing the single-threaded 443 server.
+            // monopolizing the upstream worker.
             if (millis() - streamStartMs >= kMaxForwardDurationMs ||
                 total >= kMaxForwardResponseBytes) {
                 streamCapped = true;
                 closeConnection = true;
                 break;
             }
+        }
+        if (gProxyShuttingDown) {
+            streamCapped = true;
+            closeConnection = true;
         }
     }
     if (sendOk && !streamCapped) {
@@ -1286,6 +1332,152 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         }
     }
     return status;
+}
+
+void proxyWorkerTask(void*) {
+    while (true) {
+        ProxyJob* job = nullptr;
+        if (xQueueReceive(gProxyQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+        if (job == nullptr) break;  // shutdown sentinel
+
+        char* respBody = job->observe
+            ? static_cast<char*>(malloc(kLastResponseCapacity))
+            : nullptr;
+        const int fd = httpd_req_to_sockfd(job->req);
+        bool closeConn = false;
+        forwardRequest(job->req, job->capture, job->hit,
+                       respBody, respBody ? kLastResponseCapacity : 0, closeConn);
+        recordHit(job->hit, respBody);
+        free(respBody);
+
+        if (closeConn && fd >= 0) {
+            // Half-close RX before returning the socket to httpd's select() so
+            // httpd immediately detects EOF and closes the session cleanly.
+            shutdown(fd, SHUT_RD);
+        }
+        httpd_req_async_handler_complete(job->req);
+        delete job;
+
+        portENTER_CRITICAL(&gProxyMux);
+        if (gProxyInFlight > 0) --gProxyInFlight;
+        portEXIT_CRITICAL(&gProxyMux);
+    }
+
+    portENTER_CRITICAL(&gProxyMux);
+    gProxyWorkerTask = nullptr;
+    portEXIT_CRITICAL(&gProxyMux);
+    vTaskDelete(nullptr);
+}
+
+// Offload upstream reverse-proxy I/O off the 443 httpd task so /feature_configuration
+// and new TLS handshakes on other sockets are never blocked by upstream latency.
+esp_err_t dispatchForward(httpd_req_t* request, Hit& hit, Capture& capture, bool observe) {
+    char* localResp = observe ? static_cast<char*>(malloc(kLastResponseCapacity)) : nullptr;
+    bool closeConnection = false;
+    if (fastRejectForward(request, capture, hit,
+                          localResp, localResp ? kLastResponseCapacity : 0, closeConnection)) {
+        recordHit(hit, localResp);
+        free(localResp);
+        return closeConnection ? ESP_FAIL : ESP_OK;
+    }
+
+    QueueHandle_t q = nullptr;
+    bool stopping = false;
+    portENTER_CRITICAL(&gProxyMux);
+    q = gProxyQueue;
+    stopping = gProxyShuttingDown;
+    portEXIT_CRITICAL(&gProxyMux);
+
+    if (q != nullptr && !stopping) {
+        if (uxQueueSpacesAvailable(q) == 0) {
+            discardRequestBody(request, 8192);
+            sendProxyError(request, hit, localResp, 503, "proxy_busy");
+            recordHit(hit, localResp);
+            free(localResp);
+            return ESP_FAIL;
+        }
+        auto* job = new (std::nothrow) ProxyJob;
+        if (!job) {
+            discardRequestBody(request, 8192);
+            finishJsonError(request, hit, localResp, 500, "{\"error\":\"no_memory\"}");
+            recordHit(hit, localResp);
+            free(localResp);
+            return ESP_FAIL;
+        }
+        httpd_req_t* asyncReq = nullptr;
+        if (httpd_req_async_handler_begin(request, &asyncReq) != ESP_OK) {
+            delete job;
+            discardRequestBody(request, 8192);
+            sendProxyError(request, hit, localResp, 503, "async_unavailable");
+            recordHit(hit, localResp);
+            free(localResp);
+            return ESP_FAIL;
+        }
+        job->req = asyncReq;
+        job->hit = hit;
+        job->capture = capture;
+        job->observe = observe;
+
+        portENTER_CRITICAL(&gProxyMux);
+        ++gProxyInFlight;
+        portEXIT_CRITICAL(&gProxyMux);
+
+        if (xQueueSend(q, &job, 0) != pdTRUE) {
+            portENTER_CRITICAL(&gProxyMux);
+            if (gProxyInFlight > 0) --gProxyInFlight;
+            portEXIT_CRITICAL(&gProxyMux);
+            const int fd = httpd_req_to_sockfd(asyncReq);
+            discardRequestBody(asyncReq, 8192);
+            sendProxyError(asyncReq, hit, localResp, 503, "proxy_busy");
+            recordHit(hit, localResp);
+            if (fd >= 0) shutdown(fd, SHUT_RD);
+            httpd_req_async_handler_complete(asyncReq);
+            delete job;
+            free(localResp);
+            return ESP_OK;
+        }
+        free(localResp);
+        return ESP_OK;
+    }
+
+    // Fallback synchronous path if worker was not started.
+    forwardRequest(request, capture, hit,
+                   localResp, localResp ? kLastResponseCapacity : 0, closeConnection);
+    recordHit(hit, localResp);
+    free(localResp);
+    return closeConnection ? ESP_FAIL : ESP_OK;
+}
+
+const char* tlsAlertName(int alert) {
+    switch (alert) {
+        case 0:   return "close_notify";
+        case 10:  return "unexpected_message";
+        case 20:  return "bad_record_mac";
+        case 21:  return "decryption_failed";
+        case 22:  return "record_overflow";
+        case 40:  return "handshake_failure";
+        case 42:  return "bad_certificate";
+        case 43:  return "unsupported_certificate";
+        case 44:  return "certificate_revoked";
+        case 45:  return "certificate_expired";
+        case 46:  return "certificate_unknown";
+        case 47:  return "illegal_parameter";
+        case 48:  return "unknown_ca";
+        case 49:  return "access_denied";
+        case 50:  return "decode_error";
+        case 51:  return "decrypt_error";
+        case 70:  return "protocol_version";
+        case 71:  return "insufficient_security";
+        case 80:  return "internal_error";
+        case 86:  return "inappropriate_fallback";
+        case 90:  return "user_canceled";
+        case 109: return "missing_extension";
+        case 110: return "unsupported_extension";
+        case 112: return "unrecognized_name";
+        case 116: return "certificate_required";
+        case 120: return "no_application_protocol";
+        default:  return "other";
+    }
 }
 
 }  // namespace
@@ -1319,7 +1511,9 @@ static void storeHandshakeLogError(const char* format, va_list args) {
 }
 
 static int fsdLogHook(const char* format, va_list args) {
-    if (format && !gInUpstreamRequest) {
+    const TaskHandle_t curTask = xTaskGetCurrentTaskHandle();
+    const bool isUpstream = (gUpstreamTask != nullptr && curTask == gUpstreamTask);
+    if (format && !isUpstream) {
         if (strstr(format, "mbedtls_ssl_handshake returned")) {
             storeHandshakeLogError(format, args);
             gLastMbedtlsFailureMs = millis();
@@ -1364,6 +1558,135 @@ void noteHandshakeFailure(const char* error) {
         if (gHandshakeCount < kHandshakeCapacity) ++gHandshakeCount;
     }
     portEXIT_CRITICAL(&gHandshakeMux);
+}
+
+void noteHandshakeError(const esp_tls_t* tls) {
+    char client[46] = {};
+    char detail[64] = {};
+    int alert = -1;
+    if (tls) {
+#if ESP_IDF_VERSION_MAJOR >= 5
+        int sock = -1;
+        if (esp_tls_get_conn_sockfd(const_cast<esp_tls_t*>(tls), &sock) == ESP_OK) {
+            socketAddress(sock, client, sizeof(client));
+        }
+        auto* ssl = static_cast<mbedtls_ssl_context*>(
+            esp_tls_get_ssl_context(const_cast<esp_tls_t*>(tls)));
+#else
+        socketAddress(tls->sockfd, client, sizeof(client));
+        auto* ssl = &const_cast<esp_tls_t*>(tls)->ssl;
+#endif
+#if defined(CONFIG_ESP_TLS_USING_MBEDTLS) && ESP_IDF_VERSION_MAJOR >= 6
+        if (ssl) {
+            alert = mbedtls_ssl_get_fatal_alert(ssl);
+        }
+#else
+        (void)ssl;
+#endif
+    }
+
+    // Counting/ring logic stays exactly aa0a69f8b: the log hook already recorded
+    // "mbedtls_ssl_handshake returned -0x...." (or esp_tls_create_server_session
+    // failed) just before this callback. Never add/count a failure here, and
+    // never rewrite non-alert errors such as -0x0084 (esp-aes/SSL alloc) or
+    // -0x7280 (peer EOF): in_fatal_alert_type is 0 for those, which would
+    // otherwise be misreported as "-0x7780 alert=0(close_notify)".
+    if (alert >= 0) {
+        snprintf(detail, sizeof(detail), "handshake -0x7780 alert=%d(%s)",
+                 alert, tlsAlertName(alert));
+    }
+    const uint32_t now = millis();
+    portENTER_CRITICAL(&gHandshakeMux);
+    const bool recent = gHandshakeFail > 0 && (now - gLastHandshakeFailMs <= 1000);
+    if (recent && gHandshakeCount > 0) {
+        const size_t latest = (gHandshakeWrite + kHandshakeCapacity - 1) % kHandshakeCapacity;
+        Handshake& entry = gHandshakes[latest];
+        if (strcmp(entry.event, "handshake_failed") == 0) {
+            if (client[0] && !entry.client[0]) {
+                strlcpy(entry.client, client, sizeof(entry.client));
+            }
+            if (detail[0] && strstr(entry.error, "-0x7780") != nullptr &&
+                strstr(entry.error, "alert=") == nullptr) {
+                strlcpy(entry.error, detail, sizeof(entry.error));
+                if (strstr(gLastHandshakeError, "-0x7780") != nullptr) {
+                    strlcpy(gLastHandshakeError, detail, sizeof(gLastHandshakeError));
+                }
+            }
+        }
+    }
+    portEXIT_CRITICAL(&gHandshakeMux);
+}
+
+void getHandshakeSummary(uint32_t* ok, uint32_t* fail,
+                         char* tls, size_t tlsCapacity,
+                         char* error, size_t errorCapacity) {
+    portENTER_CRITICAL(&gHandshakeMux);
+    if (ok) *ok = gHandshakeOk;
+    if (fail) *fail = gHandshakeFail;
+    if (tls && tlsCapacity > 0) strlcpy(tls, gLastHandshakeTls, tlsCapacity);
+    if (error && errorCapacity > 0) strlcpy(error, gLastHandshakeError, errorCapacity);
+    portEXIT_CRITICAL(&gHandshakeMux);
+}
+
+void startProxyWorker() {
+    portENTER_CRITICAL(&gProxyMux);
+    gProxyShuttingDown = false;
+    const bool alreadyUp = (gProxyQueue != nullptr && gProxyWorkerTask != nullptr);
+    portEXIT_CRITICAL(&gProxyMux);
+    if (alreadyUp) return;
+
+    QueueHandle_t q = gProxyQueue;
+    if (!q) {
+        q = xQueueCreate(2, sizeof(ProxyJob*));
+        if (!q) return;
+        portENTER_CRITICAL(&gProxyMux);
+        gProxyQueue = q;
+        portEXIT_CRITICAL(&gProxyMux);
+    }
+
+    TaskHandle_t task = nullptr;
+    if (xTaskCreatePinnedToCore(proxyWorkerTask, "FsdProxy", 8192, nullptr, 1, &task, 1) == pdPASS) {
+        portENTER_CRITICAL(&gProxyMux);
+        gProxyWorkerTask = task;
+        portEXIT_CRITICAL(&gProxyMux);
+    }
+}
+
+void stopProxyWorker() {
+    portENTER_CRITICAL(&gProxyMux);
+    gProxyShuttingDown = true;
+    QueueHandle_t q = gProxyQueue;
+    portEXIT_CRITICAL(&gProxyMux);
+
+    // Drain any queued/active async proxy jobs BEFORE httpd_ssl_stop() frees sock_db.
+    const uint32_t deadline = millis() + 3500;
+    while (static_cast<int32_t>(deadline - millis()) > 0) {
+        portENTER_CRITICAL(&gProxyMux);
+        const uint32_t inflight = gProxyInFlight;
+        portEXIT_CRITICAL(&gProxyMux);
+        if (inflight == 0) break;
+        if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    if (q) {
+        ProxyJob* sentinel = nullptr;
+        xQueueSend(q, &sentinel, pdMS_TO_TICKS(200));
+        const uint32_t exitDeadline = millis() + 500;
+        while (static_cast<int32_t>(exitDeadline - millis()) > 0) {
+            portENTER_CRITICAL(&gProxyMux);
+            const bool done = (gProxyWorkerTask == nullptr);
+            portEXIT_CRITICAL(&gProxyMux);
+            if (done) break;
+            if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        portENTER_CRITICAL(&gProxyMux);
+        const bool canDeleteQ = (gProxyWorkerTask == nullptr);
+        if (canDeleteQ) gProxyQueue = nullptr;
+        portEXIT_CRITICAL(&gProxyMux);
+        if (canDeleteQ) vQueueDelete(q);
+    }
 }
 
 void noteHandshake(const esp_tls_t* tls) {
@@ -1548,11 +1871,7 @@ esp_err_t handleRequest(httpd_req_t* request) {
     strlcpy(hit.mode, observe ? "observe" : "reply", sizeof(hit.mode));
 
     if (observe) {
-        char responseBody[kLastResponseCapacity];
-        bool closeConnection = false;
-        forwardRequest(request, capture, hit, responseBody, sizeof(responseBody), closeConnection);
-        recordHit(hit, responseBody);
-        return closeConnection ? ESP_FAIL : ESP_OK;
+        return dispatchForward(request, hit, capture, true);
     }
 
     if (request->content_len > kMaxFsdRequestBodyBytes) {
@@ -1631,11 +1950,8 @@ esp_err_t forwardPassthrough(httpd_req_t* request) {
     strlcpy(hit.kind, "FLOW", sizeof(hit.kind));
     strlcpy(hit.mode, "flow", sizeof(hit.mode));
 
-    // FLOW records do not overwrite gLastResponse, so avoid a stack buffer.
-    bool closeConnection = false;
-    forwardRequest(request, capture, hit, nullptr, 0, closeConnection);
-    recordHit(hit, nullptr);
-    return closeConnection ? ESP_FAIL : ESP_OK;
+    // Offload upstream I/O to FsdProxy worker so 443 never stalls /feature_configuration.
+    return dispatchForward(request, hit, capture, false);
 }
 
 bool enabled() {

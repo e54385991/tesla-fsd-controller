@@ -89,10 +89,16 @@ void installLogHook();
 void begin();
 void setListenersReady(bool ready);
 void resyncDnsRedirect();
+void startProxyWorker();
+void stopProxyWorker();
 
 void noteHandshake(const struct esp_tls* tls);
+void noteHandshakeError(const struct esp_tls* tls);
 void noteHandshakeFailure(const char* error);
 void noteAutoDisabled();
+void getHandshakeSummary(uint32_t* ok, uint32_t* fail,
+                         char* tls, size_t tlsCapacity,
+                         char* error, size_t errorCapacity);
 
 bool isFeatureConfigurationUri(const char* uri);
 esp_err_t handleRequest(struct httpd_req* request);

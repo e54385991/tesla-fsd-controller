@@ -703,6 +703,13 @@ void wifiBridgePrintDiag() {
                   client_config::mothershipHttpStarted() ? 1 : 0,
                   static_cast<unsigned>(client_config::recoveryCount()),
                   client_config::lastListenerError());
+    uint32_t hsOk = 0, hsFail = 0;
+    char hsTls[16] = {};
+    char hsErr[64] = {};
+    fsd_mock::getHandshakeSummary(&hsOk, &hsFail, hsTls, sizeof(hsTls), hsErr, sizeof(hsErr));
+    Serial.printf("[wifi-diag] fsdHs ok=%u fail=%u tls=%s err=%s\n",
+                  static_cast<unsigned>(hsOk), static_cast<unsigned>(hsFail),
+                  hsTls[0] ? hsTls : "-", hsErr[0] ? hsErr : "-");
 #endif
 }
 

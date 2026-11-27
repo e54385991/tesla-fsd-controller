@@ -408,7 +408,13 @@ def check_port_policy() -> None:
     assert '"/api/client-config"' in main
     assert "client_config::apiGet" in main
     assert "client_config::apiChange" in main
-    assert "max_open_sockets = 1" in server
+    # 443 ClientHello/accept policy must stay identical to aa0a69f8b.
+    assert "config.httpd.max_open_sockets = 1;" in server
+    assert "config.httpd.backlog_conn = 1;" in server
+    assert "config.httpd.lru_purge_enable = false;" in server
+    assert "config.httpd.keep_alive_interval = 5;" in server
+    assert "config.httpd.keep_alive_count = 3;" in server
+    assert "config.max_open_sockets = 3;" in server
     # PC parity: plaintext mothership listener + keep-host upstream routing.
     assert "config.server_port = fsd_mock::kMothershipHttpPort;" in server
     assert "startMothershipHttp()" in server
@@ -551,6 +557,21 @@ def check_tls_policy() -> None:
         assert "CONFIG_HTTPD_MAX_URI_LEN=1024" in text, (
             f"{path.name}: httpd URI limit must stay >= 1024"
         )
+        assert "# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set" in text, (
+            f"{path.name}: DYNAMIC_BUFFER must stay disabled (IDF 6.1.1 esp_ssl_srv TLS 1.2 fallback deadlock)"
+        )
+        assert "CONFIG_SPIRAM=y" in text and "CONFIG_SPIRAM_IGNORE_NOTFOUND=y" in text, (
+            f"{path.name}: ESP32-S3 PSRAM with safe non-PSRAM fallback must be enabled"
+        )
+        assert "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y" in text, (
+            f"{path.name}: mbedTLS must use default alloc so large TLS buffers spill to PSRAM"
+        )
+        assert "CONFIG_LWIP_MAX_SOCKETS=20" in text, (
+            f"{path.name}: lwIP socket pool must accommodate multi-socket 443/4567 + async proxy"
+        )
+        assert "# CONFIG_ESP_HTTPS_SERVER_EVENTS is not set" in text, (
+            f"{path.name}: unused HTTPS server event posts should stay disabled"
+        )
 
     platformio = (ROOT / "platformio.ini").read_text()
     assert platformio.count("https://github.com/pioarduino/platform-espressif32/releases/download/61.04.00/platform-espressif32.zip") >= 4
@@ -564,15 +585,23 @@ def check_tls_policy() -> None:
     mock = (ROOT / "src/fsd_mock.cpp").read_text()
     assert "config.user_cb = tlsUserCallback;" in server
     assert "HTTPD_SSL_USER_CB_SESS_CREATE" in server
+    assert "HTTPD_SSL_USER_CB_SESS_ERROR" in server
+    assert "mbedtls_ssl_get_fatal_alert" in mock
+    assert "httpd_req_async_handler_begin" in mock
+    assert "httpd_req_async_handler_complete" in mock
+    assert "fsd_mock::startProxyWorker();" in server
+    assert "fsd_mock::stopProxyWorker();" in server
+    assert "mbedtls_platform_set_calloc_free" in server
+    assert "heap_caps_calloc_prefer" in server
     assert "kFsdMaxReqHdrLen = 8192" in server
     assert "config.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
     assert "config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
     assert "config.max_resp_headers = kFsdMaxRespHeaders;" in server
     assert "config.httpd.max_resp_headers = kFsdMaxRespHeaders;" in server
-    # Anti-hang & self-healing contracts (Part 1 + Part 2)
+    # Anti-hang & non-blocking concurrency contracts
     assert "config.keep_alive_enable = true;" in server
     assert "config.httpd.keep_alive_enable = true;" in server
-    assert "config.httpd.lru_purge_enable = false;" in server
+    assert "config.httpd.lru_purge_enable = true;" not in server
     assert "dnsPaused" not in server, "busy httpd must never pause DNS hijack"
     assert "config.tls_handshake_timeout_ms = 4000;" in server
     # OOM/panic guard: never open a second TLS context when heap is thin, and
