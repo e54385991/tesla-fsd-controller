@@ -64,6 +64,7 @@ struct UpstreamWiFiConfig {
     uint32_t             lastAttemptMillis      = 0;
     uint32_t             connectStartMillis     = 0;
     uint32_t             nextRetryMillis        = 0;
+    uint32_t             lastConnectedSyncMillis = 0;
     uint8_t              consecutiveFailures    = 0;
     int8_t               preferredIndex         = -1;  // last network that connected; tried first after apply/boot
     bool                 connecting             = false;
@@ -407,6 +408,7 @@ static inline void wifiBridgeApplyConfig(const char* apSsid) {
     gWifiBridgeCfg.pendingGotIpEvent = false;
     gWifiBridgeCfg.lastDisconnectReason = 0;
     gWifiBridgeCfg.nextRetryMillis = 0;
+    gWifiBridgeCfg.lastConnectedSyncMillis = 0;
 
     if (thermalProtectActive() || !gWifiBridgeCfg.enabled || !wifiBridgeHasCredentials()) {
         WiFi.disconnect(false, true);
@@ -463,12 +465,20 @@ static inline void serviceUpstreamWiFi(const char* apSsid) {
     const uint32_t now = millis();
 
     // 1. Connected path: record channel hint, reset backoff, persist preferred SSID.
+    //    Throttle WiFi.SSID() / esp_wifi_get_channel() IPC + heap String to
+    //    connect transitions or every 5 s instead of running at 100 Hz in loop().
     if (WiFi.status() == WL_CONNECTED) {
+        const bool needSync = !gWifiBridgeCfg.wasConnected ||
+                              gWifiBridgeCfg.pendingGotIpEvent ||
+                              (now - gWifiBridgeCfg.lastConnectedSyncMillis >= 5000u);
         gWifiBridgeCfg.connecting = false;
         gWifiBridgeCfg.wasConnected = true;
         gWifiBridgeCfg.fastRetryPending = false;
         gWifiBridgeCfg.pendingDisconnectEvent = false;
         gWifiBridgeCfg.pendingGotIpEvent = false;
+        gWifiBridgeCfg.consecutiveFailures = 0;
+        if (!needSync) return;
+        gWifiBridgeCfg.lastConnectedSyncMillis = now;
 
         String currentSsid = WiFi.SSID();
         uint8_t currentCh = 0;
@@ -491,7 +501,6 @@ static inline void serviceUpstreamWiFi(const char* apSsid) {
         }
         portEXIT_CRITICAL(&gWifiBridgeMux);
 
-        gWifiBridgeCfg.consecutiveFailures = 0;
         if (prefChanged && idx >= 0) {
             Preferences p;
             if (p.begin("fsd", false)) {
@@ -717,7 +726,9 @@ static inline void wifiBridgeLoadConfig() {
     gDnsFilterCfg.enabled = p.getBool("ub_dnsEn", false);
     wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), p.getString("ub_allow", ""));
     wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), p.getString("ub_block", ""));
-    dnsIpBlockerSetEnabled(p.getBool("ub_ipBlk", false));
+    const bool legacyIpBlk = p.getBool("ub_ipBlk", false);
+    const uint8_t savedIpMode = p.getUChar("ub_ipMod", legacyIpBlk ? 1u : 0u);
+    dnsIpPolicySetMode(savedIpMode <= 2u ? savedIpMode : 0u);
     // Last-known-good network index (-1 = no preference yet). Used to bias
     // the first connect attempt after boot toward the network that succeeded
     // last time, instead of always starting round-robin from index 0.
@@ -734,6 +745,7 @@ static inline void wifiBridgeLoadConfig() {
         gDnsFilterCfg.enabled = true;
         wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
+        dnsIpPolicySetFilterEnabled(1);
         Preferences p2;
         p2.begin("fsd", false);
         p2.putBool("ub_dnsEn", true);
@@ -744,10 +756,9 @@ static inline void wifiBridgeLoadConfig() {
         return;
     }
 
-    // Migration: 老用户如果 allowlist 完全等于 v1~v6 默认值（未自定义过），
-    // 自动升级到 v7（把 connman 加回首位）。
-    // 黑名单只要仍是旧默认值（v3/v4/v5/v6）就升级到 v7（新增遥测/文件/升级等
-    // 端点与 hermes 默认阻断）；用户改过则不动，尊重用户选择。
+    // Migration: 老用户如果 allowlist 完全等于 v1~v7 默认值（未自定义过），
+    // 自动升级到 v8。黑名单只要仍是旧默认值（v3/v4/v5/v6）就升级到 v7
+    // （新增遥测/文件/升级等端点与 hermes 默认阻断）；用户改过则不动。
     bool allowChanged = false;
     bool blockChanged = false;
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
@@ -762,10 +773,12 @@ static inline void wifiBridgeLoadConfig() {
     }
     if (strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0 ||
         strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV4) == 0 ||
-        strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV5) == 0) {
+        strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV5) == 0 ||
+        strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV6) == 0) {
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
         blockChanged = true;
     }
+    dnsIpPolicySetFilterEnabled(gDnsFilterCfg.enabled ? 1 : 0);
     if (allowChanged || blockChanged) {
         Preferences p3;
         p3.begin("fsd", false);
@@ -809,7 +822,9 @@ static inline void wifiBridgeSaveConfig() {
     p.putBool("ub_dnsEn", gDnsFilterCfg.enabled);
     p.putString("ub_allow", gDnsFilterCfg.allowlist);
     p.putString("ub_block", gDnsFilterCfg.blocklist);
-    p.putBool("ub_ipBlk", dnsIpBlockerEnabled());
+    const uint8_t ipMode = dnsIpPolicyGetMode();
+    p.putBool("ub_ipBlk", ipMode != 0);
+    p.putUChar("ub_ipMod", ipMode);
     p.end();
 }
 

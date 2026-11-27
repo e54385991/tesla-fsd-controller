@@ -154,6 +154,16 @@ def _extract_block(source: str, signature: str) -> str:
     return source[start:end]
 
 
+def _sanitizer_flags(cxx: str) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="san-probe-") as tmp:
+        probe = Path(tmp) / "p.cpp"
+        out = Path(tmp) / "p"
+        probe.write_text("int main(){return 0;}\n")
+        r = subprocess.run([cxx, "-fsanitize=address,undefined", str(probe), "-o", str(out)],
+                           capture_output=True)
+        return ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if r.returncode == 0 else []
+
+
 def check_upstream_header_capture() -> None:
     """Compile and run UpstreamResponseHeaders + formatStatusLine under ASan/UBSan."""
     cxx = shutil.which("c++")
@@ -210,13 +220,14 @@ int main() {
     return 0;
 }
 '''
+    san = _sanitizer_flags(cxx)
     with tempfile.TemporaryDirectory(prefix="fsd-hdr-") as tmp:
         cpp = Path(tmp) / "hdr.cpp"
         exe = Path(tmp) / "hdr"
         cpp.write_text(harness)
         subprocess.run(
             [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             *san,
              str(cpp), "-o", str(exe)],
             check=True,
         )
@@ -276,6 +287,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 '''
+    san = _sanitizer_flags(cxx)
     with tempfile.TemporaryDirectory(prefix="fsd-sum-") as tmp:
         base = Path(tmp)
         cjson_obj = base / "cJSON.o"
@@ -288,7 +300,7 @@ int main(int argc, char** argv) {
         cpp.write_text(harness)
         subprocess.run(
             [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-             "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             *san,
              "-I", str(cjson_dir), str(cpp), str(cjson_obj), "-o", str(exe)],
             check=True,
         )
@@ -507,31 +519,32 @@ def check_port_policy() -> None:
 
 
 def check_tls_policy() -> None:
-    """Waveshare-S3 Wi-Fi runs mbedTLS 3.6 (TLS 1.2 + 1.3); IDF 4.4 envs are 1.2-only."""
-    tls12_only = [
+    """All Wi-Fi envs run espressif32@8.0.0 / mbedTLS 3.6 (TLS 1.2 + 1.3) with IPv6 disabled."""
+    all_cfgs = [
         ROOT / "sdkconfig.defaults",
         ROOT / "sdkconfig.esp32-wifi",
         ROOT / "sdkconfig.esp32-wifi-debug",
-    ]
-    tls13 = [
         ROOT / "sdkconfig.tls13.defaults",
         ROOT / "sdkconfig.esp32s3-waveshare-wifi",
         ROOT / "sdkconfig.esp32s3-waveshare-wifi-debug",
     ]
-    for path in tls12_only + tls13:
+    s3_cfgs = [
+        ROOT / "sdkconfig.tls13.defaults",
+        ROOT / "sdkconfig.esp32s3-waveshare-wifi",
+        ROOT / "sdkconfig.esp32s3-waveshare-wifi-debug",
+    ]
+    for path in all_cfgs:
         text = path.read_text()
         assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y" in text, f"{path.name}: TLS 1.2 must stay enabled"
+        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" in text, f"{path.name}: TLS 1.3 must stay enabled"
         assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1=y" not in text, f"{path.name}: TLS 1.0 must stay disabled"
         assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_1=y" not in text, f"{path.name}: TLS 1.1 must stay disabled"
-    for path in tls12_only:
-        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" not in path.read_text(), (
-            f"{path.name}: IDF 4.4 has no TLS 1.3 option"
+        assert "# CONFIG_LWIP_IPV6 is not set" in text and "CONFIG_LWIP_IPV6=y" not in text, (
+            f"{path.name}: IPv6 must stay disabled"
         )
-    for path in tls13:
+        assert "CONFIG_LWIP_IPV6_FORWARD=y" not in text, f"{path.name}: IPv6 forwarding must stay disabled"
+    for path in s3_cfgs:
         text = path.read_text()
-        assert "CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y" in text, (
-            f"{path.name}: TLS 1.3 must stay enabled"
-        )
         assert "CONFIG_HTTPD_MAX_REQ_HDR_LEN=8192" in text, (
             f"{path.name}: httpd header limit must stay >= 8192 to avoid HTTP 431 on JWT/browser headers"
         )
@@ -540,8 +553,12 @@ def check_tls_policy() -> None:
         )
 
     platformio = (ROOT / "platformio.ini").read_text()
-    assert platformio.count("platform = platformio/espressif32@8.0.0") >= 2
+    assert platformio.count("platform = platformio/espressif32@8.0.0") >= 4
     assert 'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.tls13.defaults"' in platformio
+    for ui_path in ("include/web_ui_manage.h", "include/web_ui_fsd.h"):
+        ui_text = (ROOT / ui_path).read_text()
+        assert "fetch('/api/auth'" in ui_text, f"{ui_path}: PIN login must POST to /api/auth"
+        assert "fetch('/api/pin'" not in ui_text, f"{ui_path}: PIN login must not hit /api/pin"
 
     server = (ROOT / "src/client_config.cpp").read_text()
     mock = (ROOT / "src/fsd_mock.cpp").read_text()

@@ -178,26 +178,6 @@ void md5Hex(const void* data, size_t length, char out[33]) {
     out[32] = '\0';
 }
 
-void jsonEscape(String& out, const char* value) {
-    if (!value) return;
-    for (const char* p = value; *p; ++p) {
-        const unsigned char c = static_cast<unsigned char>(*p);
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"': out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                // High bytes may be gzip/binary previews. Replacing them keeps
-                // /api/wifi-bridge/status parseable as UTF-8 JSON.
-                if (c < 0x20 || c >= 0x7f) out += '.';
-                else out += static_cast<char>(c);
-                break;
-        }
-    }
-}
-
 void jsonEscape(Print& out, const char* value) {
     if (!value) return;
     for (const char* p = value; *p; ++p) {
@@ -393,7 +373,9 @@ void socketAddress(int fd, char* out, size_t capacity) {
     if (storage.ss_family == AF_INET) {
         auto* address = reinterpret_cast<struct sockaddr_in*>(&storage);
         if (inet_ntop(AF_INET, &address->sin_addr, out, capacity)) return;
-    } else if (storage.ss_family == AF_INET6) {
+    }
+#if CONFIG_LWIP_IPV6
+    else if (storage.ss_family == AF_INET6) {
         auto* address = reinterpret_cast<struct sockaddr_in6*>(&storage);
         const uint8_t* bytes = address->sin6_addr.s6_addr;
         static const uint8_t v4mapped[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
@@ -403,6 +385,7 @@ void socketAddress(int fd, char* out, size_t capacity) {
         }
         if (inet_ntop(AF_INET6, &address->sin6_addr, out, capacity)) return;
     }
+#endif
     out[0] = '\0';
 }
 
@@ -422,9 +405,11 @@ uint16_t localPort(httpd_req_t* request) {
     if (storage.ss_family == AF_INET) {
         return ntohs(reinterpret_cast<struct sockaddr_in*>(&storage)->sin_port);
     }
+#if CONFIG_LWIP_IPV6
     if (storage.ss_family == AF_INET6) {
         return ntohs(reinterpret_cast<struct sockaddr_in6*>(&storage)->sin6_port);
     }
+#endif
     return 0;
 }
 
@@ -1131,12 +1116,13 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         if (strcasecmp(name, "Host") == 0) continue;
         const size_t length = httpd_req_get_hdr_value_len(request, name);
         if (length == 0) continue;
-        char* value = static_cast<char*>(malloc(length + 1));
+        char stackValue[256];
+        char* value = (length < sizeof(stackValue)) ? stackValue : static_cast<char*>(malloc(length + 1));
         if (!value) continue;
         if (httpd_req_get_hdr_value_str(request, name, value, length + 1) == ESP_OK) {
             esp_http_client_set_header(client, name, value);
         }
-        free(value);
+        if (value != stackValue) free(value);
     }
 
     // Do NOT use esp_http_client_perform() here: it reads and discards the
@@ -1152,7 +1138,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     if (error == ESP_OK && bodyLength > 0) {
         md5_context_t reqMd5;
         esp_rom_md5_init(&reqMd5);
-        char reqChunk[512];
+        char reqChunk[1024];
         size_t remaining = bodyLength;
         size_t captured = 0;
         int timeouts = 0;
@@ -1239,7 +1225,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const bool noBodyResponse = (request->method == HTTP_HEAD || status == 204 || status == 304);
     md5_context_t md5;
     esp_rom_md5_init(&md5);
-    char buffer[512];
+    char buffer[1400];
     size_t total = 0;
     size_t preview = 0;
     size_t bodyStored = 0;
@@ -1921,7 +1907,7 @@ uint32_t autoDisabledCount() {
 static bool readRecentHit(size_t index, Hit& out);
 static bool readRecentHandshake(size_t index, Handshake& out);
 
-void appendStatusJson(String& out) {
+void appendStatusJson(Print& out) {
     bool enabledNow;
     bool autoOffNow;
     Mode modeNow;
@@ -1943,30 +1929,30 @@ void appendStatusJson(String& out) {
     char dnsLast[128] = {};
     dnsGetFsdRedirectStats(&dnsTotal, dnsLast, sizeof(dnsLast));
 
-    out += "\"fsdMock\":{";
-    out += "\"nowMs\":"; out += String(static_cast<unsigned long>(millis()));
-    out += ",\"active\":"; out += gActive ? "true" : "false";
-    out += ",\"enabled\":"; out += enabledNow ? "true" : "false";
-    out += ",\"autoOffOnHit\":"; out += autoOffNow ? "true" : "false";
-    out += ",\"autoOffPending\":"; out += client_config::autoOffPending() ? "true" : "false";
-    out += ",\"autoOffRemainingSec\":"; out += String(static_cast<unsigned long>(client_config::autoOffRemainingSec()));
-    out += ",\"autoDisabledCount\":"; out += String(static_cast<unsigned long>(autoDisabledCount()));
-    out += ",\"fsd443\":"; out += client_config::fsdHttpsStarted() ? "true" : "false";
-    out += ",\"fsd4567\":"; out += client_config::mothershipHttpStarted() ? "true" : "false";
-    out += ",\"recoveries\":"; out += String(static_cast<unsigned long>(client_config::recoveryCount()));
-    out += ",\"lastError\":\""; jsonEscape(out, client_config::lastListenerError()); out += "\"";
-    out += ",\"mode\":\""; out += (modeNow == Mode::Observe ? "observe" : "reply"); out += "\"";
-    out += ",\"host\":\""; jsonEscape(out, hostNow); out += "\"";
-    out += ",\"bytes\":"; out += String(static_cast<unsigned>(bytesNow));
-    out += ",\"fields\":"; out += String(static_cast<unsigned>(fieldsNow));
-    out += ",\"md5\":\""; out += md5Now; out += "\"";
-    out += ",\"canonical\":";
-    out += (bytesNow == kFsdCanonicalBytes && strcmp(md5Now, kFsdCanonicalMd5) == 0) ? "true" : "false";
-    out += ",\"hits\":"; out += String(static_cast<unsigned>(hitCount()));
-    out += ",\"observes\":"; out += String(static_cast<unsigned>(observeCount()));
-    out += ",\"flows\":"; out += String(static_cast<unsigned>(flowCount()));
-    out += ",\"dnsRedirects\":"; out += String(static_cast<unsigned>(dnsTotal));
-    out += ",\"dnsLast\":\""; jsonEscape(out, dnsLast); out += "\"";
+    out.print("\"fsdMock\":{");
+    out.print("\"nowMs\":"); out.print(static_cast<unsigned long>(millis()));
+    out.print(",\"active\":"); out.print(gActive ? "true" : "false");
+    out.print(",\"enabled\":"); out.print(enabledNow ? "true" : "false");
+    out.print(",\"autoOffOnHit\":"); out.print(autoOffNow ? "true" : "false");
+    out.print(",\"autoOffPending\":"); out.print(client_config::autoOffPending() ? "true" : "false");
+    out.print(",\"autoOffRemainingSec\":"); out.print(static_cast<unsigned long>(client_config::autoOffRemainingSec()));
+    out.print(",\"autoDisabledCount\":"); out.print(static_cast<unsigned long>(autoDisabledCount()));
+    out.print(",\"fsd443\":"); out.print(client_config::fsdHttpsStarted() ? "true" : "false");
+    out.print(",\"fsd4567\":"); out.print(client_config::mothershipHttpStarted() ? "true" : "false");
+    out.print(",\"recoveries\":"); out.print(static_cast<unsigned long>(client_config::recoveryCount()));
+    out.print(",\"lastError\":\""); jsonEscape(out, client_config::lastListenerError()); out.print("\"");
+    out.print(",\"mode\":\""); out.print(modeNow == Mode::Observe ? "observe" : "reply"); out.print("\"");
+    out.print(",\"host\":\""); jsonEscape(out, hostNow); out.print("\"");
+    out.print(",\"bytes\":"); out.print(static_cast<unsigned>(bytesNow));
+    out.print(",\"fields\":"); out.print(static_cast<unsigned>(fieldsNow));
+    out.print(",\"md5\":\""); out.print(md5Now); out.print("\"");
+    out.print(",\"canonical\":");
+    out.print((bytesNow == kFsdCanonicalBytes && strcmp(md5Now, kFsdCanonicalMd5) == 0) ? "true" : "false");
+    out.print(",\"hits\":"); out.print(static_cast<unsigned>(hitCount()));
+    out.print(",\"observes\":"); out.print(static_cast<unsigned>(observeCount()));
+    out.print(",\"flows\":"); out.print(static_cast<unsigned>(flowCount()));
+    out.print(",\"dnsRedirects\":"); out.print(static_cast<unsigned>(dnsTotal));
+    out.print(",\"dnsLast\":\""); jsonEscape(out, dnsLast); out.print("\"");
 
     portENTER_CRITICAL(&gHandshakeMux);
     const uint32_t hsOk = gHandshakeOk;
@@ -1980,36 +1966,36 @@ void appendStatusJson(String& out) {
     char hsError[64]; strlcpy(hsError, gLastHandshakeError, sizeof(hsError));
     portEXIT_CRITICAL(&gHandshakeMux);
 
-    out += ",\"handshake\":{";
-    out += "\"ok\":"; out += String(static_cast<unsigned long>(hsOk));
-    out += ",\"fail\":"; out += String(static_cast<unsigned long>(hsFail));
-    out += ",\"lastOkMs\":"; out += String(static_cast<unsigned long>(hsOkMs));
-    out += ",\"lastFailMs\":"; out += String(static_cast<unsigned long>(hsFailMs));
-    out += ",\"client\":\""; jsonEscape(out, hsClient); out += "\"";
-    out += ",\"tls\":\""; jsonEscape(out, hsTls); out += "\"";
-    out += ",\"cipher\":\""; jsonEscape(out, hsCipher); out += "\"";
-    out += ",\"alpn\":\""; jsonEscape(out, hsAlpn); out += "\"";
-    out += ",\"error\":\""; jsonEscape(out, hsError); out += "\"";
-    out += "}";
+    out.print(",\"handshake\":{");
+    out.print("\"ok\":"); out.print(static_cast<unsigned long>(hsOk));
+    out.print(",\"fail\":"); out.print(static_cast<unsigned long>(hsFail));
+    out.print(",\"lastOkMs\":"); out.print(static_cast<unsigned long>(hsOkMs));
+    out.print(",\"lastFailMs\":"); out.print(static_cast<unsigned long>(hsFailMs));
+    out.print(",\"client\":\""); jsonEscape(out, hsClient); out.print("\"");
+    out.print(",\"tls\":\""); jsonEscape(out, hsTls); out.print("\"");
+    out.print(",\"cipher\":\""); jsonEscape(out, hsCipher); out.print("\"");
+    out.print(",\"alpn\":\""); jsonEscape(out, hsAlpn); out.print("\"");
+    out.print(",\"error\":\""); jsonEscape(out, hsError); out.print("\"");
+    out.print("}");
 
     auto* last = new (std::nothrow) LastResponse;
     if (last) {
         portENTER_CRITICAL(&gLastResponseMux);
         *last = gLastResponse;
         portEXIT_CRITICAL(&gLastResponseMux);
-        out += ",\"lastResponse\":{";
-        out += "\"kind\":\""; jsonEscape(out, last->kind); out += "\"";
-        out += ",\"status\":"; out += String(static_cast<unsigned>(last->status));
-        out += ",\"ctype\":\""; jsonEscape(out, last->ctype); out += "\"";
-        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(last->bytes));
-        out += ",\"md5\":\""; jsonEscape(out, last->md5); out += "\"";
-        out += ",\"body\":\""; jsonEscape(out, last->body); out += "\"";
-        out += "}";
+        out.print(",\"lastResponse\":{");
+        out.print("\"kind\":\""); jsonEscape(out, last->kind); out.print("\"");
+        out.print(",\"status\":"); out.print(static_cast<unsigned>(last->status));
+        out.print(",\"ctype\":\""); jsonEscape(out, last->ctype); out.print("\"");
+        out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(last->bytes));
+        out.print(",\"md5\":\""); jsonEscape(out, last->md5); out.print("\"");
+        out.print(",\"body\":\""); jsonEscape(out, last->body); out.print("\"");
+        out.print("}");
     }
     delete last;
 
     constexpr size_t kStatusRecentLimit = 3;
-    out += ",\"recent\":[";
+    out.print(",\"recent\":[");
     size_t shown = 0;
     for (size_t i = 0; i < kRecentHitCapacity && shown < kStatusRecentLimit; ++i) {
         Hit recent;
@@ -2017,25 +2003,25 @@ void appendStatusJson(String& out) {
         // Windows fsd_panel's timeline only lists feature_configuration
         // intercepts; non-FSD FLOW entries stay in the JSONL log.
         if (strcmp(recent.kind, "FLOW") == 0) continue;
-        if (shown) out += ',';
+        if (shown) out.print(',');
         ++shown;
-        out += "{\"kind\":\""; jsonEscape(out, recent.kind); out += "\"";
-        out += ",\"ts\":\""; jsonEscape(out, recent.ts); out += "\"";
-        out += ",\"client\":\""; jsonEscape(out, recent.client); out += "\"";
-        out += ",\"method\":\""; jsonEscape(out, recent.method); out += "\"";
-        out += ",\"url\":\""; jsonEscape(out, recent.url); out += "\"";
-        out += ",\"vin\":\""; jsonEscape(out, recent.vin); out += "\"";
-        out += ",\"atMs\":"; out += String(static_cast<unsigned long>(recent.atMs));
-        out += ",\"reqBytes\":"; out += String(static_cast<unsigned long>(recent.reqBytes));
-        out += ",\"bytes\":"; out += String(static_cast<unsigned long>(recent.bytes));
-        out += ",\"md5\":\""; jsonEscape(out, recent.md5); out += "\"";
-        out += ",\"mode\":\""; jsonEscape(out, recent.mode); out += "\"";
-        out += ",\"status\":"; out += String(static_cast<unsigned>(recent.status));
-        out += ",\"ctype\":\""; jsonEscape(out, recent.respCtype); out += "\"";
-        out += ",\"respHead\":\""; jsonEscape(out, recent.respHead); out += "\"";
-        out += "}";
+        out.print("{\"kind\":\""); jsonEscape(out, recent.kind); out.print("\"");
+        out.print(",\"ts\":\""); jsonEscape(out, recent.ts); out.print("\"");
+        out.print(",\"client\":\""); jsonEscape(out, recent.client); out.print("\"");
+        out.print(",\"method\":\""); jsonEscape(out, recent.method); out.print("\"");
+        out.print(",\"url\":\""); jsonEscape(out, recent.url); out.print("\"");
+        out.print(",\"vin\":\""); jsonEscape(out, recent.vin); out.print("\"");
+        out.print(",\"atMs\":"); out.print(static_cast<unsigned long>(recent.atMs));
+        out.print(",\"reqBytes\":"); out.print(static_cast<unsigned long>(recent.reqBytes));
+        out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(recent.bytes));
+        out.print(",\"md5\":\""); jsonEscape(out, recent.md5); out.print("\"");
+        out.print(",\"mode\":\""); jsonEscape(out, recent.mode); out.print("\"");
+        out.print(",\"status\":"); out.print(static_cast<unsigned>(recent.status));
+        out.print(",\"ctype\":\""); jsonEscape(out, recent.respCtype); out.print("\"");
+        out.print(",\"respHead\":\""); jsonEscape(out, recent.respHead); out.print("\"");
+        out.print("}");
     }
-    out += "]}";
+    out.print("]}");
 }
 
 // Copy one RAM ring entry without allocating an array of Hits. `index` is

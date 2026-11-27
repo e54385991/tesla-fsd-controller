@@ -452,9 +452,9 @@ document.getElementById('rawBtn').onclick=function(){
 document.querySelectorAll('[data-preset]').forEach(function(b){ b.onclick=function(){ applyPreset(b.getAttribute('data-preset')); }; });
 document.getElementById('pinBtn').onclick=async function(){
   var pin=document.getElementById('pinInput').value;
-  var r=await fetch('/api/pin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pin='+encodeURIComponent(pin)});
+  var r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pin='+encodeURIComponent(pin)});
   if(r.ok){ token=(await r.text()).trim(); try{sessionStorage.setItem('fsd_tok',token);}catch(e){} hidePin(); setMsg('pinMsg','',true); refresh(); }
-  else { setMsg('pinMsg','PIN 错误',false); }
+  else { setMsg('pinMsg',r.status===429?'尝试过多，请 10 秒后再试':'PIN 错误',false); }
 };
 document.getElementById('pinInput').addEventListener('keydown',function(e){ if(e.key==='Enter') document.getElementById('pinBtn').click(); });
 fetch('/api/time',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ts='+Math.floor(Date.now()/1000)}).catch(function(){});

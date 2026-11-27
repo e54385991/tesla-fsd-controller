@@ -270,6 +270,9 @@ static bool otaApiGet(const String& url) {
     esp_http_client_config_t cfg = {};
     cfg.url                        = url.c_str();
     cfg.timeout_ms                 = 8000;  // short per-attempt so slow nodes fail fast
+#if ESP_IDF_VERSION_MAJOR >= 5
+    cfg.addr_type                  = HTTP_ADDR_TYPE_INET;
+#endif
     cfg.transport_type             = HTTP_TRANSPORT_OVER_SSL;
     cfg.crt_bundle_attach          = OTA_CRT_BUNDLE_ATTACH;
     cfg.event_handler              = otaHttpEvent;
@@ -331,6 +334,9 @@ static esp_err_t otaTryDownload(const char* url) {
     esp_http_client_config_t http_cfg = {};
     http_cfg.url                       = url;
     http_cfg.timeout_ms                = 30000;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    http_cfg.addr_type                 = HTTP_ADDR_TYPE_INET;
+#endif
     http_cfg.transport_type            = HTTP_TRANSPORT_OVER_SSL;
     http_cfg.crt_bundle_attach         = OTA_CRT_BUNDLE_ATTACH;
     http_cfg.keep_alive_enable         = true;

@@ -125,8 +125,8 @@ uint32_t flowCount();
 uint32_t dnsRedirectCount();
 uint32_t autoDisabledCount();
 
-// Appends `"fsdMock":{...}` (without leading comma) for /api/wifi-bridge/status.
-void appendStatusJson(String& out);
+// Streams `"fsdMock":{...}` (without leading comma) for /api/wifi-bridge/status.
+void appendStatusJson(Print& out);
 
 // RAM log export (JSONL) for /api/fsd-mock/hits and /handshakes.
 void appendHitsJsonl(Print& out);

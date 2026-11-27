@@ -1,5 +1,5 @@
 # ESP-IDF 5.5 defaults for the Waveshare ESP32-S3 Wi-Fi bridge (TLS 1.3).
-# The other Wi-Fi envs keep using sdkconfig.defaults on ESP-IDF 4.4.
+# Standard ESP32 envs use sdkconfig.defaults (also on ESP-IDF 5.5).
 CONFIG_AUTOSTART_ARDUINO=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
@@ -18,8 +18,8 @@ CONFIG_TCP_WND_DEFAULT=5760
 CONFIG_TCP_SND_BUF_DEFAULT=5760
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
-CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
-CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=48
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 CONFIG_LWIP_TCP_SACK_OUT=y
 CONFIG_LWIP_IRAM_OPTIMIZATION=y
 # Dedicated L2 (Core 0 Wi-Fi) / L3 (Core 1 lwIP + NAPT + DNSFilter) pipeline
@@ -36,11 +36,19 @@ CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y
 # CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
 # CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT is not set
 
-# ── Wi-Fi bridge: IP forwarding + NAPT ────────────────────────────────────────
+# ── Wi-Fi bridge: IPv4-only forwarding + NAPT (IPv6 strictly disabled) ────────
 CONFIG_LWIP_L2_TO_L3_COPY=y
 CONFIG_LWIP_IP_FORWARD=y
 CONFIG_LWIP_IPV4_NAPT=y
 # CONFIG_LWIP_IPV4_NAPT_PORTMAP is not set
+# CONFIG_LWIP_IPV6 is not set
+# CONFIG_LWIP_IPV6_FORWARD is not set
+# CONFIG_LWIP_IPV6_AUTOCONFIG is not set
+# CONFIG_LWIP_ESP_MLDV6_REPORT is not set
+# CONFIG_LWIP_PPP_ENABLE_IPV6 is not set
+# Disable unused esp-modbus TCP/mDNS (requires IPv6 mdns_query_aaaa).
+# CONFIG_FMB_COMM_MODE_TCP_EN is not set
+# CONFIG_FMB_MDNS_INTEGRATION_ENABLE is not set
 
 # ── TLS: negotiate TLS 1.2 or TLS 1.3 (TeslaDG matches this: min TLS1_2,
 #    max unbounded). mbedTLS 3.6 has no TLS 1.0/1.1 options; 1.2 is the floor.

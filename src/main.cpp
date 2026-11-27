@@ -472,13 +472,40 @@ static const char* resetReasonName() {
     }
 }
 
+static void writeJsonEscaped(Print& out, const char* value) {
+    if (!value) return;
+    for (const char* p = value; *p; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        switch (c) {
+            case '\\': out.print("\\\\"); break;
+            case '"':  out.print("\\\""); break;
+            case '\n': out.print("\\n"); break;
+            case '\r': break;
+            case '\t': out.print("\\t"); break;
+            default:
+                out.write(c < 0x20 ? ' ' : static_cast<char>(c));
+                break;
+        }
+    }
+}
+
 // Configure SoftAP IP (9.9.9.9/24) and ensure the DHCP server advertises
 // 9.9.9.9 as the primary DNS server. Shared by setup() and channel-1 recovery
 // so AP clients never lose the DNS option after switching back to AP-only.
 static void wifiBridgeConfigureApIpAndDns() {
     WiFi.softAPConfig(IPAddress(9, 9, 9, 9), IPAddress(9, 9, 9, 9), IPAddress(255, 255, 255, 0));
+    const IPAddress apIp = WiFi.softAPIP();
+    dnsIpPolicySetApSubnet(
+        (static_cast<uint32_t>(apIp[0]) << 24) |
+        (static_cast<uint32_t>(apIp[1]) << 16) |
+        (static_cast<uint32_t>(apIp[2]) << 8)  |
+         static_cast<uint32_t>(apIp[3]),
+        0xFFFFFF00u);
     esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (!apNetif) return;
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    dnsStrictSetApInterface(esp_netif_get_netif_impl_index(apNetif));
+#endif
 
     const esp_err_t stopErr = esp_netif_dhcps_stop(apNetif);
     (void)stopErr;
@@ -635,10 +662,12 @@ void wifiBridgePrintDiag() {
                   wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason),
                   static_cast<unsigned>(gWifiBridgeCfg.connectSuccessCount),
                   static_cast<unsigned>(gWifiBridgeCfg.disconnectCount));
-    Serial.printf("[wifi-diag] dnsFilter=%d dnsEnabled=%d allow=%u block=%u cache=%u/%u fwd=%u/%u rebind=%u\n",
+    Serial.printf("[wifi-diag] dnsFilter=%d dnsEnabled=%d allow=%u block=%u ipMode=%u ipAllow=%u cache=%u/%u fwd=%u/%u rebind=%u\n",
                   gDnsFilter.started() ? 1 : 0, gDnsFilterCfg.enabled ? 1 : 0,
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)),
                   static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)),
+                  static_cast<unsigned>(dnsIpPolicyGetMode()),
+                  static_cast<unsigned>(dnsIpPolicyGetAllowedCount()),
                   static_cast<unsigned>(dnsHits), static_cast<unsigned>(dnsMisses),
                   static_cast<unsigned>(dnsFwdOk), static_cast<unsigned>(dnsFwdTo),
                   static_cast<unsigned>(gDnsFilter.rebindCount()));
@@ -736,13 +765,24 @@ static void setupWebServer() {
         req->send(200, "application/json", buf);
     });
 
-    // Auth — validate PIN, return session token
+    // Auth — validate PIN, return session token (rate-limited after 5 bad tries)
     server.on("/api/auth", HTTP_POST, [](AsyncWebServerRequest* req) {
+        static uint8_t sFailCount = 0;
+        static uint32_t sLockoutUntilMs = 0;
+        const uint32_t now = millis();
+        if (sFailCount >= 5 && static_cast<int32_t>(now - sLockoutUntilMs) < 0) {
+            req->send(429, "text/plain", "RATE_LIMIT");
+            return;
+        }
         String pin = req->hasParam("pin", true) ? req->getParam("pin", true)->value() : "";
         if (strcmp(pin.c_str(), storedPin) == 0) {
+            sFailCount = 0;
+            sLockoutUntilMs = 0;
             generateToken();
             req->send(200, "text/plain", sessionToken);
         } else {
+            if (sFailCount < 255) ++sFailCount;
+            if (sFailCount >= 5) sLockoutUntilMs = now + 10000u;
             req->send(403, "text/plain", "WRONG");
         }
     });
@@ -1074,35 +1114,35 @@ static void setupWebServer() {
         int32_t upRSSI = upConnected ? WiFi.RSSI() : 0;
         String upIP = upConnected ? WiFi.localIP().toString() : String();
 
-        uint32_t totalBlocked = 0;
-        // Heap-allocated: capacity=50 * 136B = 6.8KB, too large for the
-        // AsyncTCP handler task stack (~4-8KB). See mod_dns.h.
-        auto* entries = new (std::nothrow) DNSBlockedDomainStatEntry[kDnsBlockedDomainCapacity];
-        if (!entries) { req->send(500, "text/plain", "oom"); return; }
-        size_t recentBlocked = gDnsFilter.copyBlockedDomains(entries, kDnsBlockedDomainCapacity, totalBlocked);
+        // Stream directly into AsyncResponseStream to avoid building an ~8-10 KB
+        // String and duplicating it inside req->send(), cutting peak transient
+        // heap pressure during concurrent 443 TLS handshakes by ~15-20 KB.
+        AsyncResponseStream* resp = req->beginResponseStream("application/json");
+        resp->addHeader("Cache-Control", "no-store");
 
-        String json;
-        json.reserve(6144);
-        json += "{";
         uint8_t apChannel = 0;
         wifi_second_chan_t apSecond = WIFI_SECOND_CHAN_NONE;
         esp_wifi_get_channel(&apChannel, &apSecond);
-        json += "\"apSSID\":\""; json += wifiBridgeJsonEscape(String(apSSID)); json += "\"";
-        json += ",\"apIP\":\""; json += WiFi.softAPIP().toString(); json += "\"";
-        json += ",\"apPassDefault\":"; json += (strcmp(apPass, kDefaultApPass) == 0 ? "true" : "false");
-        json += ",\"apStations\":"; json += String(WiFi.softAPgetStationNum());
-        json += ",\"channel\":"; json += String(static_cast<unsigned>(apChannel));
-        json += ",\"uptime\":"; json += String((unsigned)bootUptimeSeconds());
-        json += ",\"upstreamEnable\":"; json += (gWifiBridgeCfg.enabled ? "true" : "false");
-        json += ",\"upstreamConnected\":"; json += (upConnected ? "true" : "false");
-        json += ",\"upstreamRSSI\":"; json += (upConnected ? String(upRSSI) : String("null"));
-        json += ",\"upstreamSSID\":\""; json += wifiBridgeJsonEscape(wifiBridgeActiveSSID()); json += "\"";
-        json += ",\"upstreamIP\":\""; json += wifiBridgeJsonEscape(upIP); json += "\"";
-        json += ",\"upstreamStatus\":\""; json += wifiBridgeJsonEscape(String(wifiBridgeUpstreamStatusText())); json += "\"";
-        json += ",\"upstreamSignal\":\""; json += (upConnected ? wifiBridgeJsonEscape(String(wifiBridgeSignalText(upRSSI))) : String()); json += "\"";
-        json += ",\"upstreamLastReason\":"; json += String((unsigned)gWifiBridgeCfg.lastDisconnectReason);
-        json += ",\"upstreamLastReasonText\":\""; json += wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason); json += "\"";
-        json += ",\"upstreamDisconnects\":"; json += String((unsigned)gWifiBridgeCfg.disconnectCount);
+        resp->print("{\"apSSID\":\""); writeJsonEscaped(*resp, apSSID); resp->print("\"");
+        resp->print(",\"apIP\":\""); resp->print(WiFi.softAPIP().toString()); resp->print("\"");
+        resp->print(",\"apPassDefault\":"); resp->print(strcmp(apPass, kDefaultApPass) == 0 ? "true" : "false");
+        resp->print(",\"apStations\":"); resp->print(WiFi.softAPgetStationNum());
+        resp->print(",\"channel\":"); resp->print(static_cast<unsigned>(apChannel));
+        resp->print(",\"uptime\":"); resp->print(static_cast<unsigned>(bootUptimeSeconds()));
+        resp->print(",\"upstreamEnable\":"); resp->print(gWifiBridgeCfg.enabled ? "true" : "false");
+        resp->print(",\"upstreamConnected\":"); resp->print(upConnected ? "true" : "false");
+        resp->print(",\"upstreamRSSI\":");
+        if (upConnected) resp->print(upRSSI); else resp->print("null");
+        String activeSsid = wifiBridgeActiveSSID();
+        resp->print(",\"upstreamSSID\":\""); writeJsonEscaped(*resp, activeSsid.c_str()); resp->print("\"");
+        resp->print(",\"upstreamIP\":\""); writeJsonEscaped(*resp, upIP.c_str()); resp->print("\"");
+        resp->print(",\"upstreamStatus\":\""); writeJsonEscaped(*resp, wifiBridgeUpstreamStatusText()); resp->print("\"");
+        resp->print(",\"upstreamSignal\":\"");
+        if (upConnected) writeJsonEscaped(*resp, wifiBridgeSignalText(upRSSI));
+        resp->print("\"");
+        resp->print(",\"upstreamLastReason\":"); resp->print(static_cast<unsigned>(gWifiBridgeCfg.lastDisconnectReason));
+        resp->print(",\"upstreamLastReasonText\":\""); resp->print(wifiBridgeDisconnectReasonText(gWifiBridgeCfg.lastDisconnectReason)); resp->print("\"");
+        resp->print(",\"upstreamDisconnects\":"); resp->print(static_cast<unsigned>(gWifiBridgeCfg.disconnectCount));
 
         SavedUpstreamNetwork snap[MAX_UPSTREAM_NETWORKS];
         uint8_t snapCount = 0;
@@ -1113,62 +1153,82 @@ static void setupWebServer() {
         }
         portEXIT_CRITICAL(&gWifiBridgeMux);
 
-        json += ",\"upstreamSavedCount\":"; json += String((unsigned)snapCount);
-        json += ",\"upstreamNetworks\":[";
+        resp->print(",\"upstreamSavedCount\":"); resp->print(static_cast<unsigned>(snapCount));
+        resp->print(",\"upstreamNetworks\":[");
         String connectedSSID = wifiBridgeConnectedSSID();
-        String activeSSID = wifiBridgeActiveSSID();
         for (uint8_t i = 0; i < snapCount; ++i) {
-            if (i > 0) json += ",";
-            json += "{\"ssid\":\""; json += wifiBridgeJsonEscape(String(snap[i].ssid));
-            json += "\",\"hasPass\":"; json += (snap[i].pass[0] != '\0' ? "true" : "false");
-            json += ",\"connected\":"; json += (connectedSSID.equals(snap[i].ssid) ? "true" : "false");
-            json += ",\"active\":"; json += (activeSSID.equals(snap[i].ssid) ? "true" : "false");
-            json += "}";
+            if (i > 0) resp->print(",");
+            resp->print("{\"ssid\":\""); writeJsonEscaped(*resp, snap[i].ssid);
+            resp->print("\",\"hasPass\":"); resp->print(snap[i].pass[0] != '\0' ? "true" : "false");
+            resp->print(",\"connected\":"); resp->print(connectedSSID.equals(snap[i].ssid) ? "true" : "false");
+            resp->print(",\"active\":"); resp->print(activeSsid.equals(snap[i].ssid) ? "true" : "false");
+            resp->print("}");
         }
-        json += "]";
-        json += ",\"natEnabled\":"; json += (gNatEnabled ? "true" : "false");
-        json += ",\"natStatus\":\""; json += wifiBridgeJsonEscape(String(wifiBridgeNatStatusText())); json += "\"";
-        json += ",\"chipTempC\":"; json += (std::isfinite(gThermalStatus.currentC) ? String(gThermalStatus.currentC, 1) : String("null"));
-        json += ",\"chipTempAvgC\":"; json += (std::isfinite(gThermalStatus.averageC) ? String(gThermalStatus.averageC, 1) : String("null"));
-        json += ",\"thermalStatus\":\""; json += wifiBridgeJsonEscape(String(thermalStatusText())); json += "\"";
-        json += ",\"thermalProtect\":"; json += (thermalProtectActive() ? "true" : "false");
-        json += ",\"dnsEnable\":"; json += (gDnsFilterCfg.enabled ? "true" : "false");
-        json += ",\"ipBlockerEnabled\":"; json += (dnsIpBlockerEnabled() ? "true" : "false");
-        json += ",\"dnsAllowCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist));
-        json += ",\"dnsBlockCount\":"; json += String((unsigned)wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist));
-        json += ",\"dnsAllow\":\""; json += wifiBridgeJsonEscape(String(gDnsFilterCfg.allowlist)); json += "\"";
-        json += ",\"dnsBlock\":\""; json += wifiBridgeJsonEscape(String(gDnsFilterCfg.blocklist)); json += "\"";
-        json += ",\"dnsBlockedTotal\":"; json += String((unsigned)totalBlocked);
+        resp->print("]");
+        resp->print(",\"natEnabled\":"); resp->print(gNatEnabled ? "true" : "false");
+        resp->print(",\"natStatus\":\""); writeJsonEscaped(*resp, wifiBridgeNatStatusText()); resp->print("\"");
+        resp->print(",\"chipTempC\":");
+        if (std::isfinite(gThermalStatus.currentC)) resp->print(gThermalStatus.currentC, 1); else resp->print("null");
+        resp->print(",\"chipTempAvgC\":");
+        if (std::isfinite(gThermalStatus.averageC)) resp->print(gThermalStatus.averageC, 1); else resp->print("null");
+        resp->print(",\"thermalStatus\":\""); writeJsonEscaped(*resp, thermalStatusText()); resp->print("\"");
+        resp->print(",\"thermalProtect\":"); resp->print(thermalProtectActive() ? "true" : "false");
+        const uint8_t ipMode = dnsIpPolicyGetMode();
+        resp->print(",\"dnsEnable\":"); resp->print(gDnsFilterCfg.enabled ? "true" : "false");
+        resp->print(",\"ipBlockerEnabled\":"); resp->print(ipMode != 0 ? "true" : "false");
+        resp->print(",\"ipPolicyMode\":"); resp->print(static_cast<unsigned>(ipMode));
+        resp->print(",\"ipAllowedCount\":"); resp->print(static_cast<unsigned>(dnsIpPolicyGetAllowedCount()));
+        resp->print(",\"dnsAllowCount\":"); resp->print(static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.allowlist)));
+        resp->print(",\"dnsBlockCount\":"); resp->print(static_cast<unsigned>(wifiBridgeDnsRuleCount(gDnsFilterCfg.blocklist)));
+        resp->print(",\"dnsAllow\":\""); writeJsonEscaped(*resp, gDnsFilterCfg.allowlist); resp->print("\"");
+        resp->print(",\"dnsBlock\":\""); writeJsonEscaped(*resp, gDnsFilterCfg.blocklist); resp->print("\"");
+
+        uint32_t totalBlocked = 0;
+        const size_t blockedCap = gDnsFilter.blockedDomainCount();
+        DNSBlockedDomainStatEntry* entries = blockedCap > 0
+            ? new (std::nothrow) DNSBlockedDomainStatEntry[blockedCap]
+            : nullptr;
+        size_t recentBlocked = 0;
+        if (entries) {
+            recentBlocked = gDnsFilter.copyBlockedDomains(entries, blockedCap, totalBlocked);
+        } else {
+            DNSBlockedDomainStatEntry dummy;
+            gDnsFilter.copyBlockedDomains(&dummy, 0, totalBlocked);
+        }
+
+        resp->print(",\"dnsBlockedTotal\":"); resp->print(static_cast<unsigned>(totalBlocked));
         uint32_t ipDrops = 0, ipCache = 0, ipPeak = 0;
         dnsIpBlockerGetStats(&ipDrops, &ipCache, &ipPeak);
         uint32_t dnsHits = 0, dnsMisses = 0, dnsFwdOk = 0, dnsFwdTo = 0;
         gDnsFilter.getPerfStats(&dnsHits, &dnsMisses, &dnsFwdOk, &dnsFwdTo);
-        json += ",\"ipBlockDrops\":"; json += String((unsigned)ipDrops);
-        json += ",\"ipCacheCount\":"; json += String((unsigned)ipCache);
-        json += ",\"ipCachePeak\":"; json += String((unsigned)ipPeak);
-        json += ",\"dnsCacheHits\":"; json += String((unsigned)dnsHits);
-        json += ",\"dnsCacheMisses\":"; json += String((unsigned)dnsMisses);
-        json += ",\"dnsForwardOk\":"; json += String((unsigned)dnsFwdOk);
-        json += ",\"dnsForwardTimeouts\":"; json += String((unsigned)dnsFwdTo);
-        json += ",\"dnsBlockedRecent\":[";
+        resp->print(",\"ipBlockDrops\":"); resp->print(static_cast<unsigned>(ipDrops));
+        resp->print(",\"ipCacheCount\":"); resp->print(static_cast<unsigned>(ipCache));
+        resp->print(",\"ipCachePeak\":"); resp->print(static_cast<unsigned>(ipPeak));
+        resp->print(",\"dnsCacheHits\":"); resp->print(static_cast<unsigned>(dnsHits));
+        resp->print(",\"dnsCacheMisses\":"); resp->print(static_cast<unsigned>(dnsMisses));
+        resp->print(",\"dnsForwardOk\":"); resp->print(static_cast<unsigned>(dnsFwdOk));
+        resp->print(",\"dnsForwardTimeouts\":"); resp->print(static_cast<unsigned>(dnsFwdTo));
+        resp->print(",\"dnsBlockedRecent\":[");
         for (size_t i = 0; i < recentBlocked; ++i) {
-            if (i > 0) json += ",";
-            json += "{\"domain\":\""; json += wifiBridgeJsonEscape(String(entries[i].domain));
-            json += "\",\"count\":"; json += String(entries[i].count);
-            json += ",\"lastBlockedAt\":"; json += String(entries[i].lastBlockedAtUptimeSeconds);
-            json += "}";
+            if (i > 0) resp->print(",");
+            resp->print("{\"domain\":\""); writeJsonEscaped(*resp, entries[i].domain);
+            resp->print("\",\"count\":"); resp->print(entries[i].count);
+            resp->print(",\"lastBlockedAt\":"); resp->print(entries[i].lastBlockedAtUptimeSeconds);
+            resp->print("}");
         }
-        json += "]";
-        json += ",\"heap\":"; json += String(ESP.getFreeHeap());
-        json += ",\"minHeap\":"; json += String(ESP.getMinFreeHeap());
-        json += ",\"resetReason\":\""; json += resetReasonName(); json += "\"";
-#ifdef CLIENT_CONFIG_HTTPS_ENABLED
-        json += ',';
-        fsd_mock::appendStatusJson(json);
-#endif
-        json += "}";
+        // Free blocked-domain scratch BEFORE fsd_mock::appendStatusJson() allocates
+        // its LastResponse snapshot so the two heap buffers never overlap.
         delete[] entries;
-        req->send(200, "application/json", json);
+        resp->print("]");
+        resp->print(",\"heap\":"); resp->print(ESP.getFreeHeap());
+        resp->print(",\"minHeap\":"); resp->print(ESP.getMinFreeHeap());
+        resp->print(",\"resetReason\":\""); resp->print(resetReasonName()); resp->print("\"");
+#ifdef CLIENT_CONFIG_HTTPS_ENABLED
+        resp->print(',');
+        fsd_mock::appendStatusJson(*resp);
+#endif
+        resp->print("}");
+        req->send(resp);
     });
 
     server.on("/api/wifi-bridge/set", HTTP_GET, [](AsyncWebServerRequest* req) {
@@ -1234,8 +1294,14 @@ static void setupWebServer() {
             changed = true;
         }
 #endif
-        if (req->hasParam("ipBlockerEnabled")) {
-            dnsIpBlockerSetEnabled(req->getParam("ipBlockerEnabled")->value().toInt() != 0);
+        if (req->hasParam("ipPolicyMode")) {
+            const int m = req->getParam("ipPolicyMode")->value().toInt();
+            dnsIpPolicySetMode((m >= 0 && m <= 2) ? static_cast<uint8_t>(m) : 0u);
+            changed = true;
+        } else if (req->hasParam("ipBlockerEnabled")) {
+            const int v = req->getParam("ipBlockerEnabled")->value().toInt();
+            const uint8_t m = (v == 2) ? 2u : (v != 0 ? 1u : 0u);
+            dnsIpPolicySetMode(m);
             changed = true;
         }
         if (changed) wifiBridgeSaveConfig();
@@ -1543,7 +1609,9 @@ void setup() {
     WiFi.mode(WIFI_AP_STA);
 
     setCpuFrequencyMhz(240);
-    esp_wifi_set_protocol(WIFI_IF_AP,  WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    // Drop legacy 802.11b on SoftAP (eliminates 1/2 Mbps beacon & protection overhead);
+    // keep 11b/g/n on STA for compatibility with arbitrary upstream hotspots.
+    esp_wifi_set_protocol(WIFI_IF_AP,  WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     esp_wifi_set_bandwidth(WIFI_IF_AP,  WIFI_BW_HT20);
     esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
@@ -1573,7 +1641,7 @@ void setup() {
                 }
             }
         },
-        "DNSFilter", 5120, NULL, 2, NULL, kDnsCore);
+        "DNSFilter", 5632, NULL, 2, NULL, kDnsCore);
     DLOG("WiFi bridge: DNS filter on :53 (core %d), AP=%s IP=%s\n",
          (int)kDnsCore, apSSID, WiFi.softAPIP().toString().c_str());
 
@@ -1646,12 +1714,7 @@ void loop() {
         }
         serviceUpstreamWiFi(apSSID);
 #ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
-        dnsIpPolicyService(
-            gDnsFilterCfg.allowlist,
-            gDnsFilterCfg.blocklist,
-            gDnsFilterCfg.enabled ? 1 : 0,
-            WiFi.status() == WL_CONNECTED ? 1 : 0
-        );
+        dnsIpPolicyServiceConfig(gDnsFilterCfg, WiFi.status() == WL_CONNECTED);
 #endif
         syncNATState();
     }

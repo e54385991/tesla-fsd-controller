@@ -57,9 +57,12 @@ def check_static_contracts() -> None:
 
     pio = (ROOT / "platformio.ini").read_text()
     assert pio.count("-DIP_NAPT_TIMEOUT_MS_UDP=30000") == 4, "All 4 bridge envs must set 30s NAPT UDP timeout"
+    assert pio.count("-DIP_NAPT_TIMEOUT_MS_TCP=600000") == 4, "All 4 bridge envs must set 10m NAPT TCP timeout"
     assert "TWAI_" not in pio, "CAN TWAI pins must be removed from platformio.ini"
     assert "[env:esp32]" not in pio and "[env:esp32s3-waveshare]" not in pio, "CAN-only envs must be removed"
     assert "DNSServer" not in MAIN_SRC and "driver/twai.h" not in MAIN_SRC and "canTask" not in MAIN_SRC
+    assert "WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N" in MAIN_SRC, "SoftAP should drop legacy 802.11b"
+    assert "strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV6) == 0" in BRIDGE_SRC, "v6 blocklist must migrate to v7"
 
     s3_cfg = (ROOT / "sdkconfig.esp32s3-waveshare-wifi").read_text()
     for needle in (
@@ -70,15 +73,19 @@ def check_static_contracts() -> None:
         "CONFIG_ESP_WIFI_TX_BA_WIN=16",
         "CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y",
         "CONFIG_LWIP_MAX_SOCKETS=16",
-        "CONFIG_LWIP_UDP_RECVMBOX_SIZE=16",
-        "CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=48",
+        "CONFIG_LWIP_UDP_RECVMBOX_SIZE=32",
+        "CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64",
         "CONFIG_LWIP_TCP_SACK_OUT=y",
         "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y",
     ):
         assert needle in s3_cfg, f"sdkconfig.esp32s3-waveshare-wifi missing {needle}"
+    assert "# CONFIG_LWIP_IPV6 is not set" in s3_cfg and "CONFIG_LWIP_IPV6=y" not in s3_cfg, "IPv6 must be disabled"
+    assert "CONFIG_LWIP_IPV6_FORWARD=y" not in s3_cfg, "IPv6 forwarding must stay disabled"
 
     esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
     assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"
+    assert "# CONFIG_LWIP_IPV6 is not set" in esp32_cfg and "CONFIG_LWIP_IPV6=y" not in esp32_cfg, "IPv6 must be disabled"
+    assert "CONFIG_LWIP_IPV6_FORWARD=y" not in esp32_cfg, "IPv6 forwarding must stay disabled"
 
 
 PREAMBLE = r'''
@@ -180,11 +187,12 @@ struct FakeWiFi {
     int16_t scanState = WIFI_SCAN_FAILED;
     uint8_t apStations = 0;
     int disconnectCalls = 0;
+    mutable int ssidCalls = 0;
     std::vector<BeginCall> begins;
     void (*eventCb)(arduino_event_t*) = nullptr;
 
     wl_status_t status() const { return st; }
-    String SSID() const { return String(curSsid); }
+    String SSID() const { ++ssidCalls; return String(curSsid); }
     int16_t scanComplete() const { return scanState; }
     uint8_t softAPgetStationNum() const { return apStations; }
     void disconnect(bool = false, bool = false) {
@@ -224,6 +232,7 @@ struct UpstreamWiFiConfig {
     uint32_t lastAttemptMillis = 0;
     uint32_t connectStartMillis = 0;
     uint32_t nextRetryMillis = 0;
+    uint32_t lastConnectedSyncMillis = 0;
     uint8_t consecutiveFailures = 0;
     int8_t preferredIndex = -1;
     bool connecting = false;
@@ -292,10 +301,21 @@ int main() {
     WiFi.st = WL_CONNECTED;
     WiFi.curSsid = "PhoneB";
     gFakeChannel = 11;
+    const int ssidBefore = WiFi.ssidCalls;
     serviceUpstreamWiFi("fsd-esp32");
     assert(!gWifiBridgeCfg.connecting && gWifiBridgeCfg.wasConnected);
     assert(gWifiBridgeCfg.networks[0].lastChannel == 11);
     assert(gWifiBridgeCfg.consecutiveFailures == 0);
+    assert(WiFi.ssidCalls == ssidBefore + 1);
+    // Subsequent 10 ms ticks while connected must NOT poll WiFi.SSID() until 5 s elapses.
+    gNowMs = 12510;
+    serviceUpstreamWiFi("fsd-esp32");
+    gNowMs = 17499;
+    serviceUpstreamWiFi("fsd-esp32");
+    assert(WiFi.ssidCalls == ssidBefore + 1);
+    gNowMs = 17500;
+    serviceUpstreamWiFi("fsd-esp32");
+    assert(WiFi.ssidCalls == ssidBefore + 2);
 
     // 4. Transient BEACON_TIMEOUT while connected -> 2 s fast retry on SAME SSID + ch 11.
     WiFi.st = WL_DISCONNECTED;
@@ -364,6 +384,16 @@ int main() {
 '''
 
 
+def sanitizer_flags(cxx: str) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="san-probe-") as tmp:
+        probe = Path(tmp) / "p.cpp"
+        out = Path(tmp) / "p"
+        probe.write_text("int main(){return 0;}\n")
+        r = subprocess.run([cxx, "-fsanitize=address,undefined", str(probe), "-o", str(out)],
+                           capture_output=True)
+        return ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if r.returncode == 0 else []
+
+
 def main() -> None:
     check_static_contracts()
     signatures = [
@@ -384,13 +414,15 @@ def main() -> None:
         "static inline void serviceUpstreamWiFi(",
     ]
     extracted = "\n".join(extract_function(BRIDGE_SRC, s) for s in signatures)
+    cxx = os.environ.get("CXX", "c++")
+    san = sanitizer_flags(cxx)
     with tempfile.TemporaryDirectory(prefix="wifi-bridge-checks-") as tmp:
         src = Path(tmp) / "bridge.cpp"
         bin_path = Path(tmp) / "bridge"
         src.write_text(PREAMBLE + extracted + TESTS)
         subprocess.run(
-            [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
-             "-fsanitize=address,undefined", "-fno-omit-frame-pointer", str(src), "-o", str(bin_path)],
+            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             *san, str(src), "-o", str(bin_path)],
             check=True,
         )
         subprocess.run([str(bin_path)], check=True)

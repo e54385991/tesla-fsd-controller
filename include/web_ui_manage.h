@@ -96,11 +96,16 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     </div>
     <label style="margin-top:8px"><input type="checkbox" id="hermesControl"> 启用 hermes 远程车控（默认关闭；仅 3/Y 可能需要，S/X 勿开）</label>
     <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">取消勾选会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 从白名单<strong>任意位置</strong>移除（不区分大小写/分隔符），并重新加回黑名单。</div>
-    <label style="margin-top:12px"><input type="checkbox" id="ipBlkEn"> IP 层拦截（按黑名单解析出的 IP 在转发层丢包）</label>
-    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">默认关闭。关闭可省去每包 lwIP 钩子开销；开启后才会拦截已拿到 IP、绕过 DNS 继续直连的黑名单流量（最多缓存 256 个 IP）。</div>
+    <label style="margin-top:12px">IP 层安全策略（lwIP 转发层防护）</label>
+    <select id="ipPolicyMode">
+      <option value="0">标准（默认：自动阻断 AP→外网 53/853 绕过，无每包 IP 查表开销）</option>
+      <option value="1">IP 黑名单拦截（按黑名单解析出的 IP 在转发层丢包，最多 256 条）</option>
+      <option value="2">严格 IP 白名单（仅放行经白名单 DNS 解析出的 IP，防硬编码/旧缓存/DoH 绕过）</option>
+    </select>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:4px">开启 DNS 过滤后始终自动阻断车机直连外部 <code>UDP/TCP 53</code> 与 <code>DoT 853</code>；「严格 IP 白名单」会记录白名单域名解析出的全部 A 记录（30 分钟滑动续期），可阻止车机直连硬编码或历史缓存的 Tesla IP。注意：开启 FSD 虚拟服务器期间，443 端口非 <code>/feature_configuration</code> 路径会按 TeslaDG 逻辑反代至上游 <code>api-prd</code>（2 分钟自动关闭后恢复拦截）。</div>
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d">
       <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">
-        <div class="dim" style="font-size:12px">DNS 拦截 <b id="dnsBlkTotal" style="color:#f85149">0</b> 次 · IP 拦截 <b id="ipDrops" style="color:#f85149">0</b> 次 · IP 缓存 <span id="ipCache">0</span>（峰值 <span id="ipPeak">0</span>）</div>
+        <div class="dim" style="font-size:12px">DNS 拦截 <b id="dnsBlkTotal" style="color:#f85149">0</b> 次 · IP 拦截 <b id="ipDrops" style="color:#f85149">0</b> 次 · 黑名单缓存 <span id="ipCache">0</span>（峰值 <span id="ipPeak">0</span>） · 白名单 IP <span id="ipAllow">0</span></div>
         <div><button id="dnsBlkClear">清空拦截记录</button><button id="dnsBlkDl">下载 CSV</button></div>
       </div>
       <table style="margin-top:8px">
@@ -230,10 +235,11 @@ async function refresh(){
     if(!document.getElementById('dnsBlock').matches(':focus')) document.getElementById('dnsBlock').value=d.dnsBlock||'';
     document.getElementById('hermesControl').checked=listHasHermes(d.dnsAllow);
     document.getElementById('dnsEn').checked=!!d.dnsEnable;
-    document.getElementById('ipBlkEn').checked=!!d.ipBlockerEnabled;
+    var ipMode=(d.ipPolicyMode!=null)?Number(d.ipPolicyMode):(d.ipBlockerEnabled?1:0);
+    if(!document.getElementById('ipPolicyMode').matches(':focus')) document.getElementById('ipPolicyMode').value=String(ipMode);
     var allowCount=d.dnsAllowCount||0, modeEl=document.getElementById('dnsMode');
     if(!d.dnsEnable){modeEl.textContent='过滤已关闭（全部放行）';modeEl.style.color='#8b949e';}
-    else if(allowCount>0){modeEl.textContent='默认拒绝：仅放行白名单（'+allowCount+' 条）';modeEl.style.color='#3fb950';}
+    else if(allowCount>0){modeEl.textContent='默认拒绝：仅放行白名单（'+allowCount+' 条'+(ipMode===2?' · 严格 IP 白名单':'')+'）';modeEl.style.color='#3fb950';}
     else{modeEl.textContent='黑名单模式：未命中黑名单默认放行';modeEl.style.color='#d29922';}
     var blk=d.dnsBlockedRecent||[], blkTotal=d.dnsBlockedTotal||0;
     document.getElementById('dnsBlkCard').textContent=blkTotal+' 次 / '+blk.length+' 域名';
@@ -241,6 +247,7 @@ async function refresh(){
     document.getElementById('ipDrops').textContent=d.ipBlockDrops||0;
     document.getElementById('ipCache').textContent=d.ipCacheCount||0;
     document.getElementById('ipPeak').textContent=d.ipCachePeak||0;
+    document.getElementById('ipAllow').textContent=d.ipAllowedCount||0;
     var rows=document.getElementById('blkRows');
     if(!blk.length){
       rows.innerHTML='<tr><td colspan="3" class="dim">暂无拦截</td></tr>';
@@ -264,7 +271,7 @@ async function saveAp(){
 async function saveBridge(){
   var qs='upstreamEnable='+(document.getElementById('upEn').checked?1:0)+
     '&dnsEnable='+(document.getElementById('dnsEn').checked?1:0)+
-    '&ipBlockerEnabled='+(document.getElementById('ipBlkEn').checked?1:0)+
+    '&ipPolicyMode='+encodeURIComponent(document.getElementById('ipPolicyMode').value)+
     '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
     '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
   var r=await fetch(q('/api/wifi-bridge/set?'+qs));
@@ -337,12 +344,13 @@ async function resetDns(which){
   if(r.status===403)showPin();
   if(r.ok)refresh();
 }
-async function saveIpBlk(){
-  var v=document.getElementById('ipBlkEn').checked?1:0;
-  var r=await fetch(q('/api/wifi-bridge/set?ipBlockerEnabled='+v));
-  setMsg('dnsMsg',r.ok?(v?'IP 层拦截已开启':'IP 层拦截已关闭'):'保存失败',r.ok);
+async function saveIpPolicy(){
+  var m=document.getElementById('ipPolicyMode').value;
+  var r=await fetch(q('/api/wifi-bridge/set?ipPolicyMode='+encodeURIComponent(m)));
+  var labels={'0':'标准模式（外部 53/853 拦截）','1':'IP 黑名单拦截已开启','2':'严格 IP 白名单已开启'};
+  setMsg('dnsMsg',r.ok?(labels[m]||'已保存'):'保存失败',r.ok);
   if(r.status===403)showPin();
-  if(!r.ok)refresh();
+  refresh();
 }
 async function dnsBlkClear(){
   if(!confirm('清空 DNS / IP 拦截统计？'))return;
@@ -422,17 +430,17 @@ document.getElementById('fsdAutoOff').onchange=saveFsd;
 document.getElementById('fsdMode').onchange=saveFsd;
 document.getElementById('upEn').onchange=saveBridge;
 document.getElementById('dnsEn').onchange=saveBridge;
-document.getElementById('ipBlkEn').onchange=saveIpBlk;
+document.getElementById('ipPolicyMode').onchange=saveIpPolicy;
 document.getElementById('otaBtn').onclick=otaUpload;
 document.getElementById('otaCheck').onclick=otaCheck;
 document.getElementById('otaPull').onclick=otaPull;
 document.getElementById('logClear').onclick=logClear;
 document.getElementById('reboot').onclick=reboot;
 document.getElementById('pinBtn').onclick=async function(){
-  var r=await fetch('/api/pin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pin='+encodeURIComponent(document.getElementById('pinInput').value)});
+  var r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pin='+encodeURIComponent(document.getElementById('pinInput').value)});
   if(r.ok){token=(await r.text()).trim();try{sessionStorage.setItem('fsd_tok',token);}catch(e){}document.getElementById('pinOverlay').style.display='none';
     if(pendingAfterPin){var fn=pendingAfterPin;pendingAfterPin=null;fn();}else refresh();}
-  else setMsg('pinMsg','PIN 错误',false);
+  else setMsg('pinMsg',r.status===429?'尝试过多，请 10 秒后再试':'PIN 错误',false);
 };
 document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
 refresh();setInterval(refresh,5000);

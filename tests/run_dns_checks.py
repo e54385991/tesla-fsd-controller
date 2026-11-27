@@ -65,6 +65,7 @@ struct DNSFilterConfig {
 class DNSWhitelistServer {
   public:
     bool hasDomainRules(const char* rules) const;
+    bool isAllowedDomainCstr(const DNSFilterConfig& cfg, const char* domain, size_t domainLen) const;
     bool isAllowedDomain(const DNSFilterConfig& cfg, const String& domain) const;
 };
 struct IPAddress { uint32_t value = 0; };
@@ -77,16 +78,34 @@ struct FakeWiFi {
 uint32_t ipAddressToHostOrder(const IPAddress& ip) { return ip.value; }
 std::vector<std::string> remembered;
 void rememberResolvedIp(const String& domain, uint32_t) { remembered.push_back(domain); }
+constexpr uint16_t kDnsHeaderSize = 12;
+constexpr uint16_t kDnsTypeOPT = 41;
 constexpr size_t kStagingCapacity = 64;
-struct CachedIpEntry { uint32_t ipHostOrder; uint32_t lastSeenAtSeconds; };
+constexpr size_t kBlockedIpCapacity = 256;
+constexpr uint32_t kIpEntryTtlSeconds = 3600;
+constexpr size_t kAllowedIpCapacity = 256;
+constexpr uint32_t kAllowedIpIdleTtlSeconds = 1800;
+constexpr uint32_t kAllowedIpTouchIntervalSeconds = 30;
+enum class DnsIpPolicyMode : uint8_t { Off = 0, BlocklistIps = 1, StrictAllowIps = 2 };
+struct CachedIpEntry { uint32_t ipHostOrder = 0; uint32_t lastSeenAtSeconds = 0; };
 CachedIpEntry gStagingIps[kStagingCapacity];
+CachedIpEntry gBlockedIps[kBlockedIpCapacity];
+size_t gBlockedIpCount = 0;
+CachedIpEntry gAllowedIps[kAllowedIpCapacity];
+size_t gAllowedIpCount = 0;
+volatile uint32_t gDnsApNetHost = 0x09090900u;
+volatile uint32_t gDnsApMaskHost = 0xFFFFFF00u;
+volatile uint8_t gDnsFilterActiveFlag = 0;
+volatile uint8_t gDnsIpPolicyMode = 0;
+volatile bool gBlockedTableDirty = false;
+volatile uint32_t gIpForwardDropCount = 0;
+uint32_t gTestNowMs = 0;
+uint32_t millis() { return gTestNowMs; }
 constexpr size_t kDnsCacheCapacity = 32;
 constexpr uint32_t kDnsCacheMinTtlSeconds = 30;
 constexpr uint32_t kDnsCacheMaxTtlSeconds = 300;
 struct DnsCacheEntry { char domain[96] = {}; uint32_t ipv4Nbo = 0; uint32_t expiresAtSec = 0; uint32_t lastUsedSec = 0; };
 DnsCacheEntry gDnsCache[kDnsCacheCapacity];
-static bool gFakeIpBlockerEnabled = false;
-static bool dnsIpBlockerEnabled() { return gFakeIpBlockerEnabled; }
 #ifndef portENTER_CRITICAL
 #define portENTER_CRITICAL(mux) do {} while (0)
 #define portEXIT_CRITICAL(mux) do {} while (0)
@@ -100,18 +119,18 @@ size_t gPendingBlockHead = 0;
 size_t gPendingBlockCount = 0;
 int gDnsCacheMux = 0;
 int gDnsIpPolicyMux = 0;
+int gDnsAllowedIpMux = 0;
 '''
 
 STRICT_PREAMBLE = r'''
 constexpr uint32_t kDnsTtlSeconds = 60;
 struct AllowedAddress { uint32_t ip; uint32_t issuedAt; };
+int gDnsAllowMux = 0;
 AllowedAddress gAllowedAddresses[128] = {};
 uint32_t gDnsRulesEpoch = 0;
 uint8_t gApNetifIndex = 0;
 uint8_t gIngressNetifIndex = 0;
-uint32_t gIpForwardDropCount = 0;
-uint32_t nowMs = 0;
-uint32_t millis() { return nowMs; }
+bool destinationAllowed(const AllowedAddress* addresses, size_t count, uint32_t ip, uint32_t now);
 '''
 
 TESTS = r'''
@@ -225,9 +244,9 @@ int main() {
     dnsIpPolicyRecordIngress(3);
     assert(dnsHookIp4CanForward(unknown) == -1);
     dnsIpPolicyRecordIngress(2);
-    nowMs = 59999;
+    gTestNowMs = 59999;
     assert(dnsHookIp4CanForward(approved) == -1);
-    nowMs = 60000;
+    gTestNowMs = 60000;
     assert(dnsHookIp4CanForward(approved) == 0);
     assert(rememberAllowedAddress(approved, gDnsRulesEpoch));
     uint32_t staleEpoch = gDnsRulesEpoch;
@@ -246,14 +265,68 @@ int main() {
 #else
     expect("", "", "example.com", true);
     assert(dns.isAllowedDomain({false, "*.qq.com", "qq.com"}, "music.qq.com"));
+
+    // Runtime L3 security checks: external DNS:53 / DoT:853 blocking + 3-mode IP policy.
+    auto makeIpUdpTcp = [](uint32_t srcHost, uint32_t dstHost, uint8_t proto, uint16_t dport) {
+        std::vector<uint8_t> pkt(28, 0);
+        pkt[0] = 0x45; // IPv4, IHL=20
+        pkt[9] = proto;
+        pkt[12] = (srcHost >> 24) & 0xFF; pkt[13] = (srcHost >> 16) & 0xFF;
+        pkt[14] = (srcHost >> 8) & 0xFF;  pkt[15] = srcHost & 0xFF;
+        pkt[16] = (dstHost >> 24) & 0xFF; pkt[17] = (dstHost >> 16) & 0xFF;
+        pkt[18] = (dstHost >> 8) & 0xFF;  pkt[19] = dstHost & 0xFF;
+        pkt[22] = (dport >> 8) & 0xFF;    pkt[23] = dport & 0xFF;
+        return pkt;
+    };
+    dnsIpPolicySetApSubnet(0x09090909u, 0xFFFFFF00u);
+    dnsIpPolicySetFilterEnabled(1);
+    dnsIpPolicySetMode(0);
+    auto apToDns53 = makeIpUdpTcp(0x0909090Au, 0x08080808u, 17, 53);
+    auto apToTcp53 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 53);
+    auto apToDot853 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 853);
+    auto apToHttps443 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 443);
+    auto staReturn = makeIpUdpTcp(0x08080808u, 0x0909090Au, 17, 53);
+    assert(dnsHookIp4CanForwardPacket(apToDns53.data(), apToDns53.size(), 0x08080808u) == 0);
+    assert(dnsHookIp4CanForwardPacket(apToTcp53.data(), apToTcp53.size(), 0x01010101u) == 0);
+    assert(dnsHookIp4CanForwardPacket(apToDot853.data(), apToDot853.size(), 0x01010101u) == 0);
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == -1);
+    // Inbound STA->AP return packet is bypassed lock-free.
+    assert(dnsHookIp4CanForwardPacket(staReturn.data(), staReturn.size(), 0x0909090Au) == -1);
+    // Disabling DNS filter stops dropping 53/853.
+    dnsIpPolicySetFilterEnabled(0);
+    assert(dnsHookIp4CanForwardPacket(apToDns53.data(), apToDns53.size(), 0x08080808u) == -1);
+
+    // Runtime Mode 2 (StrictAllowIps): drops unknown/hardcoded IPs, allows resolved IPs with 30m sliding TTL.
+    dnsIpPolicySetFilterEnabled(1);
+    dnsIpPolicySetMode(2);
+    dnsAllowedIpClearInternal();
+    gTestNowMs = 10000; // t = 10s
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == 0);
+    dnsAllowedIpRemember(0x01010101u, 10);
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == -1);
+    // Active traffic refreshes sliding TTL (>30s later keeps it alive past original 1800s window).
+    gTestNowMs = 1000000; // t = 1000s
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == -1);
+    gTestNowMs = 2500000; // t = 2500s (1500s since refresh < 1800s -> still alive!)
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == -1);
+    gTestNowMs = 4400000; // t = 4400s (>1800s idle -> expired)
+    assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == 0);
+    dnsIpPolicySetMode(0);
+    gTestNowMs = 0;
 #endif
     // Neither the full nor incremental IP refresh resolves a wildcard/apex
     // substitute; only literal rules and concrete blocked hosts are resolved.
-    assert(buildStaging("*.qq.com qq.com *.tesla.cn api.example.com", 42) == 2);
+    assert(buildStagingFiltered(nullptr, "*.qq.com qq.com *.tesla.cn api.example.com", 42) == 2);
     assert((WiFi.queries == std::vector<std::string>{"qq.com", "api.example.com"}));
     assert(gStagingIps[0].ipHostOrder == 1);
     assert(gStagingIps[0].lastSeenAtSeconds == 42);
     assert(gStagingIps[1].ipHostOrder == 2);
+    // Allowlist-over-blocklist precedence: a blocklist host overridden by an equal/longer
+    // allowlist entry must NOT be added to L3 blocked IPs.
+    WiFi.queries.clear();
+    assert(buildStagingFiltered("api-prd.vn.cloud.tesla.cn",
+                                "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com", 50) == 1);
+    assert((WiFi.queries == std::vector<std::string>{"mothership.vn.teslamotors.com"}));
     static_assert(sizeof(CachedIpEntry) == 8, "CachedIpEntry must stay compact (8 B)");
     WiFi.queries.clear();
     resolveAndRememberDomain("*.qq.com");
@@ -263,17 +336,60 @@ int main() {
     assert((WiFi.queries == std::vector<std::string>{"music.qq.com"}));
     assert((remembered == std::vector<std::string>{"music.qq.com"}));
 
-    // IP blocker disabled (default): dnsIpBlockerRememberDomain must NOT enqueue
-    // or call WiFi.hostByName().
+    // Strict zero-heap DNS QNAME parser rejects embedded NUL, whitespace, dots, and compression pointers.
+    {
+        char out[256];
+        size_t off = 0, len = 0;
+        const uint8_t okName[] = {2, 'Y', 'y', 2, 'q', 'q', 3, 'C', 'O', 'M', 0};
+        assert(parseDomainNameToBuf(okName, sizeof(okName), off, out, sizeof(out), len));
+        assert(len == 9 && std::strcmp(out, "yy.qq.com") == 0 && off == sizeof(okName));
+
+        off = 0;
+        const uint8_t badSpace[] = {7, 'q', 'q', '.', 'c', 'o', 'm', ' ', 0};
+        assert(!parseDomainNameToBuf(badSpace, sizeof(badSpace), off, out, sizeof(out), len));
+        off = 0;
+        const uint8_t badDot[] = {6, 'q', 'q', '.', 'c', 'o', 'm', 0};
+        assert(!parseDomainNameToBuf(badDot, sizeof(badDot), off, out, sizeof(out), len));
+        off = 0;
+        const uint8_t badNul[] = {3, 'a', '\0', 'b', 0};
+        assert(!parseDomainNameToBuf(badNul, sizeof(badNul), off, out, sizeof(out), len));
+        off = 0;
+        const uint8_t badPtr[] = {0xC0, 0x0C};
+        assert(!parseDomainNameToBuf(badPtr, sizeof(badPtr), off, out, sizeof(out), len));
+    }
+
+    // EDNS0 UDP payload clamp + Question echo verification.
+    {
+        // Header (12) + QNAME "a.b" (5) + QTYPE/QCLASS (4) + OPT RR (11)
+        uint8_t pkt[32] = {
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            1, 'A', 1, 'b', 0, 0x00, 0x01, 0x00, 0x01,
+            0x00, 0x00, 41, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // OPT UDP=4096
+        };
+        clampEdnsUdpPayload(pkt, sizeof(pkt), 21, 1024);
+        assert(readU16(pkt + 24) == 1024);
+        // Response with lowercased QNAME still matches; mismatched domain fails.
+        uint8_t resp[21];
+        std::memcpy(resp, pkt, 21);
+        resp[13] = 'a';
+        assert(questionMatchesQuery(pkt, 21, resp, sizeof(resp)));
+        resp[15] = 'c';
+        assert(!questionMatchesQuery(pkt, 21, resp, sizeof(resp)));
+    }
+
+    // IP blocker disabled (default mode 0) & StrictAllowIps (mode 2): dnsIpBlockerRememberDomain must NOT enqueue.
     WiFi.queries.clear();
-    gFakeIpBlockerEnabled = false;
+    gDnsIpPolicyMode = 0;
     gPendingBlockHead = 0;
     gPendingBlockCount = 0;
     dnsIpBlockerRememberDomain("blocked.example.com", 1);
     assert(WiFi.queries.empty() && gPendingBlockCount == 0);
+    gDnsIpPolicyMode = 2;
+    dnsIpBlockerRememberDomain("blocked.example.com", 1);
+    assert(WiFi.queries.empty() && gPendingBlockCount == 0);
 
-    // IP blocker enabled: enqueues asynchronously (deduped) without calling hostByName().
-    gFakeIpBlockerEnabled = true;
+    // IP blocker mode 1 (BlocklistIps): enqueues asynchronously (deduped) without calling hostByName().
+    gDnsIpPolicyMode = 1;
     dnsIpBlockerRememberDomain("  BLOCKED.Example.COM. ", 1);
     dnsIpBlockerRememberDomain("blocked.example.com", 1);
     assert(WiFi.queries.empty() && gPendingBlockCount == 1);
@@ -281,6 +397,7 @@ int main() {
     assert(popPendingBlockResolve(popped, sizeof(popped)));
     assert(std::strcmp(popped, "blocked.example.com") == 0);
     assert(gPendingBlockCount == 0);
+    gDnsIpPolicyMode = 0;
 
     // DNS A-record LRU cache: store, TTL clamp [30..300], hit, expire, clear.
     dnsCacheClear();
@@ -315,19 +432,41 @@ int main() {
 '''
 
 
+def sanitizer_flags(cxx: str) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="san-probe-") as tmp:
+        probe = Path(tmp) / "p.cpp"
+        out = Path(tmp) / "p"
+        probe.write_text("int main(){return 0;}\n")
+        r = subprocess.run([cxx, "-fsanitize=address,undefined", str(probe), "-o", str(out)],
+                           capture_output=True)
+        return ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if r.returncode == 0 else []
+
+
 def main():
     signatures = [
+        "uint16_t readU16(", "void writeU16(",
         "void dnsCacheClear(", "bool dnsCacheLookup(", "void dnsCacheStore(",
+        "size_t longestRuleMatchLenCstr(", "bool isRuleOverriddenByAllowlist(",
+        "void dnsAllowedIpClearInternal(", "void dnsAllowedIpRemember(",
+        "bool containsAndTouchAllowedIpLocked(",
+        "bool parseDomainNameToBuf(", "void clampEdnsUdpPayload(",
+        "bool questionMatchesQuery(",
         "bool enqueuePendingBlockResolve(", "bool popPendingBlockResolve(",
         "bool isWildcardDomainRule(", "bool domainMatchesRule(",
         "String normalizeDomainCstr(", "bool hasRules(",
         "bool getRuleByIndex(", "size_t countRules(",
+        "bool containsFreshIpLocked(",
         "bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {",
-        "static size_t longestRuleMatchLen(",
         "bool DNSWhitelistServer::hasDomainRules(",
+        "bool DNSWhitelistServer::isAllowedDomainCstr(",
         "bool DNSWhitelistServer::isAllowedDomain(",
-        "void resolveAndRememberDomain(", "size_t buildStaging(",
+        "void resolveAndRememberDomain(", "size_t buildStagingFiltered(",
+        'extern "C" void dnsIpPolicySetApSubnet(',
+        'extern "C" void dnsIpPolicySetFilterEnabled(',
+        'extern "C" void dnsIpPolicySetMode(',
         'extern "C" void dnsIpBlockerRememberDomain(',
+        'extern "C" int dnsHookIp4CanForwardPacket(',
+        'extern "C" int dnsHookIp4CanForward(',
     ]
     base_functions = "\n".join(function(s) for s in signatures)
     strict_functions = "\n".join(function(signature) for signature in (
@@ -335,17 +474,17 @@ def main():
         'extern "C" void dnsIpPolicyRecordIngress(', '\nvoid dnsStrictSetApInterface(int netifIndex) {',
         '\nvoid dnsStrictClearAddresses() {',
         '\nvoid dnsStrictUpdateRules(DNSFilterConfig& cfg, bool enabled, const char* allowlist, const char* blocklist) {',
-        'extern "C" int dnsHookIp4CanForward(',
     ))
+    cxx = os.environ.get("CXX", "c++")
+    san = sanitizer_flags(cxx)
     with tempfile.TemporaryDirectory(prefix="dns-checks-") as directory:
         source = Path(directory) / "dns.cpp"
         binary = Path(directory) / "dns"
         for strict in (False, True):
-            extra = STRICT_PREAMBLE + strict_functions if strict else ""
             flags = ["-DWIFI_BRIDGE_STRICT_ALLOWLIST"] if strict else []
-            source.write_text(PREAMBLE + base_functions + extra + TESTS)
-            subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                            "-fsanitize=address,undefined", "-fno-omit-frame-pointer", *flags, str(source),
+            source.write_text(PREAMBLE + (STRICT_PREAMBLE if strict else "") + base_functions + (strict_functions if strict else "") + TESTS)
+            subprocess.run([cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                            *san, *flags, str(source),
                             "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 

@@ -61,9 +61,15 @@ def merge_firmware(source, target, env):
 
     # PlatformIO 8.x ships the standalone esptool 5 binary (`tool-esptool`);
     # older platforms ship the Python module in `tool-esptoolpy`.
-    esptool_v5 = os.path.join(piohome, "packages", "tool-esptool", "esptool")
+    esptool_v5_dir = os.path.join(piohome, "packages", "tool-esptool")
+    esptool_v5 = next(
+        (p for name in ("esptool.exe", "esptool")
+         for p in (os.path.join(esptool_v5_dir, name),)
+         if os.path.isfile(p)),
+        None,
+    )
     esptool_v4 = os.path.join(piohome, "packages", "tool-esptoolpy", "esptool.py")
-    if os.path.isfile(esptool_v5):
+    if esptool_v5:
         cmd = [
             esptool_v5, "--chip", chip, "merge-bin",
             "-o", merged_out,
