@@ -81,11 +81,22 @@ def check_static_contracts() -> None:
         assert needle in s3_cfg, f"sdkconfig.esp32s3-waveshare-wifi missing {needle}"
     assert "# CONFIG_LWIP_IPV6 is not set" in s3_cfg and "CONFIG_LWIP_IPV6=y" not in s3_cfg, "IPv6 must be disabled"
     assert "CONFIG_LWIP_IPV6_FORWARD=y" not in s3_cfg, "IPv6 forwarding must stay disabled"
+    for needle in (
+        "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y",
+        "CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y",
+    ):
+        assert needle in s3_cfg, f"sdkconfig.esp32s3-waveshare-wifi missing {needle}"
 
     esp32_cfg = (ROOT / "sdkconfig.esp32-wifi").read_text()
     assert "CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y" in esp32_cfg, "esp32-wifi must pin lwIP TCPIP to Core 1"
     assert "# CONFIG_LWIP_IPV6 is not set" in esp32_cfg and "CONFIG_LWIP_IPV6=y" not in esp32_cfg, "IPv6 must be disabled"
     assert "CONFIG_LWIP_IPV6_FORWARD=y" not in esp32_cfg, "IPv6 forwarding must stay disabled"
+    assert "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y" in esp32_cfg, "esp32-wifi must enable runtime stats for CPU%"
+    assert "CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y" in esp32_cfg, "esp32-wifi must use U64 runtime counters"
+
+    ui_src = (ROOT / "include/web_ui_manage.h").read_text()
+    for needle in ("cpu0Val", "cpu1Val", "memPct", "memUsedPct", "heapTotal"):
+        assert needle in ui_src, f"web_ui_manage.h missing {needle}"
 
 
 PREAMBLE = r'''
@@ -378,7 +389,22 @@ int main() {
     assert(wifiBridgeComputeBackoffMs(0, false, true) == 60000);
     assert(wifiBridgeComputeBackoffMs(99, false, false) == 300000);
 
-    std::puts("Wi-Fi bridge state machine: all checks passed");
+    // 8. Per-core CPU% & RAM% math checks (rounding, clamping, stuck-idle guard).
+    assert(sysStatsComputeUsagePct(0, 0, false) == 0.0f);
+    assert(sysStatsComputeUsagePct(0, 2000000ULL, true) == 0.0f);
+    assert(sysStatsComputeUsagePct(0, 2000000ULL, false) == 100.0f);
+    assert(sysStatsComputeUsagePct(2000000ULL, 2000000ULL, false) == 0.0f);
+    assert(sysStatsComputeUsagePct(2500000ULL, 2000000ULL, false) == 0.0f);
+    assert(sysStatsComputeUsagePct(1500000ULL, 2000000ULL, false) == 25.0f);
+    assert(sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) > 12.3f &&
+           sysStatsComputeUsagePct(1753000ULL, 2000000ULL, false) < 12.4f);
+    assert(sysStatsComputeMemPct(0, 0) == 0.0f);
+    assert(sysStatsComputeMemPct(100000, 100000) == 0.0f);
+    assert(sysStatsComputeMemPct(120000, 100000) == 0.0f);
+    assert(sysStatsComputeMemPct(0, 100000) == 100.0f);
+    assert(sysStatsComputeMemPct(25000, 100000) == 75.0f);
+
+    std::puts("Wi-Fi bridge state machine + resource metrics: all checks passed");
     return 0;
 }
 '''
@@ -414,6 +440,9 @@ def main() -> None:
         "static inline void serviceUpstreamWiFi(",
     ]
     extracted = "\n".join(extract_function(BRIDGE_SRC, s) for s in signatures)
+    sys_stats_src = (ROOT / "include/mod_sys_stats.h").read_text()
+    extracted += "\n" + extract_function(sys_stats_src, "static inline float sysStatsComputeUsagePct(")
+    extracted += "\n" + extract_function(sys_stats_src, "static inline float sysStatsComputeMemPct(")
     cxx = os.environ.get("CXX", "c++")
     san = sanitizer_flags(cxx)
     with tempfile.TemporaryDirectory(prefix="wifi-bridge-checks-") as tmp:

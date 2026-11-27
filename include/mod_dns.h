@@ -1395,11 +1395,12 @@ void DNSWhitelistServer::cacheAllowedAddressesFromResponse(const char* domain, c
 }
 
 size_t DNSWhitelistServer::copyBlockedDomains(DNSBlockedDomainStatEntry* dest, size_t maxEntries, uint32_t& totalBlockedCount) {
-    totalBlockedCount = 0;
-    if (dest == nullptr || maxEntries == 0) return 0;
-
     portENTER_CRITICAL(&gDnsBlockedLogMux);
     totalBlockedCount = totalBlockedCount_;
+    if (dest == nullptr || maxEntries == 0) {
+        portEXIT_CRITICAL(&gDnsBlockedLogMux);
+        return 0;
+    }
     size_t count = blockedDomainCount_ < maxEntries ? blockedDomainCount_ : maxEntries;
 
     for (size_t i = 0; i < count; ++i) {
@@ -1910,11 +1911,14 @@ extern "C" void dnsIpBlockerClear(void) {
     portENTER_CRITICAL(&gDnsIpPolicyMux);
     clearEntries(gBlockedIps, kBlockedIpCapacity, gBlockedIpCount);
     clearPendingBlockResolveLocked();
+    memset(gBlocklistSnapshot, 0, sizeof(gBlocklistSnapshot));
+    memset(gAllowlistSnapshot, 0, sizeof(gAllowlistSnapshot));
+    gLastBlockResolveAtSeconds = 0;
+    gNextBlockResolveRuleIndex = 0;
     gIpForwardDropCount = 0;
     gIpCachePeakCount   = 0;
     gBlockedTableDirty  = false;
     portEXIT_CRITICAL(&gDnsIpPolicyMux);
-    dnsAllowedIpClearInternal();
 }
 
 extern "C" int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_t destAddrHostOrder) {

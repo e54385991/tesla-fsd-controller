@@ -18,6 +18,9 @@ h1{font-size:16px;margin:0}.dim{color:#8b949e}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px}
 .k{color:#8b949e;font-size:12px}.v{font-size:18px;font-weight:600;margin-top:3px;word-break:break-all}.v.s{font-size:13px;font-weight:500}
+.mrow{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px;font-variant-numeric:tabular-nums}
+.mbar{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden;min-width:48px}
+.mbar i{display:block;height:100%;width:0;background:#3fb950;transition:width .3s}
 section{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
 h2{font-size:12px;margin:0;padding:9px 12px;border-bottom:1px solid #30363d;color:#8b949e;font-weight:600}
 .body{padding:10px 12px}
@@ -54,7 +57,15 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
     <div class="card fsd-only"><div class="k">FSD 载荷</div><div class="v s" id="fsdPayload">--</div></div>
     <div class="card fsd-only"><div class="k">FSD 命中 / DNS 重定向</div><div class="v" id="fsdHits">--</div></div>
     <div class="card"><div class="k">DNS 拦截</div><div class="v s" id="dnsBlkCard">--</div></div>
-    <div class="card"><div class="k">Heap / Min</div><div class="v s" id="heapCard">--</div></div>
+    <div class="card"><div class="k">CPU（分核心）</div><div class="v s">
+      <div class="mrow"><span style="width:42px;color:#8b949e">Core 0</span><span class="mbar"><i id="cpu0Bar"></i></span><span id="cpu0Val" style="width:42px;text-align:right">--</span></div>
+      <div class="mrow"><span style="width:42px;color:#8b949e">Core 1</span><span class="mbar"><i id="cpu1Bar"></i></span><span id="cpu1Val" style="width:42px;text-align:right">--</span></div>
+      <div class="dim" style="font-size:11px;margin-top:4px" id="cpuMeta">C0: Wi-Fi/TLS · C1: lwIP/DNS</div>
+    </div></div>
+    <div class="card"><div class="k">内存使用率（RAM）</div><div class="v s">
+      <div class="mrow" style="margin-top:2px"><b id="memPct" style="font-size:16px">--</b><span class="mbar"><i id="memBar"></i></span></div>
+      <div class="dim" style="font-size:11px;margin-top:4px" id="heapCard">--</div>
+    </div></div>
     <div class="card"><div class="k">Reset reason</div><div class="v s" id="resetCard">--</div></div>
   </div>
 
@@ -185,6 +196,9 @@ function q(u){return u+(token?(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComp
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function showPin(){document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
 function setMsg(id,t,ok){var e=document.getElementById(id);e.textContent=t||'';e.className='msg '+(ok===true?'ok':(ok===false?'bad':''));}
+function barColor(p){return p>=85?'#f85149':(p>=65?'#d29922':'#3fb950');}
+function setBar(id,p){var el=document.getElementById(id);if(!el)return;var v=(p!=null&&isFinite(p))?Math.max(0,Math.min(100,Number(p))):0;el.style.width=v.toFixed(1)+'%';el.style.background=barColor(v);}
+function fmtKb(b){return (Number(b||0)/1024).toFixed(1)+' KB';}
 async function getText(u){var r=await fetch(q(u),{cache:'no-store'});if(r.status===403){showPin();throw new Error('auth');}if(!r.ok)throw new Error('HTTP '+r.status);return await r.text();}
 async function getJson(u){return JSON.parse(await getText(u));}
 async function refresh(){
@@ -199,7 +213,11 @@ async function refresh(){
     else if(f.enabled&&f.autoOffPending){fsdBadge.textContent='FSD：已下发 · '+(f.autoOffRemainingSec||0)+'s 后自动关闭';fsdBadge.className='badge ok';}
     else if(f.enabled){fsdBadge.textContent='FSD：开 / '+(f.mode||'--');fsdBadge.className='badge ok';}
     else{fsdBadge.textContent='FSD：关'+(f.autoDisabledCount?'（已自动关闭）':'');fsdBadge.className='badge';}
-    document.getElementById('bHeap').textContent=(d.heap||0)+' B free';
+    var memPct=(d.memUsedPct!=null)?Number(d.memUsedPct):((d.heapTotal>0&&d.heap!=null)?((d.heapTotal-d.heap)*100/d.heapTotal):null);
+    var c0=(d.cpu0!=null)?Number(d.cpu0):null, c1=(d.cpu1!=null)?Number(d.cpu1):null;
+    document.getElementById('bHeap').textContent=
+      (c0!=null&&c1!=null?('CPU '+c0.toFixed(0)+'%/'+c1.toFixed(0)+'% · '):'')+
+      (memPct!=null?('RAM '+memPct.toFixed(1)+'% ('+fmtKb(d.heap)+' 剩余)'):((d.heap||0)+' B free'));
     document.getElementById('apSsid').textContent=d.apSSID||'fsd-esp32';
     if(!document.getElementById('apSsidIn').matches(':focus'))
       document.getElementById('apSsidIn').value=d.apSSID||'fsd-esp32';
@@ -212,7 +230,18 @@ async function refresh(){
     document.getElementById('upEn').checked=!!d.upstreamEnable;
     document.getElementById('fsdPayload').textContent=(f.bytes||0)+' B / '+(f.md5||'').slice(0,10)+' / '+(f.fields||0)+' 字段';
     document.getElementById('fsdHits').textContent=(f.hits||0)+' / '+(f.dnsRedirects||0);
-    document.getElementById('heapCard').textContent=(d.heap||0)+' / '+(d.minHeap||0)+' B';
+    document.getElementById('cpu0Val').textContent=c0!=null?(c0.toFixed(1)+'%'):'--';
+    document.getElementById('cpu1Val').textContent=c1!=null?(c1.toFixed(1)+'%'):'--';
+    setBar('cpu0Bar',c0); setBar('cpu1Bar',c1);
+    document.getElementById('cpuMeta').textContent=
+      (d.cpuAvg!=null?('均 '+Number(d.cpuAvg).toFixed(1)+'%'):'C0: Wi-Fi/TLS · C1: lwIP/DNS')+
+      (d.chipTempC!=null?(' · 温度 '+Number(d.chipTempC).toFixed(1)+'°C'):'');
+    document.getElementById('memPct').textContent=memPct!=null?(memPct.toFixed(1)+'%'):'--';
+    document.getElementById('memPct').style.color=memPct!=null?barColor(memPct):'#e6edf3';
+    setBar('memBar',memPct);
+    document.getElementById('heapCard').textContent=
+      '剩 '+fmtKb(d.heap)+(d.heapTotal?(' / 总 '+fmtKb(d.heapTotal)):'')+
+      ' · 低 '+fmtKb(d.minHeap)+(d.memPeakPct!=null?(' (峰 '+Number(d.memPeakPct).toFixed(1)+'%)'):'');
     document.getElementById('resetCard').textContent=d.resetReason||'--';
     document.getElementById('fsdEn').checked=!!f.enabled;
     document.getElementById('fsdAutoOff').checked=f.autoOffOnHit!==false;

@@ -32,6 +32,7 @@
 #include "mod_log.h"
 #include "mod_ota.h"
 #include "mod_thermal.h"
+#include "mod_sys_stats.h"
 
 #define MOD_DNS_IMPLEMENTATION
 #include "mod_dns.h"
@@ -671,9 +672,16 @@ void wifiBridgePrintDiag() {
                   static_cast<unsigned>(dnsHits), static_cast<unsigned>(dnsMisses),
                   static_cast<unsigned>(dnsFwdOk), static_cast<unsigned>(dnsFwdTo),
                   static_cast<unsigned>(gDnsFilter.rebindCount()));
-    Serial.printf("[wifi-diag] heap=%u minHeap=%u reset=%s psram=%u freePsram=%u\n",
-                  static_cast<unsigned>(ESP.getFreeHeap()),
-                  static_cast<unsigned>(ESP.getMinFreeHeap()), resetReasonName(),
+    const SysResourceSnapshot res = getSysResourceSnapshot();
+    Serial.printf("[wifi-diag] heap=%u/%u(%.1f%%) minHeap=%u(peak=%.1f%%) cpu0=%.1f%% cpu1=%.1f%% valid=%d reset=%s psram=%u freePsram=%u\n",
+                  static_cast<unsigned>(res.heapFree),
+                  static_cast<unsigned>(res.heapTotal),
+                  static_cast<double>(res.memUsedPct),
+                  static_cast<unsigned>(res.heapMin),
+                  static_cast<double>(res.memPeakPct),
+                  static_cast<double>(res.cpu0Pct),
+                  static_cast<double>(res.cpu1Pct),
+                  res.cpuValid ? 1 : 0, resetReasonName(),
                   static_cast<unsigned>(ESP.getPsramSize()),
                   static_cast<unsigned>(ESP.getFreePsram()));
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
@@ -1192,8 +1200,7 @@ static void setupWebServer() {
         if (entries) {
             recentBlocked = gDnsFilter.copyBlockedDomains(entries, blockedCap, totalBlocked);
         } else {
-            DNSBlockedDomainStatEntry dummy;
-            gDnsFilter.copyBlockedDomains(&dummy, 0, totalBlocked);
+            gDnsFilter.copyBlockedDomains(nullptr, 0, totalBlocked);
         }
 
         resp->print(",\"dnsBlockedTotal\":"); resp->print(static_cast<unsigned>(totalBlocked));
@@ -1219,9 +1226,19 @@ static void setupWebServer() {
         // Free blocked-domain scratch BEFORE fsd_mock::appendStatusJson() allocates
         // its LastResponse snapshot so the two heap buffers never overlap.
         delete[] entries;
+        const SysResourceSnapshot res = getSysResourceSnapshot();
         resp->print("]");
-        resp->print(",\"heap\":"); resp->print(ESP.getFreeHeap());
-        resp->print(",\"minHeap\":"); resp->print(ESP.getMinFreeHeap());
+        resp->print(",\"heap\":"); resp->print(res.heapFree);
+        resp->print(",\"minHeap\":"); resp->print(res.heapMin);
+        resp->print(",\"heapTotal\":"); resp->print(res.heapTotal);
+        resp->print(",\"memUsedPct\":"); resp->print(res.memUsedPct, 1);
+        resp->print(",\"memPeakPct\":"); resp->print(res.memPeakPct, 1);
+        resp->print(",\"cpu0\":");
+        if (res.cpuValid) resp->print(res.cpu0Pct, 1); else resp->print("null");
+        resp->print(",\"cpu1\":");
+        if (res.cpuValid) resp->print(res.cpu1Pct, 1); else resp->print("null");
+        resp->print(",\"cpuAvg\":");
+        if (res.cpuValid) resp->print(res.cpuAvgPct, 1); else resp->print("null");
         resp->print(",\"resetReason\":\""); resp->print(resetReasonName()); resp->print("\"");
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
         resp->print(',');
@@ -1682,11 +1699,13 @@ void setup() {
 
     // Register the Arduino loop task with TWDT so hangs in AsyncTCP/DNS/OTA
     // are caught instead of silently blocking forever.
+    serviceSysStats();
     esp_task_wdt_add(NULL);
 }
 
 void loop() {
     esp_task_wdt_reset();
+    serviceSysStats();
 #ifdef CLIENT_CONFIG_HTTPS_ENABLED
     client_config::serviceSerial();
     client_config::serviceListeners();
