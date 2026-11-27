@@ -26,11 +26,14 @@ def function(signature):
 
 PREAMBLE = r'''
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <netinet/in.h>
 #include <strings.h>
 #include <string>
 #include <vector>
@@ -55,22 +58,56 @@ struct String : std::string {
     }
 };
 struct DNSFilterConfig {
-    bool enabled;
+    bool enabled = false;
     char allowlist[3072] = {}, blocklist[3072] = {};
+    DNSFilterConfig() = default;
     DNSFilterConfig(bool enabled, const char* allow, const char* block) : enabled(enabled) {
         if (allow) std::snprintf(allowlist, sizeof(allowlist), "%s", allow);
         if (block) std::snprintf(blocklist, sizeof(blocklist), "%s", block);
     }
 };
+struct IPAddress { uint32_t value = 0; };
+std::vector<uint8_t> incomingQuery;
+int recvTestQuery(int, void* out, size_t capacity, int, sockaddr* client, socklen_t*) {
+    assert(incomingQuery.size() <= capacity);
+    std::memcpy(out, incomingQuery.data(), incomingQuery.size());
+    reinterpret_cast<sockaddr_in*>(client)->sin_addr.s_addr = htonl(0x0909090au);
+    return static_cast<int>(incomingQuery.size());
+}
+#define recvfrom recvTestQuery
+
 class DNSWhitelistServer {
   public:
-    bool hasDomainRules(const char* rules) const;
     bool isAllowedDomainCstr(const DNSFilterConfig& cfg, const char* domain, size_t domainLen) const;
     bool isAllowedDomain(const DNSFilterConfig& cfg, const String& domain) const;
+    bool processNextRequest(const DNSFilterConfig& cfg, bool upstreamReady);
+    int replyCode = -1, forwardedQueries = 0;
+    uint32_t replyIp = 0;
+  private:
+    bool started_ = true;
+    int listenSock_ = 53;
+    sockaddr_in lastClientAddr_ = {};
+    [[maybe_unused]] unsigned cacheHits_ = 0, cacheMisses_ = 0;
+    void stop() { started_ = false; }
+    void sendErrorResponse(const uint8_t*, size_t, uint16_t, uint16_t code) { replyCode = code; }
+    void sendIPv4Answer(const uint8_t*, size_t, uint16_t, const IPAddress& ip, uint32_t) {
+        replyCode = 0;
+        replyIp = ip.value;
+    }
+    void sendNoAnswerResponse(const uint8_t*, size_t, uint16_t) { replyCode = 0; }
+    void sendBlockedResponse(const uint8_t*, size_t, uint16_t, uint16_t) { replyCode = 3; }
+    void logBlockedRequest(const char*) {}
+    bool forwardUpstreamQuery(uint8_t*, size_t, size_t, uint8_t*, size_t, size_t&) {
+        ++forwardedQueries;
+        return true;
+    }
+    void cacheAllowedAddressesFromResponse(const char*, const uint8_t*, size_t) {}
+    void sendRawReply(const uint8_t*, size_t) { replyCode = 0; }
 };
-struct IPAddress { uint32_t value = 0; };
+constexpr int WL_CONNECTED = 1;
 struct FakeWiFi {
     std::vector<std::string> queries;
+    int status() const { return WL_CONNECTED; }
     int hostByName(const char* domain, IPAddress& ip) {
         queries.emplace_back(domain); ip.value = queries.size(); return 1;
     }
@@ -79,7 +116,12 @@ uint32_t ipAddressToHostOrder(const IPAddress& ip) { return ip.value; }
 std::vector<std::string> remembered;
 void rememberResolvedIp(const String& domain, uint32_t) { remembered.push_back(domain); }
 constexpr uint16_t kDnsHeaderSize = 12;
+constexpr uint16_t kDnsTypeA = 1;
+[[maybe_unused]] constexpr uint16_t kDnsTypeAAAA = 28;
 constexpr uint16_t kDnsTypeOPT = 41;
+constexpr uint16_t kDnsClassIN = 1;
+constexpr uint32_t kDnsTtlSeconds = 60;
+[[maybe_unused]] constexpr size_t kDnsUpstreamRespCap = 1024;
 constexpr size_t kStagingCapacity = 64;
 constexpr size_t kBlockedIpCapacity = 256;
 constexpr uint32_t kIpEntryTtlSeconds = 3600;
@@ -95,7 +137,6 @@ CachedIpEntry gAllowedIps[kAllowedIpCapacity];
 size_t gAllowedIpCount = 0;
 volatile uint32_t gDnsApNetHost = 0x09090900u;
 volatile uint32_t gDnsApMaskHost = 0xFFFFFF00u;
-volatile uint8_t gDnsFilterActiveFlag = 0;
 volatile uint8_t gDnsIpPolicyMode = 0;
 volatile bool gBlockedTableDirty = false;
 volatile uint32_t gIpForwardDropCount = 0;
@@ -120,10 +161,16 @@ size_t gPendingBlockCount = 0;
 int gDnsCacheMux = 0;
 int gDnsIpPolicyMux = 0;
 int gDnsAllowedIpMux = 0;
+int gDnsFilterCfgMux = 0;
+uint32_t gDnsFilterCfgGen = 1;
+int gFsdRedirectMux = 0;
+bool gFsdRedirectEnabled = false;
+char gFsdRedirectHosts[256] = {}, gFsdRedirectLast[256] = {};
+IPAddress gFsdRedirectAnswer;
+unsigned gFsdRedirectTotal = 0;
 '''
 
 STRICT_PREAMBLE = r'''
-constexpr uint32_t kDnsTtlSeconds = 60;
 struct AllowedAddress { uint32_t ip; uint32_t issuedAt; };
 int gDnsAllowMux = 0;
 AllowedAddress gAllowedAddresses[128] = {};
@@ -137,11 +184,6 @@ TESTS = r'''
 int main() {
     DNSWhitelistServer dns;
     unsigned checks = 0;
-#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-    constexpr bool allowUnlisted = false;
-#else
-    constexpr bool allowUnlisted = true;
-#endif
     auto expect = [&](const char* allow, const char* block, const char* domain, bool allowed) {
         DNSFilterConfig config{true, allow, block};
         bool actual = dns.isAllowedDomain(config, normalizeDomainCstr(domain));
@@ -198,19 +240,16 @@ int main() {
     expect("example.com", "", "example.com.evil", false);
     expect("*.example.com", "", "example.com", false);
     expect("*.example.com", "", "a.example.com", true);
-    // Empty allowlist = blacklist-only mode; unmatched names stay allowed.
-    expect("", "blocked.com", "other.com", allowUnlisted);
+    // A disabled filter or empty allowlist cannot approve external names.
+    expect("", "blocked.com", "other.com", false);
     expect("", "blocked.com", "sub.blocked.com", false);
-    // Disabling the filter bypasses both lists (normal mode). Strict allowlist
-    // builds are intentionally fail-closed even with filtering disabled.
-#ifndef WIFI_BRIDGE_STRICT_ALLOWLIST
-    assert(dns.isAllowedDomain({false, "example.com", "blocked.com"}, "other.com"));
-#endif
+    expect(" \t,;\n", "", "example.com", false);
+    assert(!dns.isAllowedDomain({false, "example.com", "blocked.com"}, "example.com"));
     // Wildcard blacklists exclude the apex and allow unrelated domains.
-    expect("", "*.qq.com", "qq.com", allowUnlisted);
-    expect("", "*.qq.com", "music.qq.com", false);
-    expect("", "*.qq.com", "a.b.qq.com", false);
-    expect("", "*.qq.com", "fakeqq.com", allowUnlisted);
+    expect("qq.com fakeqq.com", "*.qq.com", "qq.com", true);
+    expect("qq.com fakeqq.com", "*.a.qq.com", "music.a.qq.com", false);
+    expect("qq.com fakeqq.com", "*.a.qq.com", "a.b.a.qq.com", false);
+    expect("qq.com fakeqq.com", "*.qq.com", "fakeqq.com", true);
     // The wildcard's two syntax characters must not inflate specificity.
     expect("*.qq.com", "a.qq.com", "a.qq.com", false);
     expect("*.qq.com", "a.qq.com", "child.a.qq.com", false);
@@ -227,9 +266,62 @@ int main() {
     expect("*.", "", "music.qq.com", false);
     expect("*.qq.com", "", "example.com", false);
     assert(!dns.isAllowedDomain({true, nullptr, nullptr}, ""));
+    // Check the startup default and published reasons for persisted configurations.
+    const uint32_t bothReasons = kApInternetDnsFilterDisabled | kApInternetDnsAllowlistEmpty;
+    assert(dnsApInternetBlockReasons() == bothReasons);
+    assert(dnsHookIp4CanForward(0x01010101u) == 0);
+    DNSFilterConfig rules{false, "example.com", ""};
+    dnsPublishApInternetPolicy(rules);
+    assert(dnsApInternetBlockReasons() == kApInternetDnsFilterDisabled);
+    auto updateRules = [&](bool hasEnable, bool enable, const char* allow) {
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-    expect("", "", "example.com", false);
-    assert(!dns.isAllowedDomain({false, "example.com", ""}, "example.com"));
+        dnsStrictUpdateRules(rules, hasEnable ? enable : rules.enabled, allow, nullptr);
+#else
+        dnsFilterUpdateConfig(rules, hasEnable, enable, allow, nullptr);
+#endif
+    };
+    updateRules(false, true, " \t,;\n");
+    assert(dnsApInternetBlockReasons() == bothReasons);
+    updateRules(true, true, nullptr);
+    assert(dnsApInternetBlockReasons() == kApInternetDnsAllowlistEmpty);
+
+    // Exercise the local DNS entry point. Cached entries cannot answer a
+    // query while locked, and FSD redirects remain local.
+    incomingQuery = {0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                     1, 'a', 1, 'b', 0, 0, 1, 0, 1};
+    dnsCacheStore("a.b", htonl(0x01010101u), 60, 0);
+    assert(dns.processNextRequest(rules, true) && dns.replyCode == 5);
+    assert(dns.forwardedQueries == 0 && WiFi.queries.empty());
+    std::strcpy(gFsdRedirectHosts, "a.b");
+    gFsdRedirectEnabled = true;
+    gFsdRedirectAnswer = IPAddress{htonl(0x09090909u)};
+    assert(dns.processNextRequest(rules, true) && dns.replyCode == 0);
+    assert(dns.replyIp == gFsdRedirectAnswer.value);
+    assert(dns.forwardedQueries == 0 && WiFi.queries.empty());
+    gFsdRedirectEnabled = false;
+
+    // The restore-defaults write enables filtering and replaces the allowlist.
+    updateRules(true, true, "a.b");
+    assert(dnsApInternetBlockReasons() == 0);
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
+    dnsStrictSetApInterface(2);
+    assert(dns.processNextRequest(rules, true) && dns.replyCode == 0);
+    assert((WiFi.queries == std::vector<std::string>{"a.b"}));
+    WiFi.queries.clear();
+    dnsStrictSetApInterface(0);
+#else
+    assert(dns.processNextRequest(rules, true) && dns.replyCode == 0);
+    assert(dns.forwardedQueries == 1);
+#endif
+    updateRules(true, false, nullptr);
+    assert(dnsApInternetBlockReasons() == kApInternetDnsFilterDisabled);
+    const int priorForwardedQueries = dns.forwardedQueries;
+    assert(dns.processNextRequest(rules, true) && dns.replyCode == 5);
+    assert(dns.forwardedQueries == priorForwardedQueries && WiFi.queries.empty());
+    updateRules(true, true, "example.com");
+    assert(dnsApInternetBlockReasons() == 0);
+
+#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
     constexpr uint32_t approved = 0xcb00712a;
     constexpr uint32_t unknown = 0xc633642a;
     dnsIpPolicyRecordIngress(2);
@@ -250,7 +342,6 @@ int main() {
     assert(dnsHookIp4CanForward(approved) == 0);
     assert(rememberAllowedAddress(approved, gDnsRulesEpoch));
     uint32_t staleEpoch = gDnsRulesEpoch;
-    DNSFilterConfig rules{true, "example.com", ""};
     dnsStrictUpdateRules(rules, true, "example.com", "");
     assert(gDnsRulesEpoch == staleEpoch);
     dnsStrictUpdateRules(rules, true, "other.example", nullptr);
@@ -263,9 +354,6 @@ int main() {
     assert(dnsHookIp4CanForward(approved) == 0);
     std::puts("Strict IPv4 policy: ingress, unknown IP, TTL and invalidation checks passed");
 #else
-    expect("", "", "example.com", true);
-    assert(dns.isAllowedDomain({false, "*.qq.com", "qq.com"}, "music.qq.com"));
-
     // Runtime L3 security checks: external DNS:53 / DoT:853 blocking + 3-mode IP policy.
     auto makeIpUdpTcp = [](uint32_t srcHost, uint32_t dstHost, uint8_t proto, uint16_t dport) {
         std::vector<uint8_t> pkt(28, 0);
@@ -279,25 +367,35 @@ int main() {
         return pkt;
     };
     dnsIpPolicySetApSubnet(0x09090909u, 0xFFFFFF00u);
-    dnsIpPolicySetFilterEnabled(1);
     dnsIpPolicySetMode(0);
     auto apToDns53 = makeIpUdpTcp(0x0909090Au, 0x08080808u, 17, 53);
     auto apToTcp53 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 53);
     auto apToDot853 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 853);
     auto apToHttps443 = makeIpUdpTcp(0x0909090Au, 0x01010101u, 6, 443);
     auto staReturn = makeIpUdpTcp(0x08080808u, 0x0909090Au, 17, 53);
+    auto apIcmp = makeIpUdpTcp(0x0909090Au, 0x01010101u, 1, 0);
     assert(dnsHookIp4CanForwardPacket(apToDns53.data(), apToDns53.size(), 0x08080808u) == 0);
     assert(dnsHookIp4CanForwardPacket(apToTcp53.data(), apToTcp53.size(), 0x01010101u) == 0);
     assert(dnsHookIp4CanForwardPacket(apToDot853.data(), apToDot853.size(), 0x01010101u) == 0);
     assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == -1);
     // Inbound STA->AP return packet is bypassed lock-free.
     assert(dnsHookIp4CanForwardPacket(staReturn.data(), staReturn.size(), 0x0909090Au) == -1);
-    // Disabling DNS filter stops dropping 53/853.
-    dnsIpPolicySetFilterEnabled(0);
-    assert(dnsHookIp4CanForwardPacket(apToDns53.data(), apToDns53.size(), 0x08080808u) == -1);
+    // Lock an active bridge and check all IP policy modes, both directions,
+    // and packets without a TCP or UDP destination port.
+    for (const auto& state : {DNSFilterConfig{false, "example.com", ""},
+                              DNSFilterConfig{true, "", ""}, DNSFilterConfig{false, "", ""}}) {
+        updateRules(true, state.enabled, state.allowlist);
+        for (uint8_t mode = 0; mode <= 2; ++mode) {
+            dnsIpPolicySetMode(mode);
+            assert(dnsHookIp4CanForwardPacket(apToDns53.data(), apToDns53.size(), 0x08080808u) == 0);
+            assert(dnsHookIp4CanForwardPacket(apToHttps443.data(), apToHttps443.size(), 0x01010101u) == 0);
+            assert(dnsHookIp4CanForwardPacket(apIcmp.data(), apIcmp.size(), 0x01010101u) == 0);
+            assert(dnsHookIp4CanForwardPacket(staReturn.data(), staReturn.size(), 0x0909090Au) == 0);
+        }
+    }
 
     // Runtime Mode 2 (StrictAllowIps): drops unknown/hardcoded IPs, allows resolved IPs with 30m sliding TTL.
-    dnsIpPolicySetFilterEnabled(1);
+    updateRules(true, true, "example.com");
     dnsIpPolicySetMode(2);
     dnsAllowedIpClearInternal();
     gTestNowMs = 10000; // t = 10s
@@ -427,7 +525,7 @@ int main() {
     // hijack decision above runs before this filter.
     for (const char* name : {"mothership.vn.teslamotors.com", "mothership.vn.cloud.tesla.cn"})
         expect("", "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn", name, false);
-    std::printf("DNS policy: %u cases passed; disabled filter and IP refresh checks passed\n", checks);
+    std::printf("DNS policy: %u cases passed; AP upstream lock and IP refresh checks passed\n", checks);
 }
 '''
 
@@ -454,21 +552,27 @@ def main():
         "bool enqueuePendingBlockResolve(", "bool popPendingBlockResolve(",
         "bool isWildcardDomainRule(", "bool domainMatchesRule(",
         "String normalizeDomainCstr(", "bool hasRules(",
+        "\nuint32_t dnsApInternetBlockReasons() {",
+        "\nvoid dnsPublishApInternetPolicy(const DNSFilterConfig& cfg) {",
         "bool getRuleByIndex(", "size_t countRules(",
         "bool containsFreshIpLocked(",
         "bool dnsFsdRedirectMatchesHost(const char* hosts, const char* domain) {",
-        "bool DNSWhitelistServer::hasDomainRules(",
         "bool DNSWhitelistServer::isAllowedDomainCstr(",
         "bool DNSWhitelistServer::isAllowedDomain(",
         "void resolveAndRememberDomain(", "size_t buildStagingFiltered(",
         'extern "C" void dnsIpPolicySetApSubnet(',
-        'extern "C" void dnsIpPolicySetFilterEnabled(',
         'extern "C" void dnsIpPolicySetMode(',
         'extern "C" void dnsIpBlockerRememberDomain(',
         'extern "C" int dnsHookIp4CanForwardPacket(',
         'extern "C" int dnsHookIp4CanForward(',
     ]
     base_functions = "\n".join(function(s) for s in signatures)
+    policy_state = "\n".join(line for line in SOURCE.splitlines() if line.startswith((
+        "constexpr uint32_t kApInternetDns", "std::atomic<uint32_t> gApInternetBlockReasons",
+    )))
+    process_request = function("bool DNSWhitelistServer::processNextRequest(")
+    runtime_update = function("\nvoid dnsFilterUpdateConfig(DNSFilterConfig& cfg, bool hasEnable, bool enabled,\n"
+                              "                           const char* allowlist, const char* blocklist) {")
     strict_functions = "\n".join(function(signature) for signature in (
         "void clearAllowedAddressesLocked(", "bool destinationAllowed(", "bool rememberAllowedAddress(",
         'extern "C" void dnsIpPolicyRecordIngress(', '\nvoid dnsStrictSetApInterface(int netifIndex) {',
@@ -482,7 +586,8 @@ def main():
         binary = Path(directory) / "dns"
         for strict in (False, True):
             flags = ["-DWIFI_BRIDGE_STRICT_ALLOWLIST"] if strict else []
-            source.write_text(PREAMBLE + (STRICT_PREAMBLE if strict else "") + base_functions + (strict_functions if strict else "") + TESTS)
+            source.write_text(PREAMBLE + policy_state + (STRICT_PREAMBLE if strict else "\n") + base_functions +
+                              (strict_functions if strict else runtime_update) + process_request + TESTS)
             subprocess.run([cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
                             *san, *flags, str(source),
                             "-o", str(binary)], check=True)

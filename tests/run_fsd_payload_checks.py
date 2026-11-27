@@ -115,6 +115,7 @@ def check_response_contract() -> None:
         'esp_http_client_open(client, static_cast<int>(bodyLength))',
         'esp_http_client_delete_header(client, "User-Agent")',
         'upstream_unavailable',
+        '503, "ap_upstream_blocked"',
         'constexpr size_t kMaxForwardBodyBytes = 65536;',
         'constexpr size_t kUpstreamBufferTxBytes = 4096;',
         'HTTP_EVENT_ON_HEADER',
@@ -488,14 +489,14 @@ def check_port_policy() -> None:
     # Ticking the hermes checkbox must auto-save (no manual DNS save needed)
     # and must survive a missing PIN by retrying after auth.
     toggle = re.search(r"async function toggleHermes\(\).*?\n\}", manage_ui, re.S)
-    assert toggle and "await saveBridge()" in toggle.group(0), "hermes toggle must save immediately"
-    assert "pendingAfterPin" in manage_ui, "DNS save must retry after PIN auth"
+    assert toggle and "await saveDnsRules()" in toggle.group(0), "hermes toggle must save immediately"
+    assert "pendingAfterPin=saveDnsRules" in manage_ui, "DNS save must retry after PIN auth"
     # Unchecking must strip hermes from ANY position: tokenise like the firmware
     # (space/newline/comma/semicolon), compare case-insensitively, dedupe.
     assert "function dnsTokens" in manage_ui and r"split(/[\s,;]+/)" in manage_ui
     assert "function isHermesDomain" in manage_ui and "toLowerCase()" in manage_ui
     assert "function stripHermes" in manage_ui
-    assert "listHasHermes(document.getElementById('dnsAllow').value)" in manage_ui
+    assert "hermes.checked=listHasHermes(d.dnsAllow)" in manage_ui
     toggle_src = re.search(r"async function toggleHermes\(\).*?\n\}", manage_ui, re.S)
     assert toggle_src and "applyHermes(false)" in toggle_src.group(0)
     apply_src = re.search(r"function applyHermes\(want\).*?\n\}", manage_ui, re.S)

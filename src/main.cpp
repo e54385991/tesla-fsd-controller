@@ -1189,7 +1189,16 @@ static void setupWebServer() {
         resp->print(",\"thermalStatus\":\""); writeJsonEscaped(*resp, thermalStatusText()); resp->print("\"");
         resp->print(",\"thermalProtect\":"); resp->print(thermalProtectActive() ? "true" : "false");
         const uint8_t ipMode = dnsIpPolicyGetMode();
-        resp->print(",\"dnsEnable\":"); resp->print(gDnsFilterCfg.enabled ? "true" : "false");
+        const uint32_t blockReasons = dnsApInternetBlockReasons();
+        const bool dnsDisabled = (blockReasons & kApInternetDnsFilterDisabled) != 0;
+        resp->print(",\"dnsEnable\":"); resp->print(dnsDisabled ? "false" : "true");
+        resp->print(",\"apInternetBlockReasons\":[");
+        if (dnsDisabled) resp->print("\"dns_filter_disabled\"");
+        if (blockReasons & kApInternetDnsAllowlistEmpty) {
+            if (dnsDisabled) resp->print(',');
+            resp->print("\"dns_allowlist_empty\"");
+        }
+        resp->print(']');
         resp->print(",\"ipBlockerEnabled\":"); resp->print(ipMode != 0 ? "true" : "false");
         resp->print(",\"ipPolicyMode\":"); resp->print(static_cast<unsigned>(ipMode));
         resp->print(",\"ipAllowedCount\":"); resp->print(static_cast<unsigned>(dnsIpPolicyGetAllowedCount()));

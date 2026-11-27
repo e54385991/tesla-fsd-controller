@@ -753,7 +753,7 @@ static inline void wifiBridgeLoadConfig() {
         gDnsFilterCfg.enabled = true;
         wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
-        dnsIpPolicySetFilterEnabled(1);
+        dnsPublishApInternetPolicy(gDnsFilterCfg);
         Preferences p2;
         p2.begin("fsd", false);
         p2.putBool("ub_dnsEn", true);
@@ -786,7 +786,7 @@ static inline void wifiBridgeLoadConfig() {
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
         blockChanged = true;
     }
-    dnsIpPolicySetFilterEnabled(gDnsFilterCfg.enabled ? 1 : 0);
+    dnsPublishApInternetPolicy(gDnsFilterCfg);
     if (allowChanged || blockChanged) {
         Preferences p3;
         p3.begin("fsd", false);
@@ -874,8 +874,8 @@ static inline const char* wifiBridgeSignalText(int32_t rssi) {
     return "较弱";
 }
 
-static inline uint8_t wifiBridgeDnsRuleCount(const char* rules) {
-    uint8_t count = 0;
+static inline size_t wifiBridgeDnsRuleCount(const char* rules) {
+    size_t count = 0;
     if (rules == nullptr) return 0;
     const char* cursor = rules;
     while (*cursor) {

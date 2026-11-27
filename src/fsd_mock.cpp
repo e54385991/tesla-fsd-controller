@@ -1029,6 +1029,12 @@ bool fastRejectForward(httpd_req_t* request, Capture& capture,
         return true;
     }
 
+    if (dnsApInternetBlockReasons() != 0) {
+        closeConnection = true;
+        sendProxyError(request, hit, responseBody, 503, "ap_upstream_blocked");
+        return true;
+    }
+
     if (gProxyShuttingDown) {
         closeConnection = true;
         discardRequestBody(request, 8192);
@@ -1171,8 +1177,13 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     capture.head[0] = '\0';
     capture.requestMd5[0] = '\0';
     bool clientReadFailed = false;
+    bool policyBlocked = false;
+    const auto stopForward = [&]() {
+        policyBlocked = policyBlocked || dnsApInternetBlockReasons() != 0;
+        return policyBlocked || gProxyShuttingDown;
+    };
     gUpstreamTask = xTaskGetCurrentTaskHandle();
-    esp_err_t error = esp_http_client_open(client, static_cast<int>(bodyLength));
+    esp_err_t error = stopForward() ? ESP_FAIL : esp_http_client_open(client, static_cast<int>(bodyLength));
     if (error == ESP_OK && bodyLength > 0) {
         md5_context_t reqMd5;
         esp_rom_md5_init(&reqMd5);
@@ -1180,7 +1191,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         size_t remaining = bodyLength;
         size_t captured = 0;
         int timeouts = 0;
-        while (remaining > 0 && !gProxyShuttingDown) {
+        while (remaining > 0 && !stopForward()) {
             const size_t want = remaining < sizeof(reqChunk) ? remaining : sizeof(reqChunk);
             const int received = httpd_req_recv(request, reqChunk, want);
             if (received == HTTPD_SOCK_ERR_TIMEOUT) {
@@ -1199,6 +1210,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             const size_t receivedSize = static_cast<size_t>(received);
             esp_rom_md5_update(&reqMd5, reqChunk, static_cast<uint32_t>(received));
             captureBodyHead(reqChunk, receivedSize, capture, captured);
+            if (stopForward()) break;
             const int written = esp_http_client_write(client, reqChunk, received);
             if (written != received) {
                 error = ESP_FAIL;
@@ -1215,11 +1227,10 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             }
         }
     }
-    if (error == ESP_OK && !gProxyShuttingDown && esp_http_client_fetch_headers(client) < 0) {
-        error = ESP_FAIL;
-    } else if (gProxyShuttingDown) {
+    if (error == ESP_OK && !stopForward() && esp_http_client_fetch_headers(client) < 0) {
         error = ESP_FAIL;
     }
+    if (stopForward()) error = ESP_FAIL;
     gUpstreamTask = nullptr;
 
     strlcpy(hit.reqMd5, capture.requestMd5, sizeof(hit.reqMd5));
@@ -1230,6 +1241,10 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         free(url);
+        if (policyBlocked) {
+            sendProxyError(request, hit, responseBody, 503, "ap_upstream_blocked");
+            return 503;
+        }
         if (bodyLength > 0 && !gProxyShuttingDown) discardRequestBody(request, 8192);
         if (clientReadFailed) {
             finishJsonError(request, hit, responseBody, 400, "{\"error\":\"request_read_failed\"}");
@@ -1275,7 +1290,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
     const uint32_t streamStartMs = millis();
     if (!noBodyResponse) {
         int read = 0;
-        while (!gProxyShuttingDown &&
+        while (!stopForward() &&
                (read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
             esp_rom_md5_update(&md5, buffer, static_cast<uint32_t>(read));
             if (preview < sizeof(hit.respHead) - 1) {
@@ -1292,6 +1307,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
                 bodyStored += copy;
                 responseBody[bodyStored] = '\0';
             }
+            if (stopForward()) break;
             const esp_err_t sent = httpd_resp_send_chunk(request, buffer, read);
             total += static_cast<size_t>(read);
             if (sent != ESP_OK) {
@@ -1308,10 +1324,10 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
                 break;
             }
         }
-        if (gProxyShuttingDown) {
-            streamCapped = true;
-            closeConnection = true;
-        }
+    }
+    if (stopForward()) {
+        streamCapped = true;
+        closeConnection = true;
     }
     if (sendOk && !streamCapped) {
         if (total > 0) {

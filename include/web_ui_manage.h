@@ -15,6 +15,8 @@ h1{font-size:16px;margin:0}.dim{color:#8b949e}
 .badge{border:1px solid #30363d;border-radius:999px;padding:2px 9px;font-size:12px;color:#8b949e}
 .badge.ok{color:#3fb950;border-color:#238636}.badge.bad{color:#f85149;border-color:#da3633}
 .wrap{padding:16px 18px;max-width:1100px;margin:0 auto}
+.danger-alert{margin-bottom:12px;padding:10px 12px;border:1px solid #f85149;border-radius:8px;background:#34191d;color:#ffdcd7}
+.danger-alert strong{display:block;margin-bottom:2px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px}
 .k{color:#8b949e;font-size:12px}.v{font-size:18px;font-weight:600;margin-top:3px;word-break:break-all}.v.s{font-size:13px;font-weight:500}
@@ -34,6 +36,9 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:20}
 .box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;width:min(360px,92vw)}
 .box h3{margin:0 0 10px;font-size:16px}.box input{margin:8px 0}
+dialog.box{color:#e6edf3}dialog::backdrop{background:rgba(0,0,0,.72)}
+#dnsDisableDialog h3,#dnsDisableDialog label{color:#ffaba8;font-weight:600}
+#dnsDisableDialog button:disabled{opacity:.55;cursor:default}
 @media(max-width:700px){.wrap{padding:10px}header{padding:10px}}
 </style>
 <body>
@@ -47,6 +52,10 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <a class="btn" href="/api/log" target="_blank">系统日志</a>
 </header>
 <div class="wrap">
+  <aside class="danger-alert" id="apInternetWarning" role="status" hidden>
+    <strong>AP 设备已禁止访问上游互联网</strong>
+    <span id="apInternetWarningDetails"></span>
+  </aside>
   <div class="card" style="margin-bottom:12px;border-color:#238636">
     <div class="k">Wi-Fi 桥接版</div>
     <div style="font-size:13px;margin-top:4px">本固件专注 Wi-Fi 热点/上游桥接、DNS 过滤、OTA 与日志（ESP32-S3 版含按需启停的 FSD 虚拟服务器与客户端配置）。CAN 注入功能已完全移除。</div>
@@ -88,15 +97,15 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   </div></section>
 
   <section><h2>DNS 过滤 / 白名单</h2><div class="body">
-    <label><input type="checkbox" id="dnsEn"> 启用 DNS 过滤</label>
+    <label><input type="checkbox" id="dnsEn" disabled> 启用 DNS 过滤</label>
     <div class="dim" style="font-size:12px;margin-top:2px">当前模式：<b id="dnsMode" style="color:#d29922">--</b></div>
-    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:2px">仅对经过本机 DNS（9.9.9.9）的查询生效。车机/手机开启私人 DNS（DoT/DoH）或使用硬编码 IP 会绕过本过滤。</div>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:2px">域名规则适用于本机 DNS（9.9.9.9）。启用 DNS 过滤并保存白名单后，AP 设备才能访问上游。</div>
     <label>白名单（空格/换行分隔）</label>
-    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">白名单非空时启用「默认拒绝」：未列出的域名一律拦截；白名单为空时只按黑名单拦截。</div>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">白名单为空时，AP 设备无法访问上游。未命中白名单的 DNS 查询默认拒绝。</div>
     <textarea id="dnsAllow" spellcheck="false"></textarea>
     <label>黑名单</label>
     <textarea id="dnsBlock" spellcheck="false"></textarea>
-    <button class="primary" id="dnsSave">保存</button>
+    <button class="primary" id="dnsSave" disabled>保存</button>
     <button id="dnsResetAllow">白名单恢复默认</button>
     <button id="dnsResetBlock">黑名单恢复默认</button>
     <div style="margin-top:8px;padding:8px 10px;border:1px solid #9e6a03;border-radius:6px;background:#2d2103;color:#e3b341;font-size:12px;line-height:1.6">
@@ -105,7 +114,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
       ⛔ mothership.vn.teslamotors.com / mothership.vn.cloud.tesla.cn 默认在外网黑名单；FSD 开启时按 Windows 版劫持到本机 443/4567，关闭后阻断直连。<br>
       ⛔ assistant-api.prd.cnn1.vn.cloud.tesla.cn 默认在外网黑名单（语音助手 / 配置端点），避免云端下发配置。
     </div>
-    <label style="margin-top:8px"><input type="checkbox" id="hermesControl"> 启用 hermes 远程车控（默认关闭；仅 3/Y 可能需要，S/X 勿开）</label>
+    <label style="margin-top:8px"><input type="checkbox" id="hermesControl" disabled> 启用 hermes 远程车控（默认关闭；仅 3/Y 可能需要，S/X 勿开）</label>
     <div class="dim" style="font-size:11px;line-height:1.6;margin-top:-2px">取消勾选会把 <code>hermes-prd.vn.cloud.tesla.cn</code> 从白名单<strong>任意位置</strong>移除（不区分大小写/分隔符），并重新加回黑名单。</div>
     <label style="margin-top:12px">IP 层安全策略（lwIP 转发层防护）</label>
     <select id="ipPolicyMode">
@@ -113,7 +122,7 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
       <option value="1">IP 黑名单拦截（按黑名单解析出的 IP 在转发层丢包，最多 256 条）</option>
       <option value="2">严格 IP 白名单（仅放行经白名单 DNS 解析出的 IP，防硬编码/旧缓存/DoH 绕过）</option>
     </select>
-    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:4px">开启 DNS 过滤后始终自动阻断车机直连外部 <code>UDP/TCP 53</code> 与 <code>DoT 853</code>；「严格 IP 白名单」会记录白名单域名解析出的全部 A 记录（30 分钟滑动续期），可阻止车机直连硬编码或历史缓存的 Tesla IP。注意：开启 FSD 虚拟服务器期间，443 端口非 <code>/feature_configuration</code> 路径会按 TeslaDG 逻辑反代至上游 <code>api-prd</code>（2 分钟自动关闭后恢复拦截）。</div>
+    <div class="dim" style="font-size:11px;line-height:1.6;margin-top:4px">开启 DNS 过滤后始终自动阻断车机直连外部 <code>UDP/TCP 53</code> 与 <code>DoT 853</code>；「严格 IP 白名单」会记录白名单域名解析出的全部 A 记录（30 分钟滑动续期），可阻止车机直连硬编码或历史缓存的 Tesla IP。上游访问已放行且 FSD 虚拟服务器开启时，443 端口非 <code>/feature_configuration</code> 路径会反代至上游 <code>api-prd</code>。</div>
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d">
       <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">
         <div class="dim" style="font-size:12px">DNS 拦截 <b id="dnsBlkTotal" style="color:#f85149">0</b> 次 · IP 拦截 <b id="ipDrops" style="color:#f85149">0</b> 次 · 黑名单缓存 <span id="ipCache">0</span>（峰值 <span id="ipPeak">0</span>） · 白名单 IP <span id="ipAllow">0</span></div>
@@ -175,12 +184,29 @@ code{font-family:Consolas,monospace;color:#58a6ff}.msg{font-size:12.5px;color:#8
   <button id="hermesCancelBtn">取消</button>
 </div></div>
 
+<dialog class="box" id="dnsDisableDialog" aria-labelledby="dnsDisableTitle" aria-describedby="dnsDisableInfo">
+  <h3 id="dnsDisableTitle">危险操作 · 禁用 DNS 过滤</h3>
+  <div id="dnsDisableInfo">禁用后，连接此热点的所有设备都将失去上游互联网。你仍可通过本机管理页恢复联网。</div>
+  <p class="dim" id="dnsDisableCountdown">请等待 10 秒后勾选确认。</p>
+  <label><input type="checkbox" id="dnsDisableAck" disabled> [!!危险!!] 确认禁用</label>
+  <button type="button" id="dnsDisableCancel" autofocus>取消</button>
+  <button type="button" class="red" id="dnsDisableSubmit" disabled>确认禁用</button>
+</dialog>
+
 <script>
 'use strict';
 var token=''; try{token=sessionStorage.getItem('fsd_tok')||'';}catch(e){}
 var busy=false;
+var refreshQueued=false, bridgeWriteVersion=0;
 var pendingAfterPin=null;
 var HERMES_DOMAIN='hermes-prd.vn.cloud.tesla.cn';
+var dnsSwitch=document.getElementById('dnsEn');
+var dnsDisableDialog=document.getElementById('dnsDisableDialog');
+var dnsDisableAck=document.getElementById('dnsDisableAck');
+var dnsDisableSubmit=document.getElementById('dnsDisableSubmit');
+var dnsDisableCountdown=document.getElementById('dnsDisableCountdown');
+var dnsEnabled=null, dnsSaving=false, dnsDisableDeadline=0, dnsDisableTimer=null;
+var savedDnsRules={dnsAllow:'',dnsBlock:''};
 // Rules may be separated by spaces, newlines, commas or semicolons (same as
 // the firmware parser). Compare case-insensitively and ignore a trailing dot
 // so the hermes entry is recognised no matter where/how it was pasted.
@@ -194,17 +220,60 @@ function listHasHermes(list){ return dnsTokens(list).some(isHermesDomain); }
 function stripHermes(list){ return dnsTokens(list).filter(function(x){return !isHermesDomain(x);}); }
 function q(u){return u+(token?(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(token):'');}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function showPin(){document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
+function showPin(){closeDnsDisable();document.getElementById('pinOverlay').style.display='flex';setTimeout(function(){document.getElementById('pinInput').focus();},50);}
 function setMsg(id,t,ok){var e=document.getElementById(id);e.textContent=t||'';e.className='msg '+(ok===true?'ok':(ok===false?'bad':''));}
 function barColor(p){return p>=85?'#f85149':(p>=65?'#d29922':'#3fb950');}
 function setBar(id,p){var el=document.getElementById(id);if(!el)return;var v=(p!=null&&isFinite(p))?Math.max(0,Math.min(100,Number(p))):0;el.style.width=v.toFixed(1)+'%';el.style.background=barColor(v);}
 function fmtKb(b){return (Number(b||0)/1024).toFixed(1)+' KB';}
 async function getText(u){var r=await fetch(q(u),{cache:'no-store'});if(r.status===403){showPin();throw new Error('auth');}if(!r.ok)throw new Error('HTTP '+r.status);return await r.text();}
 async function getJson(u){return JSON.parse(await getText(u));}
+function syncDnsRule(id,saved){
+  var input=document.getElementById(id);
+  saved=saved.replace(/\r\n?/g,'\n');
+  if(input.value===savedDnsRules[id]) input.value=saved;
+  savedDnsRules[id]=saved;
+}
+function renderDnsStatus(d){
+  dnsEnabled=!!d.dnsEnable;
+  dnsSwitch.checked=dnsEnabled;
+  dnsSwitch.disabled=dnsSaving;
+  if(!dnsEnabled)closeDnsDisable();
+  syncDnsRule('dnsAllow',d.dnsAllow||'');
+  syncDnsRule('dnsBlock',d.dnsBlock||'');
+  var hermes=document.getElementById('hermesControl');
+  hermes.checked=listHasHermes(d.dnsAllow);
+  hermes.disabled=false;
+  document.getElementById('dnsSave').disabled=false;
+
+  var reasons=d.apInternetBlockReasons||[], causes=[], actions=[];
+  if(reasons.includes('dns_filter_disabled')){
+    causes.push('DNS 过滤已关闭');
+    actions.push('开启 DNS 过滤');
+  }
+  if(reasons.includes('dns_allowlist_empty')){
+    causes.push('白名单为空');
+    actions.push('添加白名单规则或恢复默认白名单');
+  }
+  var warning=document.getElementById('apInternetWarning');
+  var details=document.getElementById('apInternetWarningDetails');
+  var warningText=causes.length?causes.join('，')+'。请'+actions.join('，并')+'。':'';
+  if(details.textContent!==warningText)details.textContent=warningText;
+  warning.hidden=reasons.length===0;
+
+  var ipMode=(d.ipPolicyMode!=null)?Number(d.ipPolicyMode):(d.ipBlockerEnabled?1:0);
+  if(!document.getElementById('ipPolicyMode').matches(':focus')) document.getElementById('ipPolicyMode').value=String(ipMode);
+  var modeEl=document.getElementById('dnsMode');
+  modeEl.textContent=reasons.length?'AP 上游访问已阻断':'默认拒绝：仅放行白名单（'+(d.dnsAllowCount||0)+' 条'+(ipMode===2?' · 严格 IP 白名单':'')+'）';
+  modeEl.style.color=reasons.length?'#f85149':'#3fb950';
+}
 async function refresh(){
-  if(document.hidden||busy)return;busy=true;
+  if(document.hidden)return;
+  if(busy){refreshQueued=true;return;}
+  busy=true;
+  var version=bridgeWriteVersion;
   try{
     var d=await getJson('/api/wifi-bridge/status'), hasFsd=!!d.fsdMock, f=d.fsdMock||{};
+    if(version!==bridgeWriteVersion)return;
     document.querySelectorAll('.fsd-only').forEach(function(el){el.style.display=hasFsd?'':'none';});
     document.getElementById('bUp').textContent='上游：'+(d.upstreamConnected?(d.upstreamSSID||'已连接'):'未启用');
     document.getElementById('bUp').className='badge '+(d.upstreamConnected?'ok':'');
@@ -260,16 +329,7 @@ async function refresh(){
       return '<tr><td>'+esc(n.ssid)+'</td><td>'+(n.connected?'<span style="color:#3fb950">已连接</span>':(n.active?'<span style="color:#d29922">连接中</span>':'<span class="dim">未连接</span>'))+'</td><td><button class="red" data-del="'+esc(n.ssid)+'">删除</button></td></tr>';
     }).join('')||'<tr><td colspan="3" class="dim">无已保存上游</td></tr>';
     document.querySelectorAll('[data-del]').forEach(function(b){b.onclick=function(){delNet(b.getAttribute('data-del'));};});
-    if(!document.getElementById('dnsAllow').matches(':focus')) document.getElementById('dnsAllow').value=d.dnsAllow||'';
-    if(!document.getElementById('dnsBlock').matches(':focus')) document.getElementById('dnsBlock').value=d.dnsBlock||'';
-    document.getElementById('hermesControl').checked=listHasHermes(d.dnsAllow);
-    document.getElementById('dnsEn').checked=!!d.dnsEnable;
-    var ipMode=(d.ipPolicyMode!=null)?Number(d.ipPolicyMode):(d.ipBlockerEnabled?1:0);
-    if(!document.getElementById('ipPolicyMode').matches(':focus')) document.getElementById('ipPolicyMode').value=String(ipMode);
-    var allowCount=d.dnsAllowCount||0, modeEl=document.getElementById('dnsMode');
-    if(!d.dnsEnable){modeEl.textContent='过滤已关闭（全部放行）';modeEl.style.color='#8b949e';}
-    else if(allowCount>0){modeEl.textContent='默认拒绝：仅放行白名单（'+allowCount+' 条'+(ipMode===2?' · 严格 IP 白名单':'')+'）';modeEl.style.color='#3fb950';}
-    else{modeEl.textContent='黑名单模式：未命中黑名单默认放行';modeEl.style.color='#d29922';}
+    renderDnsStatus(d);
     var blk=d.dnsBlockedRecent||[], blkTotal=d.dnsBlockedTotal||0;
     document.getElementById('dnsBlkCard').textContent=blkTotal+' 次 / '+blk.length+' 域名';
     document.getElementById('dnsBlkTotal').textContent=blkTotal;
@@ -288,8 +348,10 @@ async function refresh(){
       }).join('');
     }
     document.getElementById('blkNote').style.display=blk.length>=50?'':'none';
-  }catch(e){}
-  busy=false;
+  }catch(e){}finally{
+    busy=false;
+    if(refreshQueued){refreshQueued=false;refresh();}
+  }
 }
 async function saveAp(){
   var body=new URLSearchParams();body.set('ssid',document.getElementById('apSsidIn').value.trim());
@@ -297,21 +359,95 @@ async function saveAp(){
   var r=await fetch(q('/api/wifi'),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()});
   setMsg('apMsg',r.ok?'已保存，设备将重启':'保存失败',r.ok); if(r.status===403)showPin();
 }
-async function saveBridge(){
-  var qs='upstreamEnable='+(document.getElementById('upEn').checked?1:0)+
-    '&dnsEnable='+(document.getElementById('dnsEn').checked?1:0)+
-    '&ipPolicyMode='+encodeURIComponent(document.getElementById('ipPolicyMode').value)+
-    '&dnsAllow='+encodeURIComponent(document.getElementById('dnsAllow').value)+
-    '&dnsBlock='+encodeURIComponent(document.getElementById('dnsBlock').value);
-  var r=await fetch(q('/api/wifi-bridge/set?'+qs));
-  setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok);
-  if(r.ok) document.getElementById('hermesControl').checked=listHasHermes(document.getElementById('dnsAllow').value);
-  if(r.status===403){
-    // Keep the local edits (e.g. the hermes tail entry) and retry after PIN.
-    showPin(); pendingAfterPin=saveBridge; return false;
+async function setBridgeParams(params){
+  var r=await fetch(q('/api/wifi-bridge/set?'+params),{cache:'no-store'});
+  if(r.ok)bridgeWriteVersion++;
+  return r;
+}
+async function saveDnsRules(){
+  var allow=document.getElementById('dnsAllow').value;
+  var block=document.getElementById('dnsBlock').value;
+  try{
+    var r=await setBridgeParams('dnsAllow='+encodeURIComponent(allow)+'&dnsBlock='+encodeURIComponent(block));
+    if(r.ok){
+      savedDnsRules.dnsAllow=allow;
+      savedDnsRules.dnsBlock=block;
+    }
+    setMsg('dnsMsg',r.ok?'已保存':'保存失败',r.ok);
+    if(r.status===403){
+      pendingAfterPin=saveDnsRules;
+      showPin();
+      return;
+    }
+  }catch(e){setMsg('dnsMsg','保存失败',false);}
+  refresh();
+}
+async function saveUpstream(enabled){
+  try{
+    var r=await setBridgeParams('upstreamEnable='+(enabled?1:0));
+    setMsg('netMsg',r.ok?'已保存':'保存失败',r.ok);
+    if(r.status===403){
+      pendingAfterPin=function(){saveUpstream(enabled);};
+      showPin();
+      return;
+    }
+  }catch(e){setMsg('netMsg','保存失败',false);}
+  refresh();
+}
+async function saveDnsEnabled(enabled){
+  if(dnsSaving)return;
+  dnsSaving=true;
+  dnsSwitch.disabled=true;
+  try{
+    var r=await setBridgeParams('dnsEnable='+(enabled?1:0));
+    if(r.ok){
+      dnsEnabled=enabled;
+      dnsSwitch.checked=enabled;
+      setMsg('dnsMsg',enabled?'DNS 过滤已开启':'DNS 过滤已禁用',true);
+    }else if(r.status===403){
+      setMsg('dnsMsg','请重新验证 PIN 后再操作。',false);
+      showPin();
+      return;
+    }else{
+      setMsg('dnsMsg','保存失败',false);
+    }
+  }catch(e){setMsg('dnsMsg','保存失败',false);}
+  finally{
+    dnsSaving=false;
+    dnsSwitch.disabled=dnsEnabled===null;
   }
   refresh();
-  return r.ok;
+}
+function closeDnsDisable(){
+  if(!dnsDisableDialog.open)return;
+  clearInterval(dnsDisableTimer);
+  dnsDisableTimer=null;
+  dnsDisableDeadline=0;
+  dnsDisableAck.checked=false;
+  dnsDisableAck.disabled=true;
+  dnsDisableSubmit.disabled=true;
+  dnsDisableDialog.close();
+}
+function updateDnsDisableCountdown(){
+  var left=Math.max(0,Math.ceil((dnsDisableDeadline-performance.now())/1000));
+  dnsDisableAck.disabled=left>0;
+  dnsDisableSubmit.disabled=left>0||!dnsDisableAck.checked;
+  var text=left?'请等待 '+left+' 秒后勾选确认。':'请勾选确认后提交。';
+  if(dnsDisableCountdown.textContent!==text)dnsDisableCountdown.textContent=text;
+  if(!left){clearInterval(dnsDisableTimer);dnsDisableTimer=null;}
+}
+function toggleDns(){
+  var enabled=dnsSwitch.checked;
+  dnsSwitch.checked=!!dnsEnabled;
+  if(dnsEnabled===null||dnsSaving||enabled===dnsEnabled||dnsDisableDialog.open)return;
+  if(enabled){
+    saveDnsEnabled(true);
+    return;
+  }
+  dnsDisableDialog.showModal();
+  dnsDisableDeadline=performance.now()+10000;
+  updateDnsDisableCountdown();
+  dnsDisableTimer=setInterval(updateDnsDisableCountdown,250);
 }
 var hermesTimer=null;
 function closeHermesConfirm(){
@@ -360,7 +496,7 @@ async function toggleHermes(){
   if(!box.checked){
     // Disabling is safe and immediate: just remove it from the tail.
     applyHermes(false);
-    await saveBridge();
+    await saveDnsRules();
     return;
   }
   // Never enable on a single click: revert and require the 10s confirmation.
@@ -368,14 +504,19 @@ async function toggleHermes(){
   showHermesConfirm();
 }
 async function resetDns(which){
-  var r=await fetch(q('/api/wifi-bridge/set?dnsReset='+which));
+  var id=which==='allow'?'dnsAllow':'dnsBlock';
+  var before=document.getElementById(id).value;
+  var r=await setBridgeParams('dnsReset='+which);
   setMsg('dnsMsg',r.ok?(which==='allow'?'白名单已恢复默认':'黑名单已恢复默认'):'恢复默认失败',r.ok);
   if(r.status===403)showPin();
-  if(r.ok)refresh();
+  if(r.ok){
+    savedDnsRules[id]=before;
+    refresh();
+  }
 }
 async function saveIpPolicy(){
   var m=document.getElementById('ipPolicyMode').value;
-  var r=await fetch(q('/api/wifi-bridge/set?ipPolicyMode='+encodeURIComponent(m)));
+  var r=await setBridgeParams('ipPolicyMode='+encodeURIComponent(m));
   var labels={'0':'标准模式（外部 53/853 拦截）','1':'IP 黑名单拦截已开启','2':'严格 IP 白名单已开启'};
   setMsg('dnsMsg',r.ok?(labels[m]||'已保存'):'保存失败',r.ok);
   if(r.status===403)showPin();
@@ -437,7 +578,7 @@ async function reboot(){if(!confirm('重启设备？'))return;await fetch(q('/ap
 document.getElementById('apSave').onclick=saveAp;
 document.getElementById('netAdd').onclick=addNet;
 document.getElementById('netScan').onclick=scan;
-document.getElementById('dnsSave').onclick=saveBridge;
+document.getElementById('dnsSave').onclick=saveDnsRules;
 document.getElementById('dnsResetAllow').onclick=function(){resetDns('allow');};
 document.getElementById('dnsResetBlock').onclick=function(){resetDns('block');};
 document.getElementById('hermesControl').onchange=toggleHermes;
@@ -449,7 +590,7 @@ document.getElementById('hermesConfirmBtn').onclick=async function(){
   closeHermesConfirm();
   document.getElementById('hermesControl').checked=true;
   applyHermes(true);
-  await saveBridge();
+  await saveDnsRules();
 };
 document.getElementById('dnsBlkClear').onclick=dnsBlkClear;
 document.getElementById('dnsBlkDl').onclick=dnsBlkDl;
@@ -457,8 +598,16 @@ document.getElementById('fsdSave').onclick=saveFsd;
 document.getElementById('fsdEn').onchange=saveFsd;
 document.getElementById('fsdAutoOff').onchange=saveFsd;
 document.getElementById('fsdMode').onchange=saveFsd;
-document.getElementById('upEn').onchange=saveBridge;
-document.getElementById('dnsEn').onchange=saveBridge;
+document.getElementById('upEn').onchange=function(){saveUpstream(this.checked);};
+dnsSwitch.onchange=toggleDns;
+dnsDisableAck.onchange=updateDnsDisableCountdown;
+document.getElementById('dnsDisableCancel').onclick=closeDnsDisable;
+dnsDisableDialog.addEventListener('cancel',function(e){e.preventDefault();closeDnsDisable();});
+dnsDisableSubmit.onclick=function(){
+  if(!dnsDisableDialog.open||dnsSaving||dnsEnabled!==true||performance.now()<dnsDisableDeadline||!dnsDisableAck.checked)return;
+  closeDnsDisable();
+  saveDnsEnabled(false);
+};
 document.getElementById('ipPolicyMode').onchange=saveIpPolicy;
 document.getElementById('otaBtn').onclick=otaUpload;
 document.getElementById('otaCheck').onclick=otaCheck;

@@ -9,6 +9,7 @@ a minimal host stub (with ASan + UBSan) to verify:
   * Async scan running pauses reconnect attempts
   * AP clients connected enforce >= 60 s backoff after failure
   * wifiBridgeRemoveNetwork keeps preferredIndex/activeIndex/nextTryIndex coherent
+  * First boot and a reboot with saved DNS settings publish the AP policy inputs
   * FSD mock defaults to disabled and Wi-Fi bridge sets autoReconnect(false)
 
 Run: python3 tests/run_wifi_bridge_checks.py
@@ -108,6 +109,7 @@ PREAMBLE = r'''
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -181,11 +183,34 @@ struct FakeDns {
 
 struct Preferences {
     static int8_t lastPref;
+    inline static std::map<std::string, bool> booleans;
+    inline static std::map<std::string, String> strings;
     bool begin(const char*, bool) { return true; }
+    bool getBool(const char* key, bool fallback) const {
+        const auto it = booleans.find(key);
+        return it == booleans.end() ? fallback : it->second;
+    }
+    String getString(const char* key, const char* fallback) const {
+        const auto it = strings.find(key);
+        return it == strings.end() ? String(fallback) : it->second;
+    }
+    uint8_t getUChar(const char*, uint8_t fallback) const { return fallback; }
+    int8_t getChar(const char*, int8_t fallback) const { return fallback; }
+    void putBool(const char* key, bool value) { booleans[key] = value; }
+    void putString(const char* key, const char* value) { strings[key] = String(value); }
     void putChar(const char*, int8_t v) { lastPref = v; }
     void end() {}
 };
 int8_t Preferences::lastPref = -1;
+
+struct DNSFilterConfig {
+    bool enabled = false;
+    char allowlist[3072] = {}, blocklist[3072] = {};
+};
+DNSFilterConfig gDnsFilterCfg;
+std::vector<DNSFilterConfig> publishedDnsConfigs;
+void dnsPublishApInternetPolicy(const DNSFilterConfig& cfg) { publishedDnsConfigs.push_back(cfg); }
+void dnsIpPolicySetMode(uint8_t) {}
 
 struct BeginCall {
     std::string ssid;
@@ -272,6 +297,32 @@ static void fireDisconnect(uint8_t reason) {
 }
 
 int main() {
+    // First boot uses the default rules and persists the initialization marker.
+    wifiBridgeLoadConfig();
+    assert(Preferences::booleans.at("ub_init"));
+    assert(publishedDnsConfigs.size() == 1);
+    assert(publishedDnsConfigs.back().enabled);
+    assert(std::strcmp(publishedDnsConfigs.back().allowlist, kTeslaMinAllowV8) == 0);
+
+    Preferences::booleans["ub_dnsEn"] = false;
+    Preferences::strings["ub_allow"] = "custom.example";
+    gDnsFilterCfg = {};
+    wifiBridgeLoadConfig();
+    assert(publishedDnsConfigs.size() == 2);
+    assert(!publishedDnsConfigs.back().enabled);
+    assert(std::strcmp(publishedDnsConfigs.back().allowlist, "custom.example") == 0);
+
+    Preferences::booleans["ub_dnsEn"] = true;
+    Preferences::strings["ub_allow"] = "";
+    gDnsFilterCfg = {};
+    wifiBridgeLoadConfig();
+    assert(publishedDnsConfigs.size() == 3);
+    assert(publishedDnsConfigs.back().enabled && publishedDnsConfigs.back().allowlist[0] == '\0');
+
+    std::string manyRules;
+    for (int i = 0; i < 256; ++i) manyRules += "a" + std::to_string(i) + ".ex ";
+    assert(wifiBridgeDnsRuleCount(manyRules.c_str()) == 256);
+
     // 1. Add 3 networks and test preferredIndex maintenance on removal.
     assert(wifiBridgeAddOrUpdateNetwork("HomeA", "pass1111", true, "fsd-esp32"));
     assert(wifiBridgeAddOrUpdateNetwork("PhoneB", "pass2222", true, "fsd-esp32"));
@@ -430,6 +481,7 @@ def main() -> None:
         "static inline void wifiBridgeCopyStr(",
         "static inline bool wifiBridgeIsReservedSSID(",
         "static inline void wifiBridgeClearNetwork(",
+        "static inline void wifiBridgeClearAllNetworks(",
         "static inline int wifiBridgeFindNetwork(",
         "static inline bool wifiBridgeAddOrUpdateNetwork(",
         "static inline bool wifiBridgeRemoveNetwork(",
@@ -442,8 +494,13 @@ def main() -> None:
         "static inline void wifiBridgeRequestApply(",
         "static inline void wifiBridgeApplyConfig(",
         "static inline void serviceUpstreamWiFi(",
+        "static inline size_t wifiBridgeDnsRuleCount(",
     ]
     extracted = "\n".join(extract_function(BRIDGE_SRC, s) for s in signatures)
+    load_signature = "static inline void wifiBridgeLoadConfig("
+    extracted += "\n" + BRIDGE_SRC[BRIDGE_SRC.index("static const char* kTeslaMinAllowV8"):
+                                    BRIDGE_SRC.index(load_signature)]
+    extracted += extract_function(BRIDGE_SRC, load_signature)
     sys_stats_src = (ROOT / "include/mod_sys_stats.h").read_text()
     extracted += "\n" + extract_function(sys_stats_src, "static inline float sysStatsComputeUsagePct(")
     extracted += "\n" + extract_function(sys_stats_src, "static inline float sysStatsComputeMemPct(")

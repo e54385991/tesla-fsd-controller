@@ -24,13 +24,11 @@ extern "C" {
 int dnsHookIp4CanForward(uint32_t destAddrHostOrder);
 int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_t destAddrHostOrder);
 
-// Configure AP IPv4 subnet (host byte order) and DNS filter enable state for
-// O(1) L3 direction checks and external DNS (:53) / DoT (:853) bypass blocking.
+// Configure the AP IPv4 subnet (host byte order) for L3 direction checks.
 void dnsIpPolicySetApSubnet(uint32_t apIpHostOrder, uint32_t apMaskHostOrder);
-void dnsIpPolicySetFilterEnabled(int enabled);
 
 // Runtime L3 IP forwarding policy mode:
-//   0 = Off (still blocks AP->external :53/:853 when DNS filter is ON)
+//   0 = Off (AP->external :53/:853 are still blocked)
 //   1 = BlocklistIps (drops IPs resolved from blocklist rules)
 //   2 = StrictAllowIps (allows only IPs resolved via allowed DNS replies)
 void dnsIpPolicySetMode(uint8_t mode);
@@ -100,6 +98,11 @@ struct DNSFilterConfig {
     char allowlist[kDnsRuleBufSize] = {};
     char blocklist[kDnsRuleBufSize] = {};
 };
+
+constexpr uint32_t kApInternetDnsFilterDisabled = 1u << 0;
+constexpr uint32_t kApInternetDnsAllowlistEmpty = 1u << 1;
+uint32_t dnsApInternetBlockReasons();
+void dnsPublishApInternetPolicy(const DNSFilterConfig& cfg);
 
 enum class DnsIpPolicyMode : uint8_t {
     Off = 0,
@@ -174,7 +177,6 @@ class DNSWhitelistServer {
     String normalizeDomain(const String& domain) const;
     bool parseDomainName(const uint8_t* query, size_t length, size_t& offset, String& domain) const;
     bool skipDomainName(const uint8_t* packet, size_t length, size_t& offset) const;
-    bool hasDomainRules(const char* rules) const;
     bool listContainsDomain(const char* rules, const String& domain) const;
     bool isAllowedDomain(const DNSFilterConfig& cfg, const String& domain) const;
     bool isAllowedDomainCstr(const DNSFilterConfig& cfg, const char* domain, size_t domainLen) const;
@@ -194,6 +196,8 @@ class DNSWhitelistServer {
 // including this header). All internal helpers are `static` to keep linkage
 // private to this TU.
 #ifdef MOD_DNS_IMPLEMENTATION
+
+#include <atomic>
 
 namespace {
 
@@ -413,10 +417,12 @@ struct CachedIpEntry {
     uint32_t lastSeenAtSeconds = 0;
 };
 
-// Runtime AP subnet + DNS filter gate + 3-mode IP policy (read lock-free on lwIP hot path).
+// Published at boot and on configuration writes. Forwarding reads it per packet.
+std::atomic<uint32_t> gApInternetBlockReasons{kApInternetDnsFilterDisabled | kApInternetDnsAllowlistEmpty};
+
+// Runtime AP subnet and 3-mode IP policy (read lock-free on lwIP hot path).
 volatile uint32_t gDnsApNetHost = 0x09090900u;   // default 9.9.9.0/24
 volatile uint32_t gDnsApMaskHost = 0xFFFFFF00u;
-volatile uint8_t  gDnsFilterActiveFlag = 0;
 volatile uint8_t  gDnsIpPolicyMode = 0;          // 0=Off, 1=BlocklistIps, 2=StrictAllowIps
 
 portMUX_TYPE gDnsIpPolicyMux = portMUX_INITIALIZER_UNLOCKED;
@@ -835,7 +841,7 @@ void rememberResolvedIp(const String& domain, uint32_t ipHostOrder) {
 void resolveAndRememberDomain(const String& domain) {
     // A wildcard is a DNS policy, not a hostname to resolve. Concrete blocked
     // queries are still remembered by dnsIpBlockerRememberDomain().
-    if (domain.isEmpty() || isWildcardDomainRule(domain)) return;
+    if (domain.isEmpty() || isWildcardDomainRule(domain) || dnsApInternetBlockReasons() != 0) return;
 
     IPAddress resolved;
     if (WiFi.hostByName(domain.c_str(), resolved) == 1) {
@@ -1123,10 +1129,6 @@ bool DNSWhitelistServer::skipDomainName(const uint8_t* packet, size_t length, si
     return false;
 }
 
-bool DNSWhitelistServer::hasDomainRules(const char* rules) const {
-    return hasRules(rules);
-}
-
 bool DNSWhitelistServer::listContainsDomain(const char* rules, const String& domain) const {
     if (rules == nullptr || domain.isEmpty()) return false;
 
@@ -1150,21 +1152,11 @@ bool DNSWhitelistServer::listContainsDomain(const char* rules, const String& dom
 }
 
 bool DNSWhitelistServer::isAllowedDomainCstr(const DNSFilterConfig& cfg, const char* domain, size_t domainLen) const {
-#ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
-    if (!cfg.enabled || !hasDomainRules(cfg.allowlist)) return false;
-#else
-    if (!cfg.enabled) return true;
-#endif
-    if (domain == nullptr || domainLen == 0) return false;
-
-    size_t blockLen = longestRuleMatchLenCstr(cfg.blocklist, domain, domainLen);
-    size_t allowLen = longestRuleMatchLenCstr(cfg.allowlist, domain, domainLen);
+    if (!cfg.enabled || domain == nullptr || domainLen == 0) return false;
 
     // dnsmasq semantics: more specific (longer) rule wins.
-    if (allowLen > 0 && allowLen >= blockLen) return true;
-    if (blockLen > 0) return false;
-    if (!hasDomainRules(cfg.allowlist)) return true;
-    return false;
+    const size_t allowLen = longestRuleMatchLenCstr(cfg.allowlist, domain, domainLen);
+    return allowLen != 0 && allowLen >= longestRuleMatchLenCstr(cfg.blocklist, domain, domainLen);
 }
 
 bool DNSWhitelistServer::isAllowedDomain(const DNSFilterConfig& cfg, const String& domain) const {
@@ -1262,6 +1254,7 @@ bool DNSWhitelistServer::forwardUpstreamQuery(uint8_t* query, size_t queryLength
     bool primaryTimedOut = false;
 
     for (size_t sIdx = 0; sIdx < serverCount; ++sIdx) {
+        if (dnsApInternetBlockReasons() != 0) return false;
         struct sockaddr_in target = {};
         target.sin_family = AF_INET;
         target.sin_port = htons(53);
@@ -1284,6 +1277,7 @@ bool DNSWhitelistServer::forwardUpstreamQuery(uint8_t* query, size_t queryLength
             tv.tv_sec = static_cast<long>(remaining / 1000);
             tv.tv_usec = static_cast<long>((remaining % 1000) * 1000);
             const int ready = select(upstreamSock_ + 1, &rfds, nullptr, nullptr, &tv);
+            if (dnsApInternetBlockReasons() != 0) return false;
             if (ready <= 0) break;
 
             struct sockaddr_in fromAddr = {};
@@ -1584,6 +1578,13 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
         return true;
     }
 
+    const auto refuseIfBlocked = [&]() {
+        if (dnsApInternetBlockReasons() == 0) return false;
+        sendErrorResponse(query, questionEnd, requestFlags, 5);  // REFUSED
+        return true;
+    };
+    if (refuseIfBlocked()) return true;
+
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
     // One DNS task owns this scratch copy. Never hold a mux during resolution.
     static DNSFilterConfig rules;
@@ -1632,6 +1633,7 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
         uint32_t remainingTtl = kDnsTtlSeconds;
         const uint32_t nowSec = millis() / 1000;
         if (dnsCacheLookup(domainBuf, nowSec, cachedIpNbo, remainingTtl)) {
+            if (refuseIfBlocked()) return true;
             ++cacheHits_;
             dnsAllowedIpRemember(ntohl(cachedIpNbo), nowSec);
             sendIPv4Answer(query, questionEnd, requestFlags, IPAddress(cachedIpNbo), remainingTtl);
@@ -1643,8 +1645,10 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     {
         uint8_t upstreamResponse[kDnsUpstreamRespCap];
         size_t upstreamResponseLength = 0;
-        if (forwardUpstreamQuery(query, static_cast<size_t>(read), questionEnd,
-                                 upstreamResponse, sizeof(upstreamResponse), upstreamResponseLength)) {
+        const bool forwarded = forwardUpstreamQuery(query, static_cast<size_t>(read), questionEnd,
+                                                   upstreamResponse, sizeof(upstreamResponse), upstreamResponseLength);
+        if (refuseIfBlocked()) return true;
+        if (forwarded) {
             cacheAllowedAddressesFromResponse(domainBuf, upstreamResponse, upstreamResponseLength);
             sendRawReply(upstreamResponse, upstreamResponseLength);
             return true;
@@ -1663,7 +1667,10 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     }
 
     IPAddress resolved;
-    if (WiFi.hostByName(domainBuf, resolved) == 1) {
+    if (refuseIfBlocked()) return true;
+    const bool resolvedUpstream = WiFi.hostByName(domainBuf, resolved) == 1;
+    if (refuseIfBlocked()) return true;
+    if (resolvedUpstream) {
         if (WiFi.status() != WL_CONNECTED || !rememberAllowedAddress(ipAddressToHostOrder(resolved), epoch)) {
             sendErrorResponse(query, questionEnd, requestFlags, 2);
             return true;
@@ -1674,6 +1681,16 @@ bool DNSWhitelistServer::processNextRequest(const DNSFilterConfig& cfg, bool ups
     }
     return true;
 #endif
+}
+
+uint32_t dnsApInternetBlockReasons() {
+    return gApInternetBlockReasons.load(std::memory_order_acquire);
+}
+
+void dnsPublishApInternetPolicy(const DNSFilterConfig& cfg) {
+    const uint32_t reasons = (cfg.enabled ? 0u : kApInternetDnsFilterDisabled) |
+                             (hasRules(cfg.allowlist) ? 0u : kApInternetDnsAllowlistEmpty);
+    gApInternetBlockReasons.store(reasons, std::memory_order_release);
 }
 
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
@@ -1703,27 +1720,23 @@ void dnsStrictUpdateRules(DNSFilterConfig& cfg, bool enabled, const char* allowl
         if (blocklist) strlcpy(cfg.blocklist, blocklist, sizeof(cfg.blocklist));
         clearAllowedAddressesLocked();
     }
+    dnsPublishApInternetPolicy(cfg);
     portEXIT_CRITICAL(&gDnsAllowMux);
-    dnsIpPolicySetFilterEnabled(enabled ? 1 : 0);
     dnsCacheClear();
     dnsAllowedIpClearInternal();
 }
 #else
 void dnsFilterUpdateConfig(DNSFilterConfig& cfg, bool hasEnable, bool enabled,
                            const char* allowlist, const char* blocklist) {
-    bool nextEnabled = cfg.enabled;
     portENTER_CRITICAL(&gDnsFilterCfgMux);
-    if (hasEnable) {
-        cfg.enabled = enabled;
-        nextEnabled = enabled;
-    }
+    if (hasEnable) cfg.enabled = enabled;
     if (allowlist != nullptr) strlcpy(cfg.allowlist, allowlist, sizeof(cfg.allowlist));
     if (blocklist != nullptr) strlcpy(cfg.blocklist, blocklist, sizeof(cfg.blocklist));
-    gDnsFilterCfgGen = gDnsFilterCfgGen + 1;
-    portEXIT_CRITICAL(&gDnsFilterCfgMux);
-    dnsIpPolicySetFilterEnabled(nextEnabled ? 1 : 0);
     dnsCacheClear();
     dnsAllowedIpClearInternal();
+    gDnsFilterCfgGen = gDnsFilterCfgGen + 1;
+    dnsPublishApInternetPolicy(cfg);
+    portEXIT_CRITICAL(&gDnsFilterCfgMux);
 }
 #endif
 
@@ -1731,10 +1744,6 @@ void dnsFilterUpdateConfig(DNSFilterConfig& cfg, bool hasEnable, bool enabled,
 extern "C" void dnsIpPolicySetApSubnet(uint32_t apIpHostOrder, uint32_t apMaskHostOrder) {
     gDnsApMaskHost = apMaskHostOrder;
     gDnsApNetHost = apIpHostOrder & apMaskHostOrder;
-}
-
-extern "C" void dnsIpPolicySetFilterEnabled(int enabled) {
-    gDnsFilterActiveFlag = enabled ? 1u : 0u;
 }
 
 extern "C" void dnsIpPolicySetMode(uint8_t mode) {
@@ -1866,10 +1875,9 @@ void dnsIpPolicyServiceConfig(const DNSFilterConfig& cfg, bool upstreamReady) {
         sPolicySnap = cfg;
         sPolicyGen = gDnsFilterCfgGen;
         portEXIT_CRITICAL(&gDnsFilterCfgMux);
-        dnsIpPolicySetFilterEnabled(sPolicySnap.enabled ? 1 : 0);
     }
 
-    if (!sPolicySnap.enabled || gDnsIpPolicyMode != static_cast<uint8_t>(DnsIpPolicyMode::BlocklistIps)) {
+    if (dnsApInternetBlockReasons() != 0 || gDnsIpPolicyMode != static_cast<uint8_t>(DnsIpPolicyMode::BlocklistIps)) {
         if (gBlockedTableDirty) {
             dnsIpPolicyService(sPolicySnap.allowlist, sPolicySnap.blocklist, 0, 0);
         }
@@ -1888,7 +1896,8 @@ void dnsIpPolicyServiceConfig(const DNSFilterConfig& cfg, bool upstreamReady) {
 extern "C" void dnsIpBlockerRememberDomain(const char* domain, int upstreamReady) {
     // Only resolve blocked domains when mode == BlocklistIps, and never block
     // the :53 DNS task synchronously: enqueue for background resolution in loop().
-    if (!upstreamReady || gDnsIpPolicyMode != static_cast<uint8_t>(DnsIpPolicyMode::BlocklistIps)) return;
+    if (!upstreamReady || gDnsIpPolicyMode != static_cast<uint8_t>(DnsIpPolicyMode::BlocklistIps) ||
+        dnsApInternetBlockReasons() != 0) return;
     if (domain == nullptr || domain[0] == '\0') return;
     char norm[128] = {};
     size_t len = 0;
@@ -1922,6 +1931,14 @@ extern "C" void dnsIpBlockerClear(void) {
 }
 
 extern "C" int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_t destAddrHostOrder) {
+    // AP and STA are the bridge's two routed interfaces. This hook runs only
+    // for transit traffic, including replies after lwIP's NAPT translation.
+    if (dnsApInternetBlockReasons() != 0) {
+        portENTER_CRITICAL(&gDnsIpPolicyMux);
+        gIpForwardDropCount = gIpForwardDropCount + 1;
+        portEXIT_CRITICAL(&gDnsIpPolicyMux);
+        return 0;
+    }
 #ifdef WIFI_BRIDGE_STRICT_ALLOWLIST
     (void)ipHdr;
     (void)len;
@@ -1954,18 +1971,15 @@ extern "C" int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_
                 return -1;
             }
         }
-        // 2. Whenever DNS filtering is ON, force all AP DNS/DoT through local :53
-        //    by dropping forwarded UDP/TCP port 53 and TCP/UDP port 853.
-        if (gDnsFilterActiveFlag) {
-            const size_t ihl = static_cast<size_t>(raw[0] & 0x0Fu) * 4u;
-            const uint8_t proto = raw[9];
-            const uint16_t fragOff = static_cast<uint16_t>(((raw[6] & 0x1Fu) << 8) | raw[7]);
-            if (fragOff == 0 && ihl >= 20u && (proto == 6u || proto == 17u) && len >= ihl + 4u) {
-                const uint16_t dport = static_cast<uint16_t>((raw[ihl + 2] << 8) | raw[ihl + 3]);
-                if (dport == 53u || dport == 853u) {
-                    gIpForwardDropCount = gIpForwardDropCount + 1;
-                    return 0;  // drop external DNS / DoT bypass
-                }
+        // 2. Drop external DNS and DoT. Open forwarding requires DNS filtering.
+        const size_t ihl = static_cast<size_t>(raw[0] & 0x0Fu) * 4u;
+        const uint8_t proto = raw[9];
+        const uint16_t fragOff = static_cast<uint16_t>(((raw[6] & 0x1Fu) << 8) | raw[7]);
+        if (fragOff == 0 && ihl >= 20u && (proto == 6u || proto == 17u) && len >= ihl + 4u) {
+            const uint16_t dport = static_cast<uint16_t>((raw[ihl + 2] << 8) | raw[ihl + 3]);
+            if (dport == 53u || dport == 853u) {
+                gIpForwardDropCount = gIpForwardDropCount + 1;
+                return 0;
             }
         }
     }
@@ -1975,7 +1989,6 @@ extern "C" int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_
 
     const uint32_t nowSeconds = millis() / 1000;
     if (mode == static_cast<uint8_t>(DnsIpPolicyMode::StrictAllowIps)) {
-        if (!gDnsFilterActiveFlag) return -1;
         portENTER_CRITICAL(&gDnsAllowedIpMux);
         const bool allowed = containsAndTouchAllowedIpLocked(destAddrHostOrder, nowSeconds);
         portEXIT_CRITICAL(&gDnsAllowedIpMux);
