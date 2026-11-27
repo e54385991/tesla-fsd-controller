@@ -308,7 +308,7 @@ static bool startMothershipHttp() {
     config.max_uri_len = kFsdMaxUriLen;
     config.max_resp_headers = kFsdMaxRespHeaders;
     config.core_id = 0;
-    config.stack_size = 6144;
+    config.stack_size = 8192;
     config.max_open_sockets = 3;
     config.backlog_conn = 4;
     // Allow concurrent keep-alive sockets and evict the oldest idle socket
@@ -722,8 +722,86 @@ bool start() {
 
 static volatile bool gSelfTestRunning = false;
 
+static bool readHttpHeadersAndOptionalBody(int (*readFn)(void*, char*, size_t), void* ctx,
+                                           char* out, size_t outCap, size_t& outLen,
+                                           bool expectEofClose, bool& sawEof) {
+    outLen = 0;
+    sawEof = false;
+    if (!out || outCap == 0) return false;
+    out[0] = '\0';
+    bool headersDone = false;
+    const uint32_t deadline = millis() + 3000;
+    while (outLen + 1 < outCap && static_cast<int32_t>(deadline - millis()) > 0) {
+        const int r = readFn(ctx, out + outLen, outCap - 1 - outLen);
+        if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (r == 0) {
+            sawEof = true;
+            break;
+        }
+        if (r < 0) break;
+        outLen += static_cast<size_t>(r);
+        out[outLen] = '\0';
+        if (!expectEofClose && strstr(out, "\r\n\r\n") != nullptr) {
+            headersDone = true;
+            break;
+        }
+    }
+    return expectEofClose ? (outLen > 0) : headersDone;
+}
+
+static bool sendFsdHeadOnTls(esp_tls_t* tls, const char* connectionHdr,
+                             bool verifyBodyEmpty, char* resp, size_t respCap) {
+    char md5Expected[33] = {};
+    const size_t bytesExpected = fsd_mock::copyPayload(nullptr, 0, md5Expected, nullptr);
+
+    char req[192];
+    const int reqLen = snprintf(req, sizeof(req),
+        "HEAD /feature_configuration HTTP/1.1\r\n"
+        "Host: api-prd.vn.cloud.tesla.cn\r\n"
+        "Connection: %s\r\n\r\n",
+        connectionHdr);
+    int sent = 0;
+    while (sent < reqLen) {
+        const ssize_t w = esp_tls_conn_write(tls, req + sent, static_cast<size_t>(reqLen - sent));
+        if (w == ESP_TLS_ERR_SSL_WANT_READ || w == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (w <= 0) return false;
+        sent += static_cast<int>(w);
+    }
+
+    auto readTls = [](void* c, char* b, size_t n) -> int {
+        return static_cast<int>(esp_tls_conn_read(static_cast<esp_tls_t*>(c), b, n));
+    };
+    size_t got = 0;
+    bool sawEof = false;
+    if (!readHttpHeadersAndOptionalBody(readTls, tls, resp, respCap, got, false, sawEof)) {
+        return false;
+    }
+    const char* hdrEnd = strstr(resp, "\r\n\r\n");
+    if (!hdrEnd) return false;
+    const size_t hdrBytes = static_cast<size_t>((hdrEnd + 4) - resp);
+    if (verifyBodyEmpty && got != hdrBytes) return false;
+
+    char expectedLenHdr[48];
+    char expectedMd5Hdr[64];
+    snprintf(expectedLenHdr, sizeof(expectedLenHdr), "Content-Length: %u\r\n",
+             static_cast<unsigned>(bytesExpected));
+    snprintf(expectedMd5Hdr, sizeof(expectedMd5Hdr), "X-Checksum: %s\r\n", md5Expected);
+    return (strstr(resp, "200 OK") != nullptr) &&
+           (strstr(resp, "Content-Type: application/json\r\n") != nullptr) &&
+           (strstr(resp, "Cache-Control: no-store\r\n") != nullptr) &&
+           (strstr(resp, expectedLenHdr) != nullptr) &&
+           (strstr(resp, expectedMd5Hdr) != nullptr);
+}
+
 static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
-                                bool keepOpen, esp_tls_t** outKeep) {
+                                bool keepOpen, int extraKeepAliveReqs,
+                                esp_tls_t** outKeep) {
     if (outKeep) *outKeep = nullptr;
     esp_tls_cfg_t cfg = {};
     cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
@@ -763,42 +841,15 @@ static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
         if (c) cipher = c;
     }
 
-    char req[192];
-    const int reqLen = snprintf(req, sizeof(req),
-        "HEAD /feature_configuration HTTP/1.1\r\n"
-        "Host: api-prd.vn.cloud.tesla.cn\r\n"
-        "Connection: %s\r\n\r\n",
-        keepOpen ? "keep-alive" : "close");
-    int sent = 0;
-    while (sent < reqLen) {
-        const ssize_t w = esp_tls_conn_write(tls, req + sent, static_cast<size_t>(reqLen - sent));
-        if (w == ESP_TLS_ERR_SSL_WANT_READ || w == ESP_TLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
-        if (w <= 0) break;
-        sent += static_cast<int>(w);
-    }
-
-    char resp[512] = {};
-    size_t got = 0;
-    const uint32_t readDeadline = millis() + 3000;
-    while (got + 1 < sizeof(resp) && static_cast<int32_t>(readDeadline - millis()) > 0) {
-        const ssize_t r = esp_tls_conn_read(tls, resp + got, sizeof(resp) - 1 - got);
-        if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
-        if (r <= 0) break;
-        got += static_cast<size_t>(r);
-        resp[got] = '\0';
-        if (strstr(resp, "\r\n\r\n") != nullptr) break;
+    char resp[768] = {};
+    bool ok = sendFsdHeadOnTls(tls, (keepOpen || extraKeepAliveReqs > 0) ? "keep-alive" : "close",
+                               true, resp, sizeof(resp));
+    for (int i = 0; ok && i < extraKeepAliveReqs; ++i) {
+        const char* conn = (keepOpen || (i + 1 < extraKeepAliveReqs)) ? "keep-alive" : "close";
+        ok = sendFsdHeadOnTls(tls, conn, true, resp, sizeof(resp));
     }
 
     const uint32_t totalMs = millis() - t0;
-    const bool ok = (sent == reqLen) &&
-                    (strstr(resp, "200 OK") != nullptr) &&
-                    (strstr(resp, "X-Checksum:") != nullptr);
     Serial.printf("[fsd-selftest] %s %s ver=%s cipher=%s hs=%lums total=%lums heap=%u minHeap=%u psram=%u\n",
                   label, ok ? "PASS" : "FAIL", tlsVer, cipher,
                   static_cast<unsigned long>(hsMs),
@@ -814,23 +865,186 @@ static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
     return ok;
 }
 
+static bool runLoopbackPlainHttpProbe(const char* label, const char* rawReq,
+                                      bool expectEofClose,
+                                      bool (*validate)(const char* resp, size_t len, bool sawEof)) {
+    const uint32_t t0 = millis();
+    const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) {
+        Serial.printf("[fsd-selftest] %s FAIL socket errno=%d\n", label, errno);
+        return false;
+    }
+    struct timeval tv = {};
+    tv.tv_sec = 3;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in dst = {};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(fsd_mock::kMothershipHttpPort);
+    dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, reinterpret_cast<const struct sockaddr*>(&dst), sizeof(dst)) != 0) {
+        Serial.printf("[fsd-selftest] %s FAIL connect errno=%d\n", label, errno);
+        close(fd);
+        return false;
+    }
+
+    const size_t reqLen = strlen(rawReq);
+    size_t sent = 0;
+    while (sent < reqLen) {
+        const ssize_t w = send(fd, rawReq + sent, reqLen - sent, 0);
+        if (w <= 0) break;
+        sent += static_cast<size_t>(w);
+    }
+
+    char resp[1024] = {};
+    size_t got = 0;
+    bool sawEof = false;
+    auto readSock = [](void* c, char* b, size_t n) -> int {
+        const int fdVal = *static_cast<const int*>(c);
+        const ssize_t r = recv(fdVal, b, n, 0);
+        if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            return ESP_TLS_ERR_SSL_WANT_READ;
+        }
+        return static_cast<int>(r);
+    };
+    const bool readOk = (sent == reqLen) &&
+        readHttpHeadersAndOptionalBody(readSock, const_cast<int*>(&fd),
+                                       resp, sizeof(resp), got, expectEofClose, sawEof);
+    close(fd);
+
+    const bool ok = readOk && validate(resp, got, sawEof);
+    Serial.printf("[fsd-selftest] %s %s ms=%lu bytes=%u eof=%d heap=%u minHeap=%u\n",
+                  label, ok ? "PASS" : "FAIL",
+                  static_cast<unsigned long>(millis() - t0),
+                  static_cast<unsigned>(got), sawEof ? 1 : 0,
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    return ok;
+}
+
+static bool runLoopbackTlsFlowProbe(const char* label) {
+    esp_tls_cfg_t cfg = {};
+    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
+    cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
+    cfg.common_name = "api-prd.vn.cloud.tesla.cn";
+    cfg.timeout_ms = 4000;
+    cfg.tls_version = ESP_TLS_VER_TLS_1_3;
+
+    const uint32_t t0 = millis();
+    esp_tls_t* tls = esp_tls_init();
+    if (!tls) return false;
+    if (esp_tls_conn_new_sync("127.0.0.1", 9, kFsdPort, &cfg, tls) != 1) {
+        Serial.printf("[fsd-selftest] %s FAIL hs\n", label);
+        esp_tls_conn_destroy(tls);
+        return false;
+    }
+
+    static const char req[] =
+        "GET /api/1/test HTTP/1.1\r\n"
+        "Host: api-prd.vn.cloud.tesla.cn\r\n"
+        "Connection: keep-alive\r\n\r\n";
+    int sent = 0;
+    const int reqLen = static_cast<int>(sizeof(req) - 1);
+    while (sent < reqLen) {
+        const ssize_t w = esp_tls_conn_write(tls, req + sent, static_cast<size_t>(reqLen - sent));
+        if (w == ESP_TLS_ERR_SSL_WANT_READ || w == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (w <= 0) break;
+        sent += static_cast<int>(w);
+    }
+
+    char resp[1024] = {};
+    size_t got = 0;
+    bool sawEof = false;
+    auto readTls = [](void* c, char* b, size_t n) -> int {
+        return static_cast<int>(esp_tls_conn_read(static_cast<esp_tls_t*>(c), b, n));
+    };
+    const bool readOk = (sent == reqLen) &&
+        readHttpHeadersAndOptionalBody(readTls, tls, resp, sizeof(resp), got, true, sawEof);
+    esp_tls_conn_destroy(tls);
+
+    // Offline/blocked fast-reject returns 502 or 503 mitmproxy HTML with Connection: close.
+    // Online upstream passthrough returns an HTTP status line via FsdProxy.
+    const bool isProxyError = (strstr(resp, "502 Bad Gateway") != nullptr ||
+                               strstr(resp, "503 Service Unavailable") != nullptr) &&
+                              strstr(resp, "Server: mitmproxy 12.3.1\r\n") != nullptr &&
+                              strstr(resp, "Connection: close\r\n") != nullptr;
+    const bool isUpstreamHttp = strncmp(resp, "HTTP/1.1 ", 9) == 0 && strstr(resp, "\r\n\r\n") != nullptr;
+    const bool ok = readOk && (isProxyError || isUpstreamHttp);
+    Serial.printf("[fsd-selftest] %s %s ms=%lu bytes=%u proxyErr=%d eof=%d heap=%u minHeap=%u\n",
+                  label, ok ? "PASS" : "FAIL",
+                  static_cast<unsigned long>(millis() - t0),
+                  static_cast<unsigned>(got), isProxyError ? 1 : 0, sawEof ? 1 : 0,
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    return ok;
+}
+
 static void fsdSelfTestTask(void*) {
     int passed = 0;
     Serial.printf("[fsd-selftest] start heap=%u minHeap=%u\n",
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()));
-    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "tls12-verify", false, nullptr)) ++passed;
-    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-verify", false, nullptr)) ++passed;
+    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "tls12-verify", false, 0, nullptr)) ++passed;
+    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-verify", false, 0, nullptr)) ++passed;
 
-    // aa0a69f8b single-socket policy: a keep-alive session must free its only
-    // slot on close so an immediate reconnect is accepted (no stuck ClientHello).
+    // aa0a69f8b single-socket policy: verify keep-alive reuse (2 requests on
+    // sockA) and immediate slot release on close so sockB is accepted right away.
     esp_tls_t* sockA = nullptr;
-    const bool okA = runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "serial-sockA-keepalive", true, &sockA);
+    const bool okA = runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "serial-sockA-keepalive", true, 1, &sockA);
     if (sockA) esp_tls_conn_destroy(sockA);
-    const bool okB = okA && runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "serial-sockB-reconnect", false, nullptr);
+    const bool okB = okA && runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "serial-sockB-reconnect", false, 0, nullptr);
     if (okA && okB) ++passed;
 
-    Serial.printf("[fsd-selftest] done pass=%d/3 heap=%u minHeap=%u\n",
+    if (mothershipHttpStarted()) {
+        if (runLoopbackPlainHttpProbe(
+                "http4567-fsd-head",
+                "HEAD /feature_configuration HTTP/1.1\r\nHost: mothership.local\r\nConnection: close\r\n\r\n",
+                false,
+                [](const char* resp, size_t len, bool) -> bool {
+                    char md5Expected[33] = {};
+                    const size_t bytesExpected = fsd_mock::copyPayload(nullptr, 0, md5Expected, nullptr);
+                    char expectedLenHdr[48];
+                    char expectedMd5Hdr[64];
+                    snprintf(expectedLenHdr, sizeof(expectedLenHdr), "Content-Length: %u\r\n",
+                             static_cast<unsigned>(bytesExpected));
+                    snprintf(expectedMd5Hdr, sizeof(expectedMd5Hdr), "X-Checksum: %s\r\n", md5Expected);
+                    const char* hdrEnd = strstr(resp, "\r\n\r\n");
+                    return hdrEnd != nullptr &&
+                           len == static_cast<size_t>((hdrEnd + 4) - resp) &&
+                           strstr(resp, "200 OK") != nullptr &&
+                           strstr(resp, expectedLenHdr) != nullptr &&
+                           strstr(resp, expectedMd5Hdr) != nullptr;
+                })) {
+            ++passed;
+        }
+        if (runLoopbackPlainHttpProbe(
+                "http4567-flow-502",
+                "GET /api/1/test HTTP/1.1\r\nHost: mothership.local\r\nConnection: keep-alive\r\n\r\n",
+                true,
+                [](const char* resp, size_t, bool sawEof) -> bool {
+                    return sawEof &&
+                           strstr(resp, "502 Bad Gateway") != nullptr &&
+                           strstr(resp, "Server: mitmproxy 12.3.1\r\n") != nullptr &&
+                           strstr(resp, "Content-Type: text/html\r\n") != nullptr &&
+                           strstr(resp, "Connection: close\r\n") != nullptr &&
+                           strstr(resp, "Cannot connect to 192.0.2.1:4567: [Errno 113] No route to host") != nullptr;
+                })) {
+            ++passed;
+        }
+    } else {
+        Serial.println("[fsd-selftest] http4567 SKIP not_started");
+    }
+
+    if (runLoopbackTlsFlowProbe("tls-443-flow") &&
+        runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-post-flow", false, 0, nullptr)) {
+        ++passed;
+    }
+
+    Serial.printf("[fsd-selftest] done pass=%d/6 heap=%u minHeap=%u\n",
                   passed,
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()));

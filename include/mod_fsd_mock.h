@@ -74,7 +74,7 @@ struct ConfigChange {
 };
 
 struct Handshake {
-    char event[16] = {};
+    char event[20] = {};
     char ts[32] = {};
     char client[46] = {};
     char sni[64] = {};
@@ -84,6 +84,8 @@ struct Handshake {
     char error[64] = {};
     char firstRequest[80] = {};
 };
+static_assert(sizeof(Handshake::event) > sizeof("handshake_failed"),
+              "Handshake::event must hold handshake_failed without truncation");
 
 void installLogHook();
 void begin();

@@ -1031,6 +1031,7 @@ bool fastRejectForward(httpd_req_t* request, Capture& capture,
 
     if (dnsApInternetBlockReasons() != 0) {
         closeConnection = true;
+        discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 503, "ap_upstream_blocked");
         return true;
     }
@@ -1555,9 +1556,13 @@ void noteHandshakeFailure(const char* error) {
     formatTimestamp(ts);
     portENTER_CRITICAL(&gHandshakeMux);
     const bool newFailure = gHandshakeFail == 0 || now - gLastHandshakeFailMs > 1000;
-    const bool newMessage = strcmp(message, gLastHandshakeError) != 0;
+    const bool sameAlertBurst = !newFailure &&
+        strstr(message, "-0x7780") != nullptr &&
+        strstr(gLastHandshakeError, "-0x7780") != nullptr;
+    const bool newMessage = !sameAlertBurst && strcmp(message, gLastHandshakeError) != 0;
     ++gHandshakeFail;
-    if (newFailure || newMessage || strlen(message) > strlen(gLastHandshakeError)) {
+    if (newFailure || newMessage ||
+        (!sameAlertBurst && strlen(message) > strlen(gLastHandshakeError))) {
         strlcpy(gLastHandshakeError, message, sizeof(gLastHandshakeError));
     }
     gLastHandshakeFailMs = now;
@@ -1622,7 +1627,7 @@ void noteHandshakeError(const esp_tls_t* tls) {
                 strlcpy(entry.client, client, sizeof(entry.client));
             }
             if (detail[0] && strstr(entry.error, "-0x7780") != nullptr &&
-                strstr(entry.error, "alert=") == nullptr) {
+                strcmp(entry.error, detail) != 0) {
                 strlcpy(entry.error, detail, sizeof(entry.error));
                 if (strstr(gLastHandshakeError, "-0x7780") != nullptr) {
                     strlcpy(gLastHandshakeError, detail, sizeof(gLastHandshakeError));
@@ -1674,8 +1679,10 @@ void stopProxyWorker() {
     QueueHandle_t q = gProxyQueue;
     portEXIT_CRITICAL(&gProxyMux);
 
-    // Drain any queued/active async proxy jobs BEFORE httpd_ssl_stop() frees sock_db.
-    const uint32_t deadline = millis() + 3500;
+    // Drain all queued/active async proxy jobs BEFORE httpd_ssl_stop() frees sock_db.
+    // Timeout exceeds worst-case upstream connect (2.5 s) + stream cap (15 s) so
+    // FsdProxy can never call httpd_req_async_handler_complete() after free.
+    const uint32_t deadline = millis() + 22000;
     while (static_cast<int32_t>(deadline - millis()) > 0) {
         portENTER_CRITICAL(&gProxyMux);
         const uint32_t inflight = gProxyInFlight;

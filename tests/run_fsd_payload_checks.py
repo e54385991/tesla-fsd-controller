@@ -588,6 +588,8 @@ def check_tls_policy() -> None:
     assert "HTTPD_SSL_USER_CB_SESS_CREATE" in server
     assert "HTTPD_SSL_USER_CB_SESS_ERROR" in server
     assert "mbedtls_ssl_get_fatal_alert" in mock
+    assert "char event[20]" in (ROOT / "include/mod_fsd_mock.h").read_text()
+    assert "sameAlertBurst" in mock
     assert "httpd_req_async_handler_begin" in mock
     assert "httpd_req_async_handler_complete" in mock
     assert "fsd_mock::startProxyWorker();" in server
@@ -641,6 +643,34 @@ def check_tls_policy() -> None:
         assert "safeMode" not in text, f"{path}: safe mode must stay removed"
         assert "安全模式" not in text, f"{path}: safe mode badge must stay removed"
         assert "safe_mode" not in text, f"{path}: safe mode error tag must stay removed"
+
+    # Parity checks for all local/error/passthrough HTTP returns and PSRAM/self-test contracts.
+    for needle in (
+        'httpd_resp_send(request, nullptr, static_cast<ssize_t>(bytes))',
+        'const bool triggerAutoOff = autoOff && request->method != HTTP_HEAD;',
+        r'413, "{\"error\":\"request_too_large\"}"',
+        r'400, "{\"error\":\"request_read_failed\"}"',
+        r'500, "{\"error\":\"no_memory\"}"',
+        'httpd_resp_set_hdr(request, "Server", "mitmproxy 12.3.1");',
+        'sendProxyError(request, hit, responseBody, 503, "low_heap");',
+        'sendProxyError(request, hit, responseBody, 502,',
+        'Cannot connect to %s: [Errno 113] No route to host',
+        'const bool sameAlertBurst = !newFailure &&',
+        'if (detail[0] && strstr(entry.error, "-0x7780") != nullptr',
+    ):
+        assert needle in mock, f"src/fsd_mock.cpp missing parity contract: {needle}"
+
+    client_cfg = (ROOT / "src/client_config.cpp").read_text()
+    for needle in (
+        'done pass=%d/6',
+        'http4567-fsd-head',
+        'http4567-flow-502',
+        'tls-443-flow',
+    ):
+        assert needle in client_cfg, f"src/client_config.cpp missing selftest probe: {needle}"
+
+    tls13_defaults = (ROOT / "sdkconfig.tls13.defaults").read_text()
+    assert "CONFIG_SPIRAM_IGNORE_NOTFOUND=y" in tls13_defaults
 
 
 def payloads() -> list[str]:
