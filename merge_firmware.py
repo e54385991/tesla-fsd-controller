@@ -14,6 +14,42 @@ import os
 Import("env")
 
 
+def _resolve_esptool(env, piohome):
+    """Return (cmd_prefix, is_v5) compatible with both official PlatformIO and pioarduino."""
+    python_exe = env.subst("$PYTHONEXE") or sys.executable
+    uploader = env.subst("$UPLOADER").strip().strip('"').strip("'")
+
+    candidates = []
+    if uploader and os.path.isfile(uploader):
+        candidates.append(uploader)
+    for rel in (
+        os.path.join("tool-esptool", "esptool.exe"),
+        os.path.join("tool-esptool", "esptool"),
+        os.path.join("tool-esptoolpy", "esptool.exe"),
+        os.path.join("tool-esptoolpy", "esptool"),
+        os.path.join("tool-esptoolpy", "esptool.py"),
+    ):
+        p = os.path.join(piohome, "packages", rel)
+        if os.path.isfile(p) and p not in candidates:
+            candidates.append(p)
+
+    if not candidates:
+        raise Exception("esptool not found in PlatformIO packages")
+
+    tool = candidates[0]
+    prefix = [python_exe, tool] if tool.lower().endswith(".py") else [tool]
+
+    is_v5 = not tool.lower().endswith(".py")
+    try:
+        ver = subprocess.run(prefix + ["version"], capture_output=True, text=True, timeout=10)
+        m = re.search(r"esptool(?:\.py)?\s+v?(\d+)\.", ver.stdout + ver.stderr, re.IGNORECASE)
+        if m:
+            is_v5 = int(m.group(1)) >= 5
+    except Exception:
+        pass
+    return prefix, is_v5
+
+
 def merge_firmware(source, target, env):
     build_dir   = env.subst("$BUILD_DIR")
     project_dir = env.subst("$PROJECT_DIR")
@@ -23,10 +59,14 @@ def merge_firmware(source, target, env):
     app_bin    = os.path.join(build_dir, "firmware.bin")
     bootloader = os.path.join(build_dir, "bootloader.bin")
     partitions = os.path.join(build_dir, "partitions.bin")
-    boot_app0  = os.path.join(
-        piohome, "packages", "framework-arduinoespressif32",
-        "tools", "partitions", "boot_app0.bin"
-    )
+    arduino_dir = None
+    try:
+        arduino_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
+    except Exception:
+        arduino_dir = None
+    if not arduino_dir:
+        arduino_dir = os.path.join(piohome, "packages", "framework-arduinoespressif32")
+    boot_app0  = os.path.join(arduino_dir, "tools", "partitions", "boot_app0.bin")
 
     # Read version from fsd_version.h
     version = "unknown"
@@ -59,19 +99,10 @@ def merge_firmware(source, target, env):
     else:
         chip, boot_addr, flash_freq, flash_size = "esp32", "0x1000", "40m", "4MB"
 
-    # PlatformIO 8.x ships the standalone esptool 5 binary (`tool-esptool`);
-    # older platforms ship the Python module in `tool-esptoolpy`.
-    esptool_v5_dir = os.path.join(piohome, "packages", "tool-esptool")
-    esptool_v5 = next(
-        (p for name in ("esptool.exe", "esptool")
-         for p in (os.path.join(esptool_v5_dir, name),)
-         if os.path.isfile(p)),
-        None,
-    )
-    esptool_v4 = os.path.join(piohome, "packages", "tool-esptoolpy", "esptool.py")
-    if esptool_v5:
-        cmd = [
-            esptool_v5, "--chip", chip, "merge-bin",
+    prefix, is_v5 = _resolve_esptool(env, piohome)
+    if is_v5:
+        cmd = prefix + [
+            "--chip", chip, "merge-bin",
             "-o", merged_out,
             "--flash-mode", "dio", "--flash-freq", flash_freq, "--flash-size", flash_size,
             boot_addr, bootloader,
@@ -80,8 +111,8 @@ def merge_firmware(source, target, env):
             "0x10000", app_bin,
         ]
     else:
-        cmd = [
-            sys.executable, esptool_v4, "--chip", chip, "merge_bin",
+        cmd = prefix + [
+            "--chip", chip, "merge_bin",
             "-o", merged_out,
             "--flash_mode", "dio", "--flash_freq", flash_freq, "--flash_size", flash_size,
             boot_addr, bootloader,
@@ -92,6 +123,7 @@ def merge_firmware(source, target, env):
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        print(result.stdout)
         print(result.stderr)
         raise Exception("esptool merge_bin failed — see output above")
     print(f"[merge] Merged binary : {os.path.basename(merged_out)}  (flash at 0x0)")

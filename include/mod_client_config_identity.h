@@ -1,9 +1,15 @@
 #pragma once
 
+#include <esp_idf_version.h>
 #include <esp_system.h>
 #include <stdio.h>
 #include <string.h>
+#if ESP_IDF_VERSION_MAJOR >= 6
+#include <mbedtls/pk.h>
+#include <psa/crypto.h>
+#else
 #include <mbedtls/ecdsa.h>
+#endif
 #include <mbedtls/oid.h>
 #include <mbedtls/x509_crt.h>
 #include <nvs.h>
@@ -19,10 +25,12 @@ struct Identity {
 
 static Identity identity{};
 
+#if ESP_IDF_VERSION_MAJOR < 6
 static int fillRandom(void*, unsigned char* buffer, size_t size) {
     esp_fill_random(buffer, size);
     return 0;
 }
+#endif
 
 static void generateSecret(char (&token)[65]) {
     uint8_t bytes[32];
@@ -47,6 +55,34 @@ static bool generateIdentity() {
     // DER GeneralNames containing fsd.local and the firmware's AP address.
     const uint8_t names[] = {0x30, 17, 0x82, 9, 'f', 's', 'd', '.', 'l', 'o', 'c', 'a', 'l',
                              0x87, 4, 9, 9, 9, 9};
+
+#if ESP_IDF_VERSION_MAJOR >= 6
+    psa_key_id_t psaKey = 0;
+    bool keyReady = (psa_crypto_init() == PSA_SUCCESS);
+    if (keyReady) {
+        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+        psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+        psa_set_key_bits(&attr, 256);
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_EXPORT | PSA_KEY_USAGE_SIGN_HASH);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+        keyReady = (psa_generate_key(&attr, &psaKey) == PSA_SUCCESS) &&
+                   (mbedtls_pk_copy_from_psa(psaKey, &key) == 0);
+        if (psaKey != 0) psa_destroy_key(psaKey);
+    }
+    const bool ok =
+        keyReady &&
+        mbedtls_x509write_crt_set_serial_raw(&certificate, serialBytes, sizeof(serialBytes)) == 0 &&
+        mbedtls_x509write_crt_set_subject_name(&certificate, "CN=fsd.local") == 0 &&
+        mbedtls_x509write_crt_set_issuer_name(&certificate, "CN=fsd.local") == 0 &&
+        mbedtls_x509write_crt_set_validity(&certificate, "20240101000000", "20491231235959") == 0 &&
+        mbedtls_x509write_crt_set_key_usage(&certificate, MBEDTLS_X509_KU_DIGITAL_SIGNATURE) == 0 &&
+        mbedtls_x509write_crt_set_extension(&certificate, MBEDTLS_OID_SUBJECT_ALT_NAME,
+            sizeof(MBEDTLS_OID_SUBJECT_ALT_NAME) - 1, 0, names, sizeof(names)) == 0 &&
+        mbedtls_x509write_crt_pem(&certificate, reinterpret_cast<uint8_t*>(identity.certificate),
+            sizeof(identity.certificate)) == 0 &&
+        mbedtls_pk_write_key_pem(&key, reinterpret_cast<uint8_t*>(identity.privateKey),
+            sizeof(identity.privateKey)) == 0;
+#else
     const bool ok =
         mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) == 0 &&
         mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key), fillRandom, nullptr) == 0 &&
@@ -61,6 +97,7 @@ static bool generateIdentity() {
             sizeof(identity.certificate), fillRandom, nullptr) == 0 &&
         mbedtls_pk_write_key_pem(&key, reinterpret_cast<uint8_t*>(identity.privateKey),
             sizeof(identity.privateKey)) == 0;
+#endif
 
     mbedtls_x509write_crt_free(&certificate);
     mbedtls_pk_free(&key);

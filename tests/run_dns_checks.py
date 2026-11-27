@@ -483,7 +483,7 @@ def main():
         for strict in (False, True):
             flags = ["-DWIFI_BRIDGE_STRICT_ALLOWLIST"] if strict else []
             source.write_text(PREAMBLE + (STRICT_PREAMBLE if strict else "") + base_functions + (strict_functions if strict else "") + TESTS)
-            subprocess.run([cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            subprocess.run([cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
                             *san, *flags, str(source),
                             "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)

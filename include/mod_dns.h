@@ -1929,7 +1929,7 @@ extern "C" int dnsHookIp4CanForwardPacket(const void* ipHdr, size_t len, uint32_
     portEXIT_CRITICAL(&gDnsAllowMux);
     if (drop) {
         portENTER_CRITICAL(&gDnsIpPolicyMux);
-        ++gIpForwardDropCount;
+        gIpForwardDropCount = gIpForwardDropCount + 1;
         portEXIT_CRITICAL(&gDnsIpPolicyMux);
     }
     return drop ? 0 : -1;

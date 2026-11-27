@@ -120,7 +120,8 @@ static void errorJson(int code, const char* error, String& out, int& status) {
 static bool matchesToken(const char* supplied, const char* expected) {
     volatile uint8_t difference = 0;
     for (size_t index = 0; index < 64; ++index) {
-        difference |= static_cast<uint8_t>(supplied[index] ^ expected[index]);
+        difference = static_cast<uint8_t>(
+            difference | static_cast<uint8_t>(supplied[index] ^ expected[index]));
     }
     return difference == 0;
 }
@@ -367,7 +368,10 @@ const char* lastListenerError() {
 // negotiated TLS context. It lets the dashboard show the same TLS state that
 // Windows mitmproxy prints in handshake.log.
 static void tlsUserCallback(esp_https_server_user_cb_arg_t* argument) {
-    if (argument && argument->tls) fsd_mock::noteHandshake(argument->tls);
+    if (!argument || !argument->tls) return;
+    if (argument->user_cb_state == HTTPD_SSL_USER_CB_SESS_CREATE) {
+        fsd_mock::noteHandshake(argument->tls);
+    }
 }
 
 static bool startFsdHttps() {

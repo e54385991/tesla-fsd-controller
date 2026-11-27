@@ -248,7 +248,11 @@ static inline bool wifiBridgeIsTransientDisconnect(uint8_t reason) {
         case WIFI_REASON_BEACON_TIMEOUT:
         case WIFI_REASON_AP_TSF_RESET:
         case WIFI_REASON_CONNECTION_FAIL:
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR >= 6
+        case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY:
+#else
         case WIFI_REASON_ASSOC_EXPIRE:
+#endif
         case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
         case WIFI_REASON_ROAMING:
             return true;
@@ -260,7 +264,11 @@ static inline bool wifiBridgeIsTransientDisconnect(uint8_t reason) {
 static inline const char* wifiBridgeDisconnectReasonText(uint8_t reason) {
     switch (reason) {
         case 0:                                     return "none";
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR >= 6
+        case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY:return "assoc_expire";
+#else
         case WIFI_REASON_ASSOC_EXPIRE:              return "assoc_expire";
+#endif
         case WIFI_REASON_ASSOC_LEAVE:               return "assoc_leave";
         case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:    return "4way_timeout";
         case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:  return "gtk_timeout";

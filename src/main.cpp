@@ -1613,8 +1613,13 @@ void setup() {
     // keep 11b/g/n on STA for compatibility with arbitrary upstream hotspots.
     esp_wifi_set_protocol(WIFI_IF_AP,  WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR >= 6
+    esp_wifi_set_bandwidth(WIFI_IF_AP,  WIFI_BW20);
+    esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20);
+#else
     esp_wifi_set_bandwidth(WIFI_IF_AP,  WIFI_BW_HT20);
     esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+#endif
     esp_wifi_set_inactive_time(WIFI_IF_STA, 12);
     wifiBridgeRegisterEvents();
     WiFi.setSleep(WIFI_PS_NONE);

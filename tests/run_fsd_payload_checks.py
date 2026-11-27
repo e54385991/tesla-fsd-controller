@@ -226,7 +226,7 @@ int main() {
         exe = Path(tmp) / "hdr"
         cpp.write_text(harness)
         subprocess.run(
-            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            [cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
              *san,
              str(cpp), "-o", str(exe)],
             check=True,
@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         )
         cpp.write_text(harness)
         subprocess.run(
-            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            [cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
              *san,
              "-I", str(cjson_dir), str(cpp), str(cjson_obj), "-o", str(exe)],
             check=True,
@@ -553,7 +553,7 @@ def check_tls_policy() -> None:
         )
 
     platformio = (ROOT / "platformio.ini").read_text()
-    assert platformio.count("platform = platformio/espressif32@8.0.0") >= 4
+    assert platformio.count("https://github.com/pioarduino/platform-espressif32/releases/download/61.04.00/platform-espressif32.zip") >= 4
     assert 'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.tls13.defaults"' in platformio
     for ui_path in ("include/web_ui_manage.h", "include/web_ui_fsd.h"):
         ui_text = (ROOT / ui_path).read_text()
@@ -563,6 +563,7 @@ def check_tls_policy() -> None:
     server = (ROOT / "src/client_config.cpp").read_text()
     mock = (ROOT / "src/fsd_mock.cpp").read_text()
     assert "config.user_cb = tlsUserCallback;" in server
+    assert "HTTPD_SSL_USER_CB_SESS_CREATE" in server
     assert "kFsdMaxReqHdrLen = 8192" in server
     assert "config.max_req_hdr_len = kFsdMaxReqHdrLen;" in server
     assert "config.httpd.max_req_hdr_len = kFsdMaxReqHdrLen;" in server

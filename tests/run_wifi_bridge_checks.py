@@ -421,7 +421,7 @@ def main() -> None:
         bin_path = Path(tmp) / "bridge"
         src.write_text(PREAMBLE + extracted + TESTS)
         subprocess.run(
-            [cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            [cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
              *san, str(src), "-o", str(bin_path)],
             check=True,
         )
