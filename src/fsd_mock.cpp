@@ -32,6 +32,7 @@
 #include <new>
 #include <strings.h>
 #include <time.h>
+#include <type_traits>
 
 #include "fsd_payload.h"
 #include "mod_client_config.h"
@@ -137,6 +138,29 @@ struct ConfigLogBlob {
     uint16_t write;
     ConfigChange items[kConfigHistoryCapacity];
 };
+
+TimelineEntry gTimeline[kTimelineCapacity];
+size_t gTimelineCount = 0;
+size_t gTimelineWrite = 0;
+portMUX_TYPE gTimelineMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Persistent ring of the last 5 下发时间线 entries (NVS namespace "fsdmock", key "timeline").
+constexpr uint32_t kTimelineLogMagic = 0x544D4C31;  // "TML1"
+struct TimelineLogBlob {
+    uint32_t magic;
+    uint16_t count;
+    uint16_t write;
+    TimelineEntry items[kTimelineCapacity];
+};
+static_assert(std::is_trivially_copyable_v<TimelineEntry>,
+              "TimelineEntry must be trivially copyable for NVS blob persistence");
+static_assert(sizeof(TimelineLogBlob) == 8 + kTimelineCapacity * sizeof(TimelineEntry),
+              "TimelineLogBlob NVS layout must stay packed and deterministic");
+
+// Serializes NVS log writes across httpd (443/4567), FsdProxy, and AsyncTCP tasks.
+SemaphoreHandle_t gNvsLogMutex = nullptr;
+
+void recordTimelineHit(const Hit& hit);
 
 Handshake gHandshakes[kHandshakeCapacity];
 size_t gHandshakeCount = 0;
@@ -562,6 +586,7 @@ void recordHit(const Hit& hit, const char* responseBody) {
     }
 
     updateLatestHandshake(hit);
+    recordTimelineHit(hit);
 }
 
 // ── payload storage ─────────────────────────────────────────────────────────
@@ -653,6 +678,7 @@ bool persistSettings() {
 
 // Snapshot the ring under the mutex, then write outside it (NVS may block).
 void persistConfigLog() {
+    if (gNvsLogMutex) xSemaphoreTake(gNvsLogMutex, portMAX_DELAY);
     ConfigLogBlob blob = {};
     blob.magic = kConfigLogMagic;
     portENTER_CRITICAL(&gConfigMux);
@@ -662,9 +688,180 @@ void persistConfigLog() {
     portEXIT_CRITICAL(&gConfigMux);
 
     Preferences prefs;
-    if (!prefs.begin("fsdmock", false)) return;
-    prefs.putBytes("cfglog", &blob, sizeof(blob));
-    prefs.end();
+    if (prefs.begin("fsdmock", false)) {
+        prefs.putBytes("cfglog", &blob, sizeof(blob));
+        prefs.end();
+    }
+    if (gNvsLogMutex) xSemaphoreGive(gNvsLogMutex);
+}
+
+bool validTimelineKind(const char* kind) {
+    return strcmp(kind, "CFG") == 0 ||
+           strcmp(kind, "HIT") == 0 ||
+           strcmp(kind, "OBSERVE") == 0;
+}
+
+void sanitizeTimelineEntry(TimelineEntry& entry) {
+    entry.kind[sizeof(entry.kind) - 1] = '\0';
+    entry.ts[sizeof(entry.ts) - 1] = '\0';
+    entry.source[sizeof(entry.source) - 1] = '\0';
+    entry.method[sizeof(entry.method) - 1] = '\0';
+    entry.vin[sizeof(entry.vin) - 1] = '\0';
+    entry.reqHead[sizeof(entry.reqHead) - 1] = '\0';
+    entry.md5[sizeof(entry.md5) - 1] = '\0';
+    entry.mode[sizeof(entry.mode) - 1] = '\0';
+    entry.httpVersion[sizeof(entry.httpVersion) - 1] = '\0';
+}
+
+bool restoreTimelineBlob(TimelineLogBlob& blob) {
+    if (blob.magic != kTimelineLogMagic ||
+        blob.count > kTimelineCapacity ||
+        blob.write >= kTimelineCapacity) {
+        return false;
+    }
+    for (size_t i = 0; i < kTimelineCapacity; ++i) {
+        sanitizeTimelineEntry(blob.items[i]);
+    }
+    for (size_t i = 0; i < blob.count; ++i) {
+        const size_t slot = (blob.write + kTimelineCapacity - 1 - i) % kTimelineCapacity;
+        if (!validTimelineKind(blob.items[slot].kind)) return false;
+    }
+    portENTER_CRITICAL(&gTimelineMux);
+    for (auto& slot : gTimeline) slot = TimelineEntry{};
+    for (size_t i = 0; i < blob.count; ++i) {
+        const size_t slot = (blob.write + kTimelineCapacity - 1 - i) % kTimelineCapacity;
+        gTimeline[slot] = blob.items[slot];
+    }
+    gTimelineCount = blob.count;
+    gTimelineWrite = blob.write;
+    portEXIT_CRITICAL(&gTimelineMux);
+    return true;
+}
+
+bool pushTimelineEntry(const TimelineEntry& entry) {
+    portENTER_CRITICAL(&gTimelineMux);
+    if (strcmp(entry.kind, "CFG") == 0 && gTimelineCount > 0) {
+        const size_t latest = (gTimelineWrite + kTimelineCapacity - 1) % kTimelineCapacity;
+        if (strcmp(gTimeline[latest].kind, "CFG") == 0 &&
+            entry.md5[0] &&
+            strcmp(gTimeline[latest].md5, entry.md5) == 0) {
+            // Coalesce consecutive saves with identical payload MD5 to keep
+            // the newest timestamp without consuming an extra timeline slot.
+            gTimeline[latest] = entry;
+            portEXIT_CRITICAL(&gTimelineMux);
+            return true;
+        }
+    }
+    gTimeline[gTimelineWrite] = entry;
+    gTimelineWrite = (gTimelineWrite + 1) % kTimelineCapacity;
+    if (gTimelineCount < kTimelineCapacity) ++gTimelineCount;
+    portEXIT_CRITICAL(&gTimelineMux);
+    return true;
+}
+
+void persistTimelineLogLocked() {
+    auto* blob = new (std::nothrow) TimelineLogBlob{};
+    if (!blob) return;
+    blob->magic = kTimelineLogMagic;
+    portENTER_CRITICAL(&gTimelineMux);
+    blob->count = static_cast<uint16_t>(gTimelineCount);
+    blob->write = static_cast<uint16_t>(gTimelineWrite);
+    for (size_t i = 0; i < kTimelineCapacity; ++i) {
+        blob->items[i] = gTimeline[i];
+    }
+    portEXIT_CRITICAL(&gTimelineMux);
+
+    Preferences prefs;
+    if (prefs.begin("fsdmock", false)) {
+        prefs.putBytes("timeline", blob, sizeof(*blob));
+        prefs.end();
+    }
+    delete blob;
+}
+
+void persistTimelineEntry(const TimelineEntry& entry) {
+    if (gNvsLogMutex) xSemaphoreTake(gNvsLogMutex, portMAX_DELAY);
+    if (pushTimelineEntry(entry)) {
+        persistTimelineLogLocked();
+    }
+    if (gNvsLogMutex) xSemaphoreGive(gNvsLogMutex);
+}
+
+bool shouldPersistHitToTimeline(const Hit& hit) {
+    if (strcmp(hit.kind, "HIT") != 0 && strcmp(hit.kind, "OBSERVE") != 0) {
+        return false;
+    }
+    // Loopback probes come from the local serial `fsd-selftest` command;
+    // keep them in RAM without evicting real vehicle timeline entries.
+    if (strcmp(hit.client, "127.0.0.1") == 0 || strcmp(hit.client, "::1") == 0) {
+        return false;
+    }
+    return true;
+}
+
+void recordTimelineHit(const Hit& hit) {
+    if (!shouldPersistHitToTimeline(hit)) return;
+    TimelineEntry tl = {};
+    strlcpy(tl.kind, hit.kind, sizeof(tl.kind));
+    strlcpy(tl.ts, hit.ts, sizeof(tl.ts));
+    strlcpy(tl.method, hit.method, sizeof(tl.method));
+    strlcpy(tl.vin, hit.vin, sizeof(tl.vin));
+    strlcpy(tl.reqHead, hit.reqHead, sizeof(tl.reqHead));
+    strlcpy(tl.md5, hit.md5, sizeof(tl.md5));
+    strlcpy(tl.mode, hit.mode, sizeof(tl.mode));
+    strlcpy(tl.httpVersion, hit.httpVersion, sizeof(tl.httpVersion));
+    tl.reqBytes = hit.reqBytes;
+    tl.bytes = hit.bytes;
+    tl.status = hit.status;
+    persistTimelineEntry(tl);
+}
+
+void recordTimelineConfig(const ConfigChange& cfg) {
+    if (cfg.bytes == 0) return;
+    TimelineEntry tl = {};
+    strlcpy(tl.kind, "CFG", sizeof(tl.kind));
+    strlcpy(tl.ts, cfg.ts, sizeof(tl.ts));
+    strlcpy(tl.source, cfg.source, sizeof(tl.source));
+    strlcpy(tl.md5, cfg.md5, sizeof(tl.md5));
+    tl.bytes = cfg.bytes;
+    tl.fields = cfg.fields;
+    persistTimelineEntry(tl);
+}
+
+void seedTimelineFromConfigHistory() {
+    ConfigChange snapshot[kConfigHistoryCapacity] = {};
+    portENTER_CRITICAL(&gConfigMux);
+    const size_t count = gConfigCount;
+    const size_t write = gConfigWrite;
+    memcpy(snapshot, gConfigHistory, sizeof(snapshot));
+    portEXIT_CRITICAL(&gConfigMux);
+
+    if (count == 0 || count > kConfigHistoryCapacity || write >= kConfigHistoryCapacity) return;
+    const size_t oldest = (write + kConfigHistoryCapacity - count) % kConfigHistoryCapacity;
+    for (size_t i = 0; i < count; ++i) {
+        const ConfigChange& cfg = snapshot[(oldest + i) % kConfigHistoryCapacity];
+        if (cfg.bytes == 0) continue;
+        TimelineEntry tl = {};
+        strlcpy(tl.kind, "CFG", sizeof(tl.kind));
+        strlcpy(tl.ts, cfg.ts, sizeof(tl.ts));
+        strlcpy(tl.source, cfg.source, sizeof(tl.source));
+        strlcpy(tl.md5, cfg.md5, sizeof(tl.md5));
+        tl.bytes = cfg.bytes;
+        tl.fields = cfg.fields;
+        pushTimelineEntry(tl);
+    }
+}
+
+bool readTimelineEntry(size_t index, TimelineEntry& out) {
+    portENTER_CRITICAL(&gTimelineMux);
+    if (index >= gTimelineCount) {
+        portEXIT_CRITICAL(&gTimelineMux);
+        return false;
+    }
+    const size_t slot = (gTimelineWrite + kTimelineCapacity - 1 - index) % kTimelineCapacity;
+    out = gTimeline[slot];
+    portEXIT_CRITICAL(&gTimelineMux);
+    return true;
 }
 
 // ── request body ────────────────────────────────────────────────────────────
@@ -1768,6 +1965,7 @@ void noteHandshake(const esp_tls_t* tls) {
 void begin() {
     gStateMutex = xSemaphoreCreateMutex();
     if (!gStateMutex) return;
+    if (!gNvsLogMutex) gNvsLogMutex = xSemaphoreCreateMutex();
 
     // Older firmware persisted hit/handshake JSONL here. Logs are RAM-only
     // now, so reclaim that space for payload storage.
@@ -1825,7 +2023,24 @@ void begin() {
             gConfigWrite = log.write;
             portEXIT_CRITICAL(&gConfigMux);
         }
+        // Restore the persisted 下发时间线 ring (survives reboot).
+        portENTER_CRITICAL(&gTimelineMux);
+        for (auto& slot : gTimeline) slot = TimelineEntry{};
+        gTimelineCount = 0;
+        gTimelineWrite = 0;
+        portEXIT_CRITICAL(&gTimelineMux);
+        bool timelineLoaded = false;
+        auto* tlLog = new (std::nothrow) TimelineLogBlob{};
+        if (tlLog &&
+            prefs.getBytesLength("timeline") == sizeof(*tlLog) &&
+            prefs.getBytes("timeline", tlLog, sizeof(*tlLog)) == sizeof(*tlLog)) {
+            timelineLoaded = restoreTimelineBlob(*tlLog);
+        }
+        delete tlLog;
         prefs.end();
+        if (!timelineLoaded) {
+            seedTimelineFromConfigHistory();
+        }
     }
 
     char* stored = static_cast<char*>(malloc(kPayloadCapacity));
@@ -2106,6 +2321,7 @@ void recordConfigChange(const char* source, size_t bytes, size_t fields,
     if (gConfigCount < kConfigHistoryCapacity) ++gConfigCount;
     portEXIT_CRITICAL(&gConfigMux);
     persistConfigLog();
+    recordTimelineConfig(record);
 }
 
 bool setPayload(const char* json, size_t length, char* error, size_t errorSize,
@@ -2451,6 +2667,32 @@ void appendConfigHistoryJsonl(Print& out) {
         out.print(",\"md5\":\""); jsonEscape(out, record.md5); out.print("\"");
         out.print(",\"prev_md5\":\""); jsonEscape(out, record.prevMd5); out.print("\"");
         out.print(",\"fields\":"); out.print(static_cast<unsigned>(record.fields));
+        out.print("}\n");
+    }
+}
+
+void appendTimelineJsonl(Print& out) {
+    for (size_t i = 0; i < kTimelineCapacity; ++i) {
+        TimelineEntry entry;
+        if (!readTimelineEntry(i, entry)) break;
+        out.print("{\"ts\":\""); jsonEscape(out, entry.ts); out.print("\"");
+        out.print(",\"kind\":\""); jsonEscape(out, entry.kind); out.print("\"");
+        if (strcmp(entry.kind, "CFG") == 0) {
+            out.print(",\"source\":\""); jsonEscape(out, entry.source); out.print("\"");
+            out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(entry.bytes));
+            out.print(",\"md5\":\""); jsonEscape(out, entry.md5); out.print("\"");
+            out.print(",\"fields\":"); out.print(static_cast<unsigned>(entry.fields));
+        } else {
+            out.print(",\"method\":\""); jsonEscape(out, entry.method); out.print("\"");
+            out.print(",\"vin\":\""); jsonEscape(out, entry.vin); out.print("\"");
+            out.print(",\"req_head\":\""); jsonEscape(out, entry.reqHead); out.print("\"");
+            out.print(",\"req_bytes\":"); out.print(static_cast<unsigned long>(entry.reqBytes));
+            out.print(",\"bytes\":"); out.print(static_cast<unsigned long>(entry.bytes));
+            out.print(",\"mode\":\""); jsonEscape(out, entry.mode); out.print("\"");
+            out.print(",\"md5\":\""); jsonEscape(out, entry.md5); out.print("\"");
+            out.print(",\"http_version\":\""); jsonEscape(out, entry.httpVersion); out.print("\"");
+            out.print(",\"status\":"); out.print(static_cast<unsigned>(entry.status));
+        }
         out.print("}\n");
     }
 }

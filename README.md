@@ -286,7 +286,7 @@ amazonaws.com.cn
 | CN 全量 62 字段 | 2031 | `f69da5d74c1a4bcae4a6bbdf1128c91a` | 用户提供的 CN 配置（Monarch / 限速 / 城市与备选路线 / 红绿灯倒计时 / 语音导航模式 / CHN 地区覆盖；不含 vendor maneuver） |
 | CN 旧版 46 字段 | 1466 | `0ea421e01be6b6e8f66a8fb752970bb3` | 上一版 CN 配置（保留以便回退，字段集合更少） |
 
-默认载荷保存到 SPIFFS，重启保持。**下发记录保留最近 5 条并写入 NVS，重启保持**；命中 / 握手 / 请求明细日志只保存在 RAM，重启清空，不占闪存。
+默认载荷保存到 SPIFFS，重启保持。**下发时间线（配置变更 → 车机取配置）与下发记录各保留最近 5 条并写入 NVS，重启保持**；完整命中 / 握手 / 请求明细日志只保存在 RAM，重启清空，不占闪存。
 
 字段含义以 `docs/FeatureConfig.docx`（Tesla 2026.26.6.1，反汇编 Observed）为准；
 CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说明见
@@ -316,6 +316,7 @@ CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说�
 | `/api/fsd-mock/payload` | GET | 当前 compact JSON |
 | `/api/fsd-mock/payload` | POST | 写入 JSON 对象，上限 2048 字节 |
 | `/api/fsd-mock/set?enabled=1&mode=reply&preset=default` | GET | 启停、切换模式、加载预设 |
+| `/api/fsd-mock/timeline` | GET | 持久化下发时间线（最近 5 条，NVS） |
 | `/api/fsd-mock/hits` / `handshakes` | GET | RAM JSONL 导出 |
 | `/api/log` / `/api/log/download` | GET | RAM 诊断日志 / SPIFFS 持久日志 |
 

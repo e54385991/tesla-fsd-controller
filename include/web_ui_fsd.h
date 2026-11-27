@@ -80,7 +80,7 @@ textarea{height:300px;resize:vertical}
     <table><thead><tr><th>时间</th><th>事件</th><th>客户端</th><th>SNI</th><th>第一条请求</th><th>TLS / 详情</th></tr></thead><tbody id="hsRows"></tbody></table>
   </section>
 
-  <section><h2>下发时间线（配置变更 → 车机取配置）</h2>
+  <section><h2>下发时间线（配置变更 → 车机取配置 · 最近 5 条 · 重启保持）</h2>
     <table><thead><tr><th>时间</th><th>类型</th><th>VIN / 字段</th><th>车机上送</th><th>回包</th><th>md5</th><th>链路</th></tr></thead><tbody id="tlRows"></tbody></table>
   </section>
 
@@ -233,12 +233,13 @@ async function refresh(){
     var hits=parseJsonl(await getText('/api/fsd-mock/hits'));
     var hs=parseJsonl(await getText('/api/fsd-mock/handshakes'));
     var cfg=parseJsonl(await getText('/api/fsd-mock/config-history'));
+    var tl=parseJsonl(await getText('/api/fsd-mock/timeline'));
     var payload=await getText('/api/fsd-mock/payload');
-    render(st,hits,hs,cfg,payload);
+    render(st,hits,hs,cfg,tl,payload);
   }catch(e){ /* auth overlay already shown or transient */ }
   busy=false;
 }
-function render(st,hits,hs,cfg,payloadText){
+function render(st,hits,hs,cfg,tlList,payloadText){
   var fm=st.fsdMock||{}; var now=new Date();
   document.getElementById('nowText').textContent=now.toLocaleString();
   var fsdBadge=document.getElementById('fsdBadge');
@@ -269,9 +270,11 @@ function render(st,hits,hs,cfg,payloadText){
   linkBadge.className='badge '+(st.upstreamConnected?'ok':'bad');
 
   var intercepts=hits.filter(function(r){return r.kind==='HIT'||r.kind==='OBSERVE';});
-  var lastHit=intercepts[0]||null;
+  var tlHits=(tlList||[]).filter(function(r){return r.kind==='HIT'||r.kind==='OBSERVE';});
+  var lastHit=intercepts[0]||tlHits[0]||null;
   var vin='';
   for(var i=0;i<hits.length;i++){ if(hits[i].vin){ vin=hits[i].vin; break; } }
+  if(!vin){ for(var i=0;i<tlHits.length;i++){ if(tlHits[i].vin){ vin=tlHits[i].vin; break; } } }
   var totalReqs=(fm.hits||0)+(fm.observes||0)+(fm.flows||0);
   document.getElementById('cHits').textContent=(fm.hits||0);
   document.getElementById('cLastHit').textContent=lastHit?tsText(lastHit.ts):'—';
@@ -298,18 +301,16 @@ function render(st,hits,hs,cfg,payloadText){
   });
   document.getElementById('hsRows').innerHTML=hsRows||'<tr><td colspan="6" class="dim">还没有握手记录（车机尚未发起连接）</td></tr>';
 
-  var timeline=[];
-  intercepts.forEach(function(r){ timeline.push({ts:r.ts||'',kind:'hit',r:r}); });
-  var lastMd5=null;
-  cfg.forEach(function(r){ if(!r.bytes) return; if(r.md5 && r.md5===lastMd5) return; lastMd5=r.md5; timeline.push({ts:r.ts||'',kind:'cfg',r:r}); });
-  timeline.sort(function(a,b){ return String(b.ts).localeCompare(String(a.ts)); });
   var tl='';
-  timeline.slice(0,20).forEach(function(x){
-    var r=x.r;
-    if(x.kind==='hit'){
-      tl+='<tr><td>'+esc(tsText(r.ts))+'</td><td><span style="color:#3fb950">车机取配置</span> '+esc(r.method||'')+'</td><td><code>'+esc(r.vin||'—')+'</code></td><td><code>'+esc(r.req_head||'—')+'</code><br>'+esc(r.req_bytes||0)+' B</td><td style="color:#3fb950">'+esc(r.bytes||0)+' B / '+esc(r.mode||'')+'</td><td><code>'+esc((r.md5||'').slice(0,14))+'…</code></td><td>'+esc(r.http_version||'')+'</td></tr>';
+  (tlList||[]).slice(0,5).forEach(function(r){
+    var md5Html=r.md5?('<code>'+esc(r.md5.slice(0,14))+'…</code>'):'—';
+    if(r.kind==='HIT'||r.kind==='OBSERVE'){
+      var col=r.kind==='OBSERVE'?'#d29922':'#3fb950';
+      var resp=esc(r.bytes||0)+' B / '+esc(r.mode||'');
+      if(r.status && r.status!==200) resp=esc(r.status)+' · '+resp;
+      tl+='<tr><td>'+esc(tsText(r.ts))+'</td><td><span style="color:'+col+'">车机取配置</span> '+esc(r.method||'')+'</td><td><code>'+esc(r.vin||'—')+'</code></td><td><code>'+esc(r.req_head||'—')+'</code><br>'+esc(r.req_bytes||0)+' B</td><td style="color:'+col+'">'+resp+'</td><td>'+md5Html+'</td><td>'+esc(r.http_version||'')+'</td></tr>';
     } else {
-      tl+='<tr><td>'+esc(tsText(r.ts))+'</td><td><span style="color:#8b949e">配置变更</span> '+esc(r.source||'')+'</td><td>'+esc(r.fields||0)+' 字段</td><td>—</td><td>'+esc(r.bytes||0)+' B</td><td><code>'+esc((r.md5||'').slice(0,14))+'…</code></td><td>本地保存</td></tr>';
+      tl+='<tr><td>'+esc(tsText(r.ts))+'</td><td><span style="color:#8b949e">配置变更</span> '+esc(r.source||'')+'</td><td>'+esc(r.fields||0)+' 字段</td><td>—</td><td>'+esc(r.bytes||0)+' B</td><td>'+md5Html+'</td><td>本地保存</td></tr>';
     }
   });
   document.getElementById('tlRows').innerHTML=tl||'<tr><td colspan="7" class="dim">还没有记录</td></tr>';

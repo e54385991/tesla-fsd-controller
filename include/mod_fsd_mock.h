@@ -31,6 +31,7 @@ constexpr size_t kHostCapacity = 96;
 constexpr size_t kRecentHitCapacity = 8;    // RAM ring, not persisted
 constexpr size_t kHandshakeCapacity = 6;    // RAM ring, not persisted
 constexpr size_t kConfigHistoryCapacity = 5; // last 5 下发记录, persisted to NVS
+constexpr size_t kTimelineCapacity = 5;      // last 5 下发时间线 entries, persisted to NVS
 constexpr size_t kLastResponseCapacity = 2100;  // full 2020B CN preset payload + headroom
 
 enum class Mode : uint8_t {
@@ -71,6 +72,24 @@ struct ConfigChange {
     char prevMd5[33] = {};
     uint32_t bytes = 0;
     uint16_t fields = 0;
+};
+
+// Persisted timeline entry combining config changes ("CFG") and vehicle
+// /feature_configuration pulls ("HIT" / "OBSERVE") across reboots.
+struct TimelineEntry {
+    uint32_t reqBytes = 0;
+    uint32_t bytes = 0;
+    uint16_t fields = 0;
+    uint16_t status = 0;
+    char kind[8] = {};          // "CFG" / "HIT" / "OBSERVE"
+    char ts[32] = {};
+    char source[16] = {};       // CFG source: config / payload / preset / api
+    char method[8] = {};        // HIT/OBSERVE HTTP method
+    char vin[18] = {};          // HIT/OBSERVE vehicle VIN
+    char reqHead[65] = {};      // HIT/OBSERVE request body head
+    char md5[33] = {};
+    char mode[8] = {};          // HIT/OBSERVE mode: reply / observe
+    char httpVersion[16] = {};  // HIT/OBSERVE HTTP version
 };
 
 struct Handshake {
@@ -140,6 +159,7 @@ void appendStatusJson(Print& out);
 void appendHitsJsonl(Print& out);
 void appendHandshakesJsonl(Print& out);
 void appendConfigHistoryJsonl(Print& out);
+void appendTimelineJsonl(Print& out);
 
 size_t recentHits(Hit* out, size_t capacity);
 size_t recentHandshakes(Handshake* out, size_t capacity);

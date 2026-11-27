@@ -147,8 +147,32 @@ def _extract_block(source: str, signature: str) -> str:
     brace = source.index("{", start)
     depth = 1
     end = brace + 1
+    in_string = False
+    in_char = False
+    escape = False
     while depth:
-        depth += (source[end] == "{") - (source[end] == "}")
+        ch = source[end]
+        if escape:
+            escape = False
+        elif in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif in_char:
+            if ch == "\\":
+                escape = True
+            elif ch == "'":
+                in_char = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "'":
+                in_char = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
         end += 1
     if end < len(source) and source[end] == ";":
         end += 1
@@ -479,10 +503,20 @@ def check_port_policy() -> None:
     assert "hermes-prd.vn.cloud.tesla.cn" not in v8_items
     # Last 5 下发记录 must survive reboot (NVS "cfglog", not a RAM ring).
     mock_src = (ROOT / "src/fsd_mock.cpp").read_text()
-    assert "kConfigHistoryCapacity = 5" in (ROOT / "include/mod_fsd_mock.h").read_text()
+    mock_hdr = (ROOT / "include/mod_fsd_mock.h").read_text()
+    assert "kConfigHistoryCapacity = 5" in mock_hdr
     assert '"cfglog"' in mock_src and "persistConfigLog()" in mock_src
     assert mock_src.count("persistConfigLog()") >= 2, "record path must persist"
     assert 'getBytesLength("cfglog")' in mock_src, "boot path must restore the ring"
+    # Last 5 下发时间线（配置变更 → 车机取配置）must also survive reboot (NVS "timeline").
+    assert "kTimelineCapacity = 5" in mock_hdr
+    assert '"timeline"' in mock_src and "persistTimelineLogLocked()" in mock_src
+    assert mock_src.count("persistTimelineEntry(") >= 3, "config and hit paths must persist timeline"
+    assert 'getBytesLength("timeline")' in mock_src, "boot path must restore the timeline ring"
+    assert '"/api/fsd-mock/timeline"' in main
+    fsd_ui = (ROOT / "include/web_ui_fsd.h").read_text()
+    assert "下发时间线（配置变更 → 车机取配置 · 最近 5 条 · 重启保持）" in fsd_ui
+    assert '"/api/fsd-mock/timeline"' in fsd_ui or "'/api/fsd-mock/timeline'" in fsd_ui
     manage_ui = (ROOT / "include/web_ui_manage.h").read_text()
     assert "hermesControl" in manage_ui
     assert "hermes-prd.vn.cloud.tesla.cn" in manage_ui
@@ -673,6 +707,264 @@ def check_tls_policy() -> None:
     assert "CONFIG_SPIRAM_IGNORE_NOTFOUND=y" in tls13_defaults
 
 
+def check_timeline_persistence() -> None:
+    """Compile and run the production timeline ring, dedup, loopback filter,
+    NVS blob restore/validation, cfglog migration, and JSONL export under ASan/UBSan."""
+    cxx = shutil.which("c++")
+    if not cxx:
+        return
+    hdr = (ROOT / "include/mod_fsd_mock.h").read_text()
+    src = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted_types = "\n".join((
+        _extract_block(hdr, "struct Hit {"),
+        _extract_block(hdr, "struct ConfigChange {"),
+        _extract_block(hdr, "struct TimelineEntry {"),
+        _extract_block(src, "struct TimelineLogBlob {"),
+    ))
+    extracted_funcs = "\n".join((
+        _extract_block(src, "void jsonEscape("),
+        _extract_block(src, "bool validTimelineKind("),
+        _extract_block(src, "void sanitizeTimelineEntry("),
+        _extract_block(src, "bool restoreTimelineBlob("),
+        _extract_block(src, "bool pushTimelineEntry("),
+        _extract_block(src, "bool shouldPersistHitToTimeline("),
+        _extract_block(src, "void seedTimelineFromConfigHistory("),
+        _extract_block(src, "bool readTimelineEntry("),
+        _extract_block(src, "void appendTimelineJsonl("),
+    ))
+    harness = r'''
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+struct Print {
+    std::string buf;
+    void print(const char* s) { if (s) buf += s; }
+    void print(unsigned long v) { buf += std::to_string(v); }
+    void print(unsigned v) { buf += std::to_string(v); }
+    void print(char c) { buf.push_back(c); }
+    void write(uint8_t c) { buf.push_back(static_cast<char>(c)); }
+};
+
+using portMUX_TYPE = int;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define portENTER_CRITICAL(x) (void)(x)
+#define portEXIT_CRITICAL(x) (void)(x)
+
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !(defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 38)))
+static size_t strlcpy(char* dst, const char* src, size_t size) {
+    if (!src) src = "";
+    const size_t len = std::strlen(src);
+    if (size > 0) {
+        const size_t copy = len < size - 1 ? len : size - 1;
+        std::memcpy(dst, src, copy);
+        dst[copy] = '\0';
+    }
+    return len;
+}
+#endif
+
+constexpr size_t kConfigHistoryCapacity = 5;
+constexpr size_t kTimelineCapacity = 5;
+constexpr uint32_t kTimelineLogMagic = 0x544D4C31;
+
+''' + extracted_types + r'''
+
+ConfigChange gConfigHistory[kConfigHistoryCapacity];
+size_t gConfigCount = 0;
+size_t gConfigWrite = 0;
+portMUX_TYPE gConfigMux = portMUX_INITIALIZER_UNLOCKED;
+
+TimelineEntry gTimeline[kTimelineCapacity];
+size_t gTimelineCount = 0;
+size_t gTimelineWrite = 0;
+portMUX_TYPE gTimelineMux = portMUX_INITIALIZER_UNLOCKED;
+
+''' + extracted_funcs + r'''
+
+static std::vector<std::string> splitLines(const std::string& s) {
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t nl = s.find('\n', pos);
+        if (nl == std::string::npos) nl = s.size();
+        out.push_back(s.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    return out;
+}
+
+static TimelineEntry makeCfg(const char* ts, const char* src, const char* md5, uint32_t bytes, uint16_t fields) {
+    TimelineEntry e = {};
+    strlcpy(e.kind, "CFG", sizeof(e.kind));
+    strlcpy(e.ts, ts, sizeof(e.ts));
+    strlcpy(e.source, src, sizeof(e.source));
+    strlcpy(e.md5, md5, sizeof(e.md5));
+    e.bytes = bytes;
+    e.fields = fields;
+    return e;
+}
+
+static TimelineEntry makeHit(const char* kind, const char* ts, const char* method, const char* vin,
+                             const char* md5, uint32_t bytes, const char* mode, uint16_t status) {
+    TimelineEntry e = {};
+    strlcpy(e.kind, kind, sizeof(e.kind));
+    strlcpy(e.ts, ts, sizeof(e.ts));
+    strlcpy(e.method, method, sizeof(e.method));
+    strlcpy(e.vin, vin, sizeof(e.vin));
+    strlcpy(e.reqHead, "{\"ver\":1}", sizeof(e.reqHead));
+    strlcpy(e.md5, md5, sizeof(e.md5));
+    strlcpy(e.mode, mode, sizeof(e.mode));
+    strlcpy(e.httpVersion, "HTTP/1.1", sizeof(e.httpVersion));
+    e.reqBytes = 9;
+    e.bytes = bytes;
+    e.status = status;
+    return e;
+}
+
+int main() {
+    static_assert(sizeof(TimelineLogBlob) == 8 + kTimelineCapacity * sizeof(TimelineEntry),
+                  "TimelineLogBlob layout must match expected NVS size");
+
+    // 1. Loopback and FLOW filtering.
+    Hit flow = {};
+    strlcpy(flow.kind, "FLOW", sizeof(flow.kind));
+    strlcpy(flow.client, "9.9.9.2", sizeof(flow.client));
+    assert(!shouldPersistHitToTimeline(flow));
+
+    Hit loopback = {};
+    strlcpy(loopback.kind, "HIT", sizeof(loopback.kind));
+    strlcpy(loopback.client, "127.0.0.1", sizeof(loopback.client));
+    assert(!shouldPersistHitToTimeline(loopback));
+    strlcpy(loopback.client, "::1", sizeof(loopback.client));
+    assert(!shouldPersistHitToTimeline(loopback));
+
+    Hit carHit = {};
+    strlcpy(carHit.kind, "HIT", sizeof(carHit.kind));
+    strlcpy(carHit.client, "9.9.9.2", sizeof(carHit.client));
+    assert(shouldPersistHitToTimeline(carHit));
+    strlcpy(carHit.kind, "OBSERVE", sizeof(carHit.kind));
+    assert(shouldPersistHitToTimeline(carHit));
+
+    // 2. Coalesce consecutive CFG with identical md5, keep non-consecutive CFG after HIT,
+    //    preserve true insertion order across mixed up:XX and ISO timestamps, and cap at 5.
+    assert(pushTimelineEntry(makeCfg("up:10", "config", "aaa111", 654, 22)));
+    assert(pushTimelineEntry(makeCfg("up:20", "payload", "aaa111", 654, 22)));  // coalesced
+    assert(gTimelineCount == 1);
+    assert(pushTimelineEntry(makeHit("HIT", "up:30", "GET", "LRW3E7FS0NC000001", "aaa111", 654, "reply", 200)));
+    assert(pushTimelineEntry(makeCfg("2026-11-28T04:00:00+0800", "preset", "aaa111", 654, 22)));  // after HIT -> kept
+    assert(pushTimelineEntry(makeHit("OBSERVE", "up:15", "POST", "LRW3E7FS0NC000001", "bbb222", 2031, "observe", 200)));
+    assert(pushTimelineEntry(makeCfg("2026-11-28T04:01:00+0800", "config", "ccc333", 2031, 62)));
+    assert(pushTimelineEntry(makeHit("HIT", "2026-11-28T04:02:00+0800", "POST", "LRW3E7FS0NC000001", "ccc333", 2031, "reply", 200)));
+    assert(pushTimelineEntry(makeHit("HIT", "up:9", "GET", "LRW3E7FS0NC000002", "ccc333", 2031, "reply", 200)));
+    assert(gTimelineCount == 5);
+
+    Print beforeReboot;
+    appendTimelineJsonl(beforeReboot);
+    auto beforeLines = splitLines(beforeReboot.buf);
+    assert(beforeLines.size() == 5);
+    // Newest first even when newest is "up:9" and older is ISO timestamp.
+    assert(beforeLines[0].find("LRW3E7FS0NC000002") != std::string::npos);
+    assert(beforeLines[1].find("2026-11-28T04:02:00+0800") != std::string::npos);
+    assert(beforeLines[2].find("\"ccc333\"") != std::string::npos);
+    assert(beforeLines[3].find("\"OBSERVE\"") != std::string::npos);
+    assert(beforeLines[4].find("\"preset\"") != std::string::npos);
+
+    // 3. Persist blob -> wipe RAM -> restore -> JSONL must match byte-for-byte.
+    TimelineLogBlob saved = {};
+    saved.magic = kTimelineLogMagic;
+    saved.count = static_cast<uint16_t>(gTimelineCount);
+    saved.write = static_cast<uint16_t>(gTimelineWrite);
+    for (size_t i = 0; i < kTimelineCapacity; ++i) saved.items[i] = gTimeline[i];
+
+    for (auto& slot : gTimeline) slot = TimelineEntry{};
+    gTimelineCount = 0;
+    gTimelineWrite = 0;
+
+    assert(restoreTimelineBlob(saved));
+    Print afterReboot;
+    appendTimelineJsonl(afterReboot);
+    assert(afterReboot.buf == beforeReboot.buf);
+
+    // 4. Reject corrupted blobs and sanitize unterminated strings.
+    TimelineLogBlob badMagic = saved;
+    badMagic.magic = 0x12345678;
+    assert(!restoreTimelineBlob(badMagic));
+    TimelineLogBlob badCount = saved;
+    badCount.count = kTimelineCapacity + 1;
+    assert(!restoreTimelineBlob(badCount));
+    TimelineLogBlob badWrite = saved;
+    badWrite.write = kTimelineCapacity;
+    assert(!restoreTimelineBlob(badWrite));
+    TimelineLogBlob badKind = saved;
+    std::strcpy(badKind.items[0].kind, "BOGUS");
+    assert(!restoreTimelineBlob(badKind));
+
+    // Unterminated strings in a valid blob must be NUL-terminated without UB.
+    TimelineLogBlob unterminated = {};
+    unterminated.magic = kTimelineLogMagic;
+    unterminated.count = 1;
+    unterminated.write = 1;
+    std::memset(&unterminated.items[0], 'x', sizeof(TimelineEntry));
+    strlcpy(unterminated.items[0].kind, "CFG", sizeof(unterminated.items[0].kind));
+    unterminated.items[0].bytes = 123;
+    unterminated.items[0].fields = 5;
+    assert(restoreTimelineBlob(unterminated));
+    Print sanitizedOut;
+    appendTimelineJsonl(sanitizedOut);
+    assert(sanitizedOut.buf.find("\"kind\":\"CFG\"") != std::string::npos);
+
+    // 5. Seed migration from legacy cfglog when NVS timeline key does not exist yet.
+    for (auto& slot : gTimeline) slot = TimelineEntry{};
+    gTimelineCount = 0;
+    gTimelineWrite = 0;
+    for (auto& c : gConfigHistory) c = ConfigChange{};
+    strlcpy(gConfigHistory[0].ts, "2026-11-27T10:00:00+0800", 32);
+    strlcpy(gConfigHistory[0].source, "config", 16);
+    strlcpy(gConfigHistory[0].md5, "m1", 33);
+    gConfigHistory[0].bytes = 100;
+    gConfigHistory[0].fields = 2;
+
+    strlcpy(gConfigHistory[1].ts, "2026-11-27T11:00:00+0800", 32);
+    strlcpy(gConfigHistory[1].source, "preset", 16);
+    strlcpy(gConfigHistory[1].md5, "m1", 33);  // duplicate md5 -> coalesced to newer
+    gConfigHistory[1].bytes = 100;
+    gConfigHistory[1].fields = 2;
+
+    strlcpy(gConfigHistory[2].ts, "2026-11-27T12:00:00+0800", 32);
+    strlcpy(gConfigHistory[2].source, "payload", 16);
+    strlcpy(gConfigHistory[2].md5, "m2", 33);
+    gConfigHistory[2].bytes = 200;
+    gConfigHistory[2].fields = 4;
+    gConfigCount = 3;
+    gConfigWrite = 3;
+
+    seedTimelineFromConfigHistory();
+    Print seeded;
+    appendTimelineJsonl(seeded);
+    auto seededLines = splitLines(seeded.buf);
+    assert(seededLines.size() == 2);
+    assert(seededLines[0].find("\"m2\"") != std::string::npos);
+    assert(seededLines[1].find("2026-11-27T11:00:00+0800") != std::string::npos);
+    return 0;
+}
+'''
+    san = _sanitizer_flags(cxx)
+    with tempfile.TemporaryDirectory(prefix="fsd-tl-") as tmp:
+        cpp = Path(tmp) / "tl.cpp"
+        exe = Path(tmp) / "tl"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
+             *san, str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        subprocess.run([str(exe)], check=True)
+
+
 def payloads() -> list[str]:
     return PATTERN.findall(HEADER)
 
@@ -746,6 +1038,7 @@ def main() -> None:
     check_upstream_header_capture()
     check_payload_compact_and_sum_parity()
     check_port_policy()
+    check_timeline_persistence()
     print(f"FSD payload: {len(found)} presets, URI matcher {len(true_cases)}/{len(false_cases)} cases, "
           f"TLS chain + reply contract + 443/10010 policy OK")
 

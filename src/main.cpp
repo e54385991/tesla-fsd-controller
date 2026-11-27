@@ -1536,6 +1536,15 @@ static void setupWebServer() {
         fsd_mock::appendConfigHistoryJsonl(*response);
         req->send(response);
     });
+
+    server.on("/api/fsd-mock/timeline", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (!checkToken(req)) { req->send(403, "text/plain", "UNAUTH"); return; }
+        if (rejectOnLowHeap(req)) return;
+        auto* response = req->beginResponseStream("application/x-ndjson");
+        response->addHeader("Cache-Control", "no-store");
+        fsd_mock::appendTimelineJsonl(*response);
+        req->send(response);
+    });
 #endif  // CLIENT_CONFIG_HTTPS_ENABLED
 
     server.begin();
