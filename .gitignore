@@ -14,3 +14,6 @@ CMakeLists.txt
 src/CMakeLists.txt
 worker/counter/.wrangler/
 node_modules/
+tools/hermes-probe/certs/
+tools/hermes-probe/*.jsonl
+hermes-*.jsonl

@@ -205,6 +205,9 @@ amazonaws.com.cn
 - 默认黑名单在重启/恢复默认后生效；启用状态会随当前列表持久化。
 - FSD 下发时可能需要保持开启，让车机认为在线并主动请求配置。
 - 存在被 Tesla 封禁 FSD 权限的风险；风险自担。
+- 更稳妥的“本地 Hermes 桩（不触达 Tesla）”设计与实车探针见
+  [`docs/hermes-local-stub.md`](docs/hermes-local-stub.md) 和
+  [`tools/hermes-probe/`](tools/hermes-probe/)。
 
 **`api-prd.vn.cloud.tesla.cn`（默认黑名单）**
 
