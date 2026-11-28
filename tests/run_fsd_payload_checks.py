@@ -605,10 +605,14 @@ def check_port_policy() -> None:
     assert '"/api/client-config"' in main
     assert "client_config::apiGet" in main
     assert "client_config::apiChange" in main
-    # 443 ClientHello/accept policy must stay identical to aa0a69f8b.
-    assert "config.httpd.max_open_sockets = 1;" in server
-    assert "config.httpd.backlog_conn = 1;" in server
+    # 443 must keep >=2 TLS slots: one car connection is not enough, because
+    # api-prd + mothership are opened in parallel. A single slot made the
+    # second ClientHello wait until the client RST'd it (-0x0050).
+    assert "const uint8_t tlsSlots = (ESP.getPsramSize() > 0) ? 4 : 2;" in server
+    assert "config.httpd.max_open_sockets = tlsSlots;" in server
+    assert "config.httpd.backlog_conn = tlsSlots;" in server
     assert "config.httpd.lru_purge_enable = false;" in server
+    assert "config.httpd.max_open_sockets = 1;" not in server
     assert "config.httpd.keep_alive_interval = 5;" in server
     assert "config.httpd.keep_alive_count = 3;" in server
     assert "config.max_open_sockets = 3;" in server
@@ -636,23 +640,30 @@ def check_port_policy() -> None:
         assert "dnsReset" in text, f"{path}: missing one-click DNS default reset"
     # Default reset is served from the firmware constants, not duplicated JS.
     assert "dnsReset" in main
-    assert "kTeslaMinAllowV8" in main
+    assert "kTeslaMinAllowV9" in main
     assert "kTeslaMinBlockV7" in main
-    # hermes is optional: the default v8 stays "no vehicle control"; the UI
+    # hermes is optional: the default v9 stays "no vehicle control"; the UI
     # checkbox appends it to the end of the current allowlist at runtime.
-    v8 = re.search(r'kTeslaMinAllowV8\s*=\s*"(.*?)";', bridge, re.S)
-    assert v8
-    v8_items = v8.group(1).split()
-    assert "hermes-prd.vn.cloud.tesla.cn" not in v8_items
-    # v8: connman at the head, www.tesla.cn absent, QQ explicit entries added.
-    assert v8_items[0] == "connman.vn.cloud.tesla.cn"
-    assert "www.tesla.cn" not in v8_items
-    assert len(v8_items) == 47
+    v9 = re.search(r'kTeslaMinAllowV9\s*=\s*"(.*?)";', bridge, re.S)
+    assert v9
+    v9_items = v9.group(1).split()
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v9_items
+    # v9: connman at the head, www.tesla.cn absent, QQ + Aliyun NTP entries.
+    assert v9_items[0] == "connman.vn.cloud.tesla.cn"
+    assert "www.tesla.cn" not in v9_items
+    assert len(v9_items) == 50
     for domain in ("qplaycloud.y.qq.com", "y.gtimg.cn", "y.qq.com",
                    "stat6.y.qq.com", "music-file.y.qq.com", "qpic.y.qq.com",
                    "isure6.stream.qqmusic.qq.com",
-                   "isure6-stream-qqmusic.a.bdycdn.cn"):
-        assert domain in v8_items, f"v8 allowlist missing {domain}"
+                   "isure6-stream-qqmusic.a.bdycdn.cn",
+                   "ntp1.aliyun.com", "ntp2.aliyun.com", "ntp3.aliyun.com"):
+        assert domain in v9_items, f"v9 allowlist missing {domain}"
+    # Previous v8 stays for migration detection and must not yet contain NTP.
+    v8 = re.search(r'kTeslaMinAllowV8\s*=\s*"(.*?)";', bridge, re.S)
+    assert v8
+    v8_items = v8.group(1).split()
+    assert len(v8_items) == 47
+    assert "ntp1.aliyun.com" not in v8_items
     # Legacy v7 must stay for migration detection.
     assert 'kTeslaMinAllowV7' in bridge
     b7 = re.search(r'kTeslaMinBlockV7\s*=\s*"(.*?)";', bridge, re.S)
@@ -672,7 +683,7 @@ def check_port_policy() -> None:
         assert domain in b7_items, f"v7 blocklist missing {domain}"
     # hermes must be blocklisted by default but never allowlisted.
     assert "hermes-prd.vn.cloud.tesla.cn" in b7_items
-    assert "hermes-prd.vn.cloud.tesla.cn" not in v8_items
+    assert "hermes-prd.vn.cloud.tesla.cn" not in v9_items
     # Last 5 下发记录 must survive reboot (NVS "cfglog", not a RAM ring).
     mock_src = (ROOT / "src/fsd_mock.cpp").read_text()
     mock_hdr = (ROOT / "include/mod_fsd_mock.h").read_text()
@@ -773,8 +784,8 @@ def check_tls_policy() -> None:
         assert "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y" in text, (
             f"{path.name}: mbedTLS must use default alloc so large TLS buffers spill to PSRAM"
         )
-        assert "CONFIG_LWIP_MAX_SOCKETS=20" in text, (
-            f"{path.name}: lwIP socket pool must accommodate multi-socket 443/4567 + async proxy"
+        assert "CONFIG_LWIP_MAX_SOCKETS=24" in text, (
+            f"{path.name}: lwIP socket pool must accommodate 4-slot 443 + 4567 + async proxy"
         )
         assert "# CONFIG_ESP_HTTPS_SERVER_EVENTS is not set" in text, (
             f"{path.name}: unused HTTPS server event posts should stay disabled"
@@ -870,10 +881,18 @@ def check_tls_policy() -> None:
 
     client_cfg = (ROOT / "src/client_config.cpp").read_text()
     for needle in (
-        'done pass=%d/6',
+        'done pass=%d/%d',
         'http4567-fsd-head',
         'http4567-flow-502',
-        'tls-443-flow',
+        'tls13-443-flow',
+        'tls12-443-flow',
+        'tls-default-negotiate',
+        'tls12-sni-mothership',
+        'tls12-sni-fsdlocal',
+        'tls12-repeat',
+        'tls13-repeat',
+        'concurrent-2sockets',
+        'runConcurrentTlsProbes',
     ):
         assert needle in client_cfg, f"src/client_config.cpp missing selftest probe: {needle}"
 

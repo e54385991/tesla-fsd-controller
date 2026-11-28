@@ -639,8 +639,9 @@ static inline void syncNATState() {
 // Uses the "fsd" namespace (shared with main.cpp) and its own key prefixes
 // (ub_*) to avoid collision.
 
-// Tesla 推荐方案 — 当前 (v8): 基础服务 + 百度地图 + QQ/网易云/Apple Music
-// + 豆包（Doubao）相关域名。
+// Tesla 推荐方案 — 当前 (v9): 基础服务 + 百度地图 + QQ/网易云/Apple Music
+// + 豆包（Doubao）相关域名 + 阿里云 NTP。
+// v9 相比 v8：新增 ntp1/2/3.aliyun.com，保证车机时间同步可用。
 // v7 相比 v6：把 connman.vn.cloud.tesla.cn 加回白名单首位（用户指定）；
 // www.tesla.cn 仍不放行。黑名单沿用 v6（含 assistant-api.prd.cnn1）。
 // 默认额外放行车机常用流媒体，避免音乐/导航因白名单过窄而不可用。
@@ -657,21 +658,24 @@ static inline void syncNATState() {
 //     或断开 Wi-Fi。
 //
 // ⚠️ 一键恢复默认通过 /api/wifi-bridge/set?dnsReset=allow|block|all 直接使用
-//    本文件的 kTeslaMinAllowV8 / kTeslaMinBlockV7，前端不再维护重复的预设常量。
-// v8 默认 allowlist：在 v7 基础上补上 QQ 音乐显式域名
-// （父域规则已覆盖，这里按用户要求显式列出）。
+//    本文件的 kTeslaMinAllowV9 / kTeslaMinBlockV7，前端不再维护重复的预设常量。
+// v9 默认 allowlist：在 v8 基础上加入阿里云 NTP，车机时间同步常用。
+static const char* kTeslaMinAllowV9 =
+    "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com ntp1.aliyun.com ntp2.aliyun.com ntp3.aliyun.com";
+
+// v8 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v9
 static const char* kTeslaMinAllowV8 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn qplaycloud.y.qq.com y.gtimg.cn y.qq.com stat6.y.qq.com music-file.y.qq.com qpic.y.qq.com isure6.stream.qqmusic.qq.com isure6-stream-qqmusic.a.bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
 
-// v7 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v8
+// v7 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v9
 static const char* kTeslaMinAllowV7 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
 
-// v6 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v7
+// v6 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v9
 static const char* kTeslaMinAllowV6 =
     "nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
 
-// v5 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v7
+// v5 默认 allowlist — 仅用于识别未自定义过的配置并迁移到 v9
 static const char* kTeslaMinAllowV5 =
     "connman.vn.cloud.tesla.cn nav-prd-maps.tesla.cn media-server-me.tesla.cn maps-cn-prd.go.tesla.services www.tesla.cn volcengine.com volces.com volcengineapi.com volccdn.com baidu.com bdimg.com bcebos.com qq.com qlogo.cn gtimg.cn qpic.cn tencentmusic.com bdycdn.cn 163.com 126.com 126.net netease.com 163jiasu.com 163yun.com *.apple.com mzstatic.com doubao.com doubao.cn doubaoapps.com doubaocdn.com butterflyai.cn butterfly-static.cn picpic-ai.cn pixeldance.com byteimg.com bytescm.com bytednsdoc.com pstatp.com snssdk.com bytedance.com";
 
@@ -751,7 +755,7 @@ static inline void wifiBridgeLoadConfig() {
     // the ub_init flag persists so we never overwrite their choices.
     if (!initialized) {
         gDnsFilterCfg.enabled = true;
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV9);
         wifiBridgeCopyStr(gDnsFilterCfg.blocklist, sizeof(gDnsFilterCfg.blocklist), kTeslaMinBlockV7);
         dnsPublishApInternetPolicy(gDnsFilterCfg);
         Preferences p2;
@@ -764,9 +768,9 @@ static inline void wifiBridgeLoadConfig() {
         return;
     }
 
-    // Migration: 老用户如果 allowlist 完全等于 v1~v7 默认值（未自定义过），
-    // 自动升级到 v8。黑名单只要仍是旧默认值（v3/v4/v5/v6）就升级到 v7
-    // （新增遥测/文件/升级等端点与 hermes 默认阻断）；用户改过则不动。
+    // Migration: 老用户如果 allowlist 完全等于 v1~v8 默认值（未自定义过），
+    // 自动升级到 v9（新增阿里云 NTP）。黑名单只要仍是旧默认值（v3/v4/v5/v6）
+    // 就升级到 v7（新增遥测/文件/升级等端点与 hermes 默认阻断）；用户改过则不动。
     bool allowChanged = false;
     bool blockChanged = false;
     if (strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV1) == 0 ||
@@ -775,8 +779,9 @@ static inline void wifiBridgeLoadConfig() {
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV4) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV5) == 0 ||
         strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV6) == 0 ||
-        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV7) == 0) {
-        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV8);
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV7) == 0 ||
+        strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV8) == 0) {
+        wifiBridgeCopyStr(gDnsFilterCfg.allowlist, sizeof(gDnsFilterCfg.allowlist), kTeslaMinAllowV9);
         allowChanged = true;
     }
     if (strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV3) == 0 ||

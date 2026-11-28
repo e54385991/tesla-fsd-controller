@@ -415,15 +415,18 @@ static bool startFsdHttps() {
     config.httpd.max_resp_headers = kFsdMaxRespHeaders;
     config.httpd.core_id = 0;
     config.httpd.stack_size = 12288;  // IDF 6.1.1 PSA/mbedTLS 4 needs more than 10240
-    // ClientHello/accept policy is identical to aa0a69f8b:
-    // One vehicle TLS socket at a time. A second concurrent car connection
-    // plus the upstream esp_http_client TLS context can exhaust internal RAM.
-    // Do NOT lru-purge: under bursts, purging causes a handshake storm and
-    // mbedtls_ssl_handshake -0x0084 / -0x7F00 (esp-aes / SSL alloc failed).
-    // Queue one reconnect and refuse the rest; keep-alive idle is short so the
-    // socket frees quickly.
-    config.httpd.max_open_sockets = 1;
-    config.httpd.backlog_conn = 1;  // serialize reconnects; car uses one TLS socket
+    // The car opens api-prd and mothership TLS connections in parallel. With a
+    // single slot the second ClientHello waits behind the first keep-alive
+    // socket; the client gives up and sends RST, which mbedTLS reports as
+    // MBEDTLS_ERR_NET_CONN_RESET (-0x0050). Give the vehicle enough slots for
+    // its parallel connections plus one retry/browser probe. PSRAM-backed
+    // mbedTLS sessions cost ~20-30 KB each; on a board without PSRAM fall
+    // back to two slots to protect the internal heap.
+    // Do NOT lru-purge: evicting an active car socket causes the same reset
+    // and a handshake storm. Four slots remove the queueing that produced it.
+    const uint8_t tlsSlots = (ESP.getPsramSize() > 0) ? 4 : 2;
+    config.httpd.max_open_sockets = tlsSlots;
+    config.httpd.backlog_conn = tlsSlots;
     config.httpd.lru_purge_enable = false;
     config.httpd.keep_alive_enable = true;
     config.httpd.keep_alive_idle = 5;
@@ -802,13 +805,16 @@ static bool sendFsdHeadOnTls(esp_tls_t* tls, const char* connectionHdr,
 
 static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
                                 bool keepOpen, int extraKeepAliveReqs,
-                                esp_tls_t** outKeep) {
+                                esp_tls_t** outKeep, bool verifyPeer = true,
+                                uint32_t timeoutMs = 4000) {
     if (outKeep) *outKeep = nullptr;
     esp_tls_cfg_t cfg = {};
-    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
-    cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
-    cfg.common_name = "api-prd.vn.cloud.tesla.cn";
-    cfg.timeout_ms = 4000;
+    if (verifyPeer) {
+        cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
+        cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
+        cfg.common_name = "api-prd.vn.cloud.tesla.cn";
+    }
+    cfg.timeout_ms = timeoutMs;
     cfg.tls_version = ver;
 
     const uint32_t t0 = millis();
@@ -863,6 +869,121 @@ static bool runLoopbackTlsProbe(esp_tls_proto_ver_t ver, const char* label,
     } else {
         esp_tls_conn_destroy(tls);
     }
+    return ok;
+}
+
+// Handshake-only probe used for version negotiation and SNI coverage. It does
+// not send an HTTP request, so it isolates the TLS layer from the FSD handler.
+static bool runLoopbackTlsHandshakeProbe(esp_tls_proto_ver_t ver, const char* commonName,
+                                         const char* label, const char* expectVersion) {
+    esp_tls_cfg_t cfg = {};
+    cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
+    cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
+    cfg.common_name = commonName;
+    cfg.timeout_ms = 4000;
+    cfg.tls_version = ver;
+
+    const uint32_t t0 = millis();
+    esp_tls_t* tls = esp_tls_init();
+    if (!tls) {
+        Serial.printf("[fsd-selftest] %s FAIL alloc\n", label);
+        return false;
+    }
+    const int rc = esp_tls_conn_new_sync("127.0.0.1", 9, kFsdPort, &cfg, tls);
+    const uint32_t hsMs = millis() - t0;
+    const char* tlsVer = "?";
+    const char* cipher = "?";
+    if (rc == 1) {
+        auto* ssl = static_cast<mbedtls_ssl_context*>(esp_tls_get_ssl_context(tls));
+        if (ssl) {
+            const char* v = mbedtls_ssl_get_version(ssl);
+            const char* c = mbedtls_ssl_get_ciphersuite(ssl);
+            if (v) tlsVer = v;
+            if (c) cipher = c;
+        }
+    }
+    const bool versionOk = !expectVersion || strcmp(tlsVer, expectVersion) == 0;
+    const bool ok = rc == 1 && versionOk;
+    Serial.printf("[fsd-selftest] %s %s ver=%s cipher=%s expect=%s hs=%lums heap=%u minHeap=%u\n",
+                  label, ok ? "PASS" : "FAIL", tlsVer, cipher,
+                  expectVersion ? expectVersion : "-",
+                  static_cast<unsigned long>(hsMs),
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    esp_tls_conn_destroy(tls);
+    return ok;
+}
+
+struct ConcurrentTlsProbe {
+    esp_tls_proto_ver_t ver;
+    const char* label;
+    volatile bool done;
+    bool ok;
+};
+
+static void concurrentTlsProbeTask(void* arg) {
+    auto* job = static_cast<ConcurrentTlsProbe*>(arg);
+    // Skip peer-certificate verification here: P-384 verification on the same
+    // ESP32 competes with the server's P-384 signature and made this test a
+    // CPU/heap benchmark instead of a socket-slot regression. The sequential
+    // tls12/tls13 probes still verify the full chain.
+    job->ok = runLoopbackTlsProbe(job->ver, job->label, false, 0, nullptr,
+                                  false, 8000);
+    job->done = true;
+    vTaskDelete(nullptr);
+}
+
+// Regression guard for the single-socket bug: the car opens api-prd and
+// mothership TLS connections in parallel. With max_open_sockets=1 the second
+// ClientHello waited for the first keep-alive socket, the peer RSTs, and
+// esp-tls logged -0x0050. Two concurrent probes (the car's two connections)
+// must both complete against the four-slot listener.
+static bool runConcurrentTlsProbes(const char* label) {
+    static ConcurrentTlsProbe jobs[] = {
+        {ESP_TLS_VER_TLS_1_2, "concurrent-t12", false, false},
+        {ESP_TLS_VER_TLS_1_3, "concurrent-t13", false, false},
+    };
+    for (auto& job : jobs) {
+        job.done = false;
+        job.ok = false;
+    }
+
+    size_t created = 0;
+    for (auto& job : jobs) {
+        if (xTaskCreatePinnedToCore(concurrentTlsProbeTask, "TlsProbe", 8192,
+                                    &job, 1, nullptr, 1) != pdPASS) {
+            Serial.printf("[fsd-selftest] %s FAIL task_create at %u\n",
+                          label, static_cast<unsigned>(created));
+            break;
+        }
+        ++created;
+    }
+    if (created == 0) return false;
+
+    const uint32_t deadline = millis() + 30000;
+    while (millis() < deadline) {
+        bool allDone = true;
+        for (size_t i = 0; i < created; ++i) {
+            if (!jobs[i].done) {
+                allDone = false;
+                break;
+            }
+        }
+        if (allDone) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    bool ok = true;
+    size_t doneCount = 0;
+    for (size_t i = 0; i < created; ++i) {
+        if (!jobs[i].done || !jobs[i].ok) ok = false;
+        if (jobs[i].done) ++doneCount;
+    }
+    Serial.printf("[fsd-selftest] %s %s created=%u done=%u/%u\n",
+                  label, ok ? "PASS" : "FAIL",
+                  static_cast<unsigned>(created),
+                  static_cast<unsigned>(doneCount),
+                  static_cast<unsigned>(created));
     return ok;
 }
 
@@ -924,13 +1045,13 @@ static bool runLoopbackPlainHttpProbe(const char* label, const char* rawReq,
     return ok;
 }
 
-static bool runLoopbackTlsFlowProbe(const char* label) {
+static bool runLoopbackTlsFlowProbe(const char* label, esp_tls_proto_ver_t ver) {
     esp_tls_cfg_t cfg = {};
     cfg.cacert_buf = reinterpret_cast<const unsigned char*>(kFsdTlsCaCertificate);
     cfg.cacert_bytes = strlen(kFsdTlsCaCertificate) + 1;
     cfg.common_name = "api-prd.vn.cloud.tesla.cn";
     cfg.timeout_ms = 4000;
-    cfg.tls_version = ESP_TLS_VER_TLS_1_3;
+    cfg.tls_version = ver;
 
     const uint32_t t0 = millis();
     esp_tls_t* tls = esp_tls_init();
@@ -986,22 +1107,55 @@ static bool runLoopbackTlsFlowProbe(const char* label) {
 
 static void fsdSelfTestTask(void*) {
     int passed = 0;
-    Serial.printf("[fsd-selftest] start heap=%u minHeap=%u\n",
-                  static_cast<unsigned>(ESP.getFreeHeap()),
-                  static_cast<unsigned>(ESP.getMinFreeHeap()));
-    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "tls12-verify", false, 0, nullptr)) ++passed;
-    if (runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-verify", false, 0, nullptr)) ++passed;
+    int total = 0;
+    auto record = [&](bool ok) {
+        ++total;
+        if (ok) ++passed;
+        return ok;
+    };
 
-    // aa0a69f8b single-socket policy: verify keep-alive reuse (2 requests on
-    // sockA) and immediate slot release on close so sockB is accepted right away.
+    Serial.printf("[fsd-selftest] start heap=%u minHeap=%u psram=%u\n",
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()),
+                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+
+    // Version matrix: forced TLS 1.2, forced TLS 1.3, and the default
+    // negotiation path. The default must choose TLS 1.3 when both are enabled.
+    record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "tls12-verify", false, 0, nullptr));
+    record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-verify", false, 0, nullptr));
+    record(runLoopbackTlsHandshakeProbe(ESP_TLS_VER_ANY, "api-prd.vn.cloud.tesla.cn",
+                                        "tls-default-negotiate", "TLSv1.3"));
+
+    // SNI coverage: the static leaf carries api-prd, mothership and fsd.local.
+    record(runLoopbackTlsHandshakeProbe(ESP_TLS_VER_TLS_1_2, "mothership.vn.teslamotors.com",
+                                        "tls12-sni-mothership", "TLSv1.2"));
+    record(runLoopbackTlsHandshakeProbe(ESP_TLS_VER_TLS_1_2, "fsd.local",
+                                        "tls12-sni-fsdlocal", "TLSv1.2"));
+
+    // Repeated handshakes catch slot leaks and the TLS1.3->1.2 fallback path.
+    for (int i = 0; i < 3; ++i) {
+        char label[32];
+        snprintf(label, sizeof(label), "tls12-repeat%d", i + 1);
+        record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, label, false, 0, nullptr));
+        snprintf(label, sizeof(label), "tls13-repeat%d", i + 1);
+        record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, label, false, 0, nullptr));
+    }
+
+    // Keep-alive reuse (2 requests on sockA) and immediate slot release on
+    // close so sockB is accepted right away.
     esp_tls_t* sockA = nullptr;
-    const bool okA = runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "serial-sockA-keepalive", true, 1, &sockA);
+    const bool okA = record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "serial-sockA-keepalive",
+                                                true, 1, &sockA));
     if (sockA) esp_tls_conn_destroy(sockA);
-    const bool okB = okA && runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "serial-sockB-reconnect", false, 0, nullptr);
-    if (okA && okB) ++passed;
+    bool okB = false;
+    if (okA) {
+        okB = runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_2, "serial-sockB-reconnect",
+                                  false, 0, nullptr);
+    }
+    record(okB);
 
     if (mothershipHttpStarted()) {
-        if (runLoopbackPlainHttpProbe(
+        record(runLoopbackPlainHttpProbe(
                 "http4567-fsd-head",
                 "HEAD /feature_configuration HTTP/1.1\r\nHost: mothership.local\r\nConnection: close\r\n\r\n",
                 false,
@@ -1019,10 +1173,8 @@ static void fsdSelfTestTask(void*) {
                            strstr(resp, "200 OK") != nullptr &&
                            strstr(resp, expectedLenHdr) != nullptr &&
                            strstr(resp, expectedMd5Hdr) != nullptr;
-                })) {
-            ++passed;
-        }
-        if (runLoopbackPlainHttpProbe(
+                }));
+        record(runLoopbackPlainHttpProbe(
                 "http4567-flow-502",
                 "GET /api/1/test HTTP/1.1\r\nHost: mothership.local\r\nConnection: keep-alive\r\n\r\n",
                 true,
@@ -1033,20 +1185,20 @@ static void fsdSelfTestTask(void*) {
                            strstr(resp, "Content-Type: text/html\r\n") != nullptr &&
                            strstr(resp, "Connection: close\r\n") != nullptr &&
                            strstr(resp, "[Errno 113] No route to host") != nullptr;
-                })) {
-            ++passed;
-        }
+                }));
     } else {
         Serial.println("[fsd-selftest] http4567 SKIP not_started");
     }
 
-    if (runLoopbackTlsFlowProbe("tls-443-flow") &&
-        runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-post-flow", false, 0, nullptr)) {
-        ++passed;
-    }
+    record(runLoopbackTlsFlowProbe("tls13-443-flow", ESP_TLS_VER_TLS_1_3));
+    record(runLoopbackTlsFlowProbe("tls12-443-flow", ESP_TLS_VER_TLS_1_2));
+    record(runLoopbackTlsProbe(ESP_TLS_VER_TLS_1_3, "tls13-post-flow", false, 0, nullptr));
 
-    Serial.printf("[fsd-selftest] done pass=%d/6 heap=%u minHeap=%u\n",
-                  passed,
+    // Regression for mbedtls_ssl_handshake -0x0050 with max_open_sockets=1.
+    record(runConcurrentTlsProbes("concurrent-2sockets"));
+
+    Serial.printf("[fsd-selftest] done pass=%d/%d heap=%u minHeap=%u\n",
+                  passed, total,
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()));
     gSelfTestRunning = false;

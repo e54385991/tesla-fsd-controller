@@ -1284,7 +1284,7 @@ static void setupWebServer() {
                 req->send(400, "text/plain", "invalid dnsReset");
                 return;
             }
-            if (resetAllow) { allowVal = kTeslaMinAllowV8; hasAllow = true; }
+            if (resetAllow) { allowVal = kTeslaMinAllowV9; hasAllow = true; }
             if (resetBlock) { blockVal = kTeslaMinBlockV7; hasBlock = true; }
         }
         if (req->hasParam("dnsAllow")) {

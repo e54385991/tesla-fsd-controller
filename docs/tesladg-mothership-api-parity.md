@@ -187,7 +187,7 @@ Both UIs show the last error and the success/failure counts.
 | Upstream response body | streamed | streamed, capped at 256 KB / 15 s per request |
 | `HEAD` / `204` / `304` framing | headers only, no body | `HEAD` on FSD reply sends `Content-Length: <bytes>` + 0 body bytes; upstream `HEAD`/`204`/`304`/empty sends clean `Content-Length: 0` |
 | Incoming `Transfer-Encoding: chunked` | de-chunked | replies normally and sets `Connection: close` so unconsumed chunk bytes cannot desync keep-alive |
-| Concurrency | multi-connection | `max_open_sockets=1`, `backlog_conn=1` on 443 (intentional ESP32-S3 RAM guard); 4567 uses 3 sockets |
+| Concurrency | multi-connection | 443 uses 4 TLS sockets with PSRAM (`backlog_conn=4`, 2 without PSRAM) so parallel api-prd/mothership handshakes do not queue into `-0x0050`; 4567 uses 3 sockets |
 | HTTP version | HTTP/1.1 or HTTP/2 (ALPN) | HTTP/1.1 only (no ALPN advertisement) |
 | Connection strategy | `lazy` (PC launcher) | connect on first request; no idle upstream connection |
 
@@ -317,7 +317,7 @@ access. Old v3/v4 default blocklists migrate automatically.
 
 The allowlist and blocklist each have a one-click **Restore Default** action in
 all three UIs. It calls `/api/wifi-bridge/set?dnsReset=allow|block|all`, which
-reads `kTeslaMinAllowV8` / `kTeslaMinBlockV7` directly and re-enables DNS
+reads `kTeslaMinAllowV9` / `kTeslaMinBlockV7` directly and re-enables DNS
 filtering; the old preset buttons have been removed.
 
 ## Verification commands

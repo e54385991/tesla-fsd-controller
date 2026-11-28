@@ -64,6 +64,8 @@ def check_static_contracts() -> None:
     assert "DNSServer" not in MAIN_SRC and "driver/twai.h" not in MAIN_SRC and "canTask" not in MAIN_SRC
     assert "WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N" in MAIN_SRC, "SoftAP should drop legacy 802.11b"
     assert "strcmp(gDnsFilterCfg.blocklist, kTeslaMinBlockV6) == 0" in BRIDGE_SRC, "v6 blocklist must migrate to v7"
+    assert "strcmp(gDnsFilterCfg.allowlist, kTeslaMinAllowV8) == 0" in BRIDGE_SRC, "v8 allowlist must migrate to v9"
+    assert "kTeslaMinAllowV9);" in BRIDGE_SRC, "migration must land on the v9 allowlist"
 
     s3_cfg = (ROOT / "sdkconfig.esp32s3-waveshare-wifi").read_text()
     for needle in (
@@ -73,7 +75,7 @@ def check_static_contracts() -> None:
         "CONFIG_ESP_WIFI_RX_BA_WIN=16",
         "CONFIG_ESP_WIFI_TX_BA_WIN=16",
         "CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=y",
-        "CONFIG_LWIP_MAX_SOCKETS=20",
+        "CONFIG_LWIP_MAX_SOCKETS=24",
         "CONFIG_SPIRAM=y",
         "CONFIG_SPIRAM_IGNORE_NOTFOUND=y",
         "CONFIG_LWIP_UDP_RECVMBOX_SIZE=32",
@@ -302,7 +304,7 @@ int main() {
     assert(Preferences::booleans.at("ub_init"));
     assert(publishedDnsConfigs.size() == 1);
     assert(publishedDnsConfigs.back().enabled);
-    assert(std::strcmp(publishedDnsConfigs.back().allowlist, kTeslaMinAllowV8) == 0);
+    assert(std::strcmp(publishedDnsConfigs.back().allowlist, kTeslaMinAllowV9) == 0);
 
     Preferences::booleans["ub_dnsEn"] = false;
     Preferences::strings["ub_allow"] = "custom.example";
@@ -498,7 +500,7 @@ def main() -> None:
     ]
     extracted = "\n".join(extract_function(BRIDGE_SRC, s) for s in signatures)
     load_signature = "static inline void wifiBridgeLoadConfig("
-    extracted += "\n" + BRIDGE_SRC[BRIDGE_SRC.index("static const char* kTeslaMinAllowV8"):
+    extracted += "\n" + BRIDGE_SRC[BRIDGE_SRC.index("static const char* kTeslaMinAllowV9"):
                                     BRIDGE_SRC.index(load_signature)]
     extracted += extract_function(BRIDGE_SRC, load_signature)
     sys_stats_src = (ROOT / "include/mod_sys_stats.h").read_text()

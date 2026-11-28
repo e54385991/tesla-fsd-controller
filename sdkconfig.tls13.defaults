@@ -18,8 +18,10 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # TLS + NAPT + OTA (NAPT L3 forwarding bypasses local TCP buffers).
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
-# 20 BSD sockets: 443 (1+1+3) + 4567 (1+1+3) + DNS (2) + async proxy (2) + headroom.
-CONFIG_LWIP_MAX_SOCKETS=20
+# 24 BSD sockets: 443 (4 client + listen/ctrl) + 4567 (3+listen/ctrl) + DNS (2)
+# + async proxy (2) + OTA/headroom. Four 443 slots are required for parallel
+# api-prd/mothership handshakes; 20 left no margin once the pool was shared.
+CONFIG_LWIP_MAX_SOCKETS=24
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64

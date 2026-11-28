@@ -26,7 +26,7 @@
 | 管理面板 | `http://9.9.9.9:10010/` |
 | mDNS | `http://fsd.local:10010/` |
 | DNS 过滤 | 首次启动默认开启 |
-| 默认白名单 | 47 条基础 / 地图 / QQ 音乐 / 网易云 / 豆包域名；hermes 车控可选（见下文） |
+| 默认白名单 | 50 条基础 / 地图 / QQ 音乐 / 网易云 / 豆包 / 阿里云 NTP 域名；hermes 车控可选（见下文） |
 | 默认黑名单 | 12 条：控车/配置、母舰、语音助手、遥测、hermes、升级与 `amazonaws.com.cn`（见下文） |
 | FSD 下发 | 默认关闭（可在面板一键开启，`reply` 模式，443/4567 按需启停） |
 
@@ -116,13 +116,17 @@ Windows 把串口换成 `COMx`。ESP32-S3 进入下载模式：按住 **BOOT**�
 
 ### 默认白名单
 
-首次启动会写入以下 47 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
+首次启动会写入以下 50 条规则。固件内部用空格分隔，这里按类别换行，方便阅读和复制：
 
 ```text
 connman.vn.cloud.tesla.cn
 nav-prd-maps.tesla.cn
 media-server-me.tesla.cn
 maps-cn-prd.go.tesla.services
+
+ntp1.aliyun.com
+ntp2.aliyun.com
+ntp3.aliyun.com
 
 volcengine.com
 volces.com
@@ -174,7 +178,7 @@ snssdk.com
 bytedance.com
 ```
 
-> 说明：v8 在 v7 基础上显式补上 QQ 音乐域名（父域规则已覆盖，按需显式列出）；仍不放行 `www.tesla.cn`。老版本默认列表会自动迁移到 v8，自定义过的列表不动。`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
+> 说明：v9 在 v8 基础上加入阿里云 NTP（`ntp1/2/3.aliyun.com`），保证车机时间同步可用；v8 曾显式补上 QQ 音乐域名，仍不放行 `www.tesla.cn`。老版本默认列表会自动迁移到 v9，自定义过的列表不动。`baidu.com` / `bdimg.com` / `bcebos.com` 覆盖百度地图与 CDN；`qq.com` 覆盖 QQ 音乐全部子域；`163.com` / `126.com` / `126.net` / `netease.com` 覆盖网易云音乐；`*.apple.com` 覆盖 Apple Music 子域，`mzstatic.com` 覆盖封面与静态资源；豆包及字节 CDN 均使用父域规则，天然覆盖其所有子域。
 
 ### 默认黑名单
 
@@ -307,13 +311,33 @@ CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说�
 - 443 使用与 Windows `--emudhra` 相同的 eMudhra 证书材料，而不是 mitmproxy 自签 CA。CA 链（EM OV TLS CA - G3C → emSign Root TLS CA - G3 → emSign ECC Root CA - G3，加 AAA 交叉签名）和私钥与 mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` 逐字节一致；车机通常已信任 emSign 根，无需安装证书。
 - Windows 版由 mitmproxy 按 SNI + 上游证书动态生成约 199 天有效期的叶子证书；ESP32 使用一张静态叶子证书（同样的 CA 私钥/公钥、issuer、EKU、AKI，CN=`api-prd.vn.cloud.tesla.cn`，SAN 为 api-prd 上游域名集合 + 两个 `mothership` + `fsd.local`/`9.9.9.9`/`127.0.0.1`）。静态叶子沿用 `certs2/mitmproxy-ca-cert.pem` 的 CA 日期窗口 2026-11-07 → 2036-11-04，仅用于避免设备过期；签发者仍是 `EM OV TLS CA - G3C`，不是 `certs2` 的自签 mitmproxy CA。因此叶子证书不可能与 PC 每次动态生成的叶子逐字节相同，但链、密钥和校验结果一致。
 - 如果车机不信任，可通过串口发送 `client-config` 导出信任包（`emSign ECC Root CA - G3` + `EM OV TLS CA - G3C` + `emSign Root TLS CA - G3`，共 3 张），装进车机信任库。不要安装 TeslaDG `certs2/mitmproxy-ca-cert.*`：那是 mitmproxy 自签 CA，`--emudhra` 模式下不在证书链里。
-- 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回 mitmproxy 风格的 `502 Bad Gateway` HTML（`Server: mitmproxy 12.3.1`、`Content-Type: text/html`、`Connection: close`），不是 JSON。ESP32 专有的 413/400/500 快速失败仍返回 JSON。
+- 443 默认保留 **4 个 TLS socket**（无 PSRAM 的板子回退为 2 个）：车机会并行打开 `api-prd` 与 `mothership` 连接，单 socket 会让第二条握手排队到超时，客户端 RST 后表现为 `mbedtls_ssl_handshake returned -0x0050`。上游未连接时，非 FSD 路径返回 mitmproxy 风格的 `502 Bad Gateway` HTML（`Server: mitmproxy 12.3.1`、`Content-Type: text/html`、`Connection: close`），不是 JSON。ESP32 专有的 413/400/500 快速失败仍返回 JSON。
 
 ### TLS 版本
 
 - **ESP32-S3 Wi-Fi 版**：Arduino 4.0.0 / ESP-IDF 6.1.1 / mbedTLS 4.0，支持 **TLS 1.2 + TLS 1.3**，车机支持时优先协商 1.3。
 - **标准 ESP32 / esp32-wifi**：同样是 Arduino 4.0.0 / ESP-IDF 6.1.1 / mbedTLS 4.0，TLS 1.2 + 1.3；该环境不启用 FSD 443 下发。
 - TLS 1.0 / 1.1 已禁用；本项目按 TLS 1.2 + 1.3 对齐。
+- `-0x0050` 是 mbedTLS 的 `MBEDTLS_ERR_NET_CONN_RESET`（对端在握手期间 RST/关闭 TCP），不是编译错误。443 的 4-slot 策略修复了车机并发连接排队导致的该错误；偶发的客户端主动断开仍会记录为 abort，不影响 FSD 下发。
+
+### TLS 兼容性测试
+
+先在管理页开启 FSD mock（443 监听器运行），然后在连接到设备热点（`9.9.9.9`）的手机/电脑上运行外部矩阵：
+
+```sh
+python3 tests/run_tls_matrix.py --host 9.9.9.9 --rounds 10 --concurrency 4
+```
+
+覆盖 TLS 1.2、TLS 1.3、默认协商、TLS 1.0/1.1 拒绝、api-prd/mothership/fsd.local SNI、无 SNI、ALPN h2 回退、keep-alive、并发握手。
+
+在 USB 串口上运行设备内矩阵（TLS 1.2/1.3/默认协商、SNI、重复握手、443 代理流程、2 路并发——模拟车机 api-prd + mothership）：
+
+```sh
+uv run --with pyserial tests/run_device_tls_selftest.py --port /dev/cu.usbmodem21201
+```
+
+任一 `FAIL` 都会以非零退出码结束，适合升级后做回归。本次修复前后的完整数据见
+[`docs/tls-matrix-2026-11-28.md`](docs/tls-matrix-2026-11-28.md)。
 
 ### 常用接口
 

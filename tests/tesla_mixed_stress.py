@@ -7,7 +7,7 @@ Runs alongside tests/fsd_stability_probe.py and deliberately mixes:
     telemetry, navigation, media, software, auth, energy, ...)
   * GET/POST/PUT/DELETE/HEAD/OPTIONS, realistic Tesla headers
   * different SNI values, TLS 1.2/1.3, ALPN h2, no-SNI
-  * short concurrent bursts to overflow the single 443 socket
+  * short concurrent bursts to exercise the four-slot 443 budget
   * malformed TLS/HTTP probes that must be rejected without bricking
   * management-page/API concurrency on 10010
   * DNS A/AAAA/TXT/ANY and malformed queries on 53
@@ -368,9 +368,9 @@ class Stress:
             # Any HTTP response is fine for non-FSD / negative-path probes.
             if not (100 <= (res.get("status") or 0) <= 599):
                 problems.append(f"status={res.get('status')}")
-        # Inside a concurrent burst the device intentionally keeps only one
-        # 443 socket, so remote disconnects / 502s are expected backpressure,
-        # not a firmware failure.
+        # Inside a concurrent burst the device has four 443 TLS slots. A
+        # larger burst can still see backpressure; remote disconnects / 502s
+        # are soft results, not a firmware failure.
         soft = bool(problems) and (not fsd_expected or concurrent)
         ok = not problems
         bucket = "ok" if ok else ("soft" if soft else "error")
@@ -476,7 +476,7 @@ class Stress:
         time.sleep(2)
         # Recovery: after a concurrent burst, a single canonical FSD request
         # and a health poll must succeed. Retry three times before declaring a
-        # hard failure (the device intentionally keeps one TLS socket).
+        # hard failure (bursts above four 443 sockets may still backpressure).
         for attempt in range(3):
             if self.run_tls("POST", FSD_PATHS[0], tag="fsd", body=b"{}"):
                 self.log("burst", True, note="FSD recovered", attempt=attempt + 1)

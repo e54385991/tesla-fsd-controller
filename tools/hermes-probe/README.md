@@ -175,9 +175,9 @@ The standalone probe is the gate. If it passes:
   small always-on Linux companion (Pi Zero 2 W, old phone, mini PC). The ESP32
   then needs a per-host DNS answer for the Hermes names.
 - **Not recommended initially:** implement TLS + WebSocket + protobuf on the
-  ESP32-S3. The current 443 listener uses `max_open_sockets=1`; a long-lived
-  WebSocket plus a configuration request needs at least two TLS sockets, and
-  the stress-test heap margin is already thin.
+  ESP32-S3. The current 443 listener uses 4 TLS slots with PSRAM (2 without),
+  enough for a long-lived WebSocket plus configuration requests, but the
+  stress-test heap margin still needs per-board validation.
 - **Fallback if pinning:** keep Hermes blocked and use a short, explicit
   one-shot window only when configuration must be refreshed. Do not run a
   permanent allowlist.

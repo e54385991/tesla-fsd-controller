@@ -43,8 +43,9 @@ ESP32 / Linux AP（DNS + NAT + 防火墙）
    `hermes-prd`、`hermes-stream-prd`、`signaling`、`hermes-prd1` 等不同名字，先抓
    DNS 再决定，不要凭假设。
 4. **443 需要至少两个并发 TLS socket**：一个长连接 WebSocket，一个
-   `/feature_configuration` 请求。现有 ESP32 的 `max_open_sockets=1` 不满足，
-   因此第一阶段用独立 Linux 探针，不建议直接改生产固件。
+   `/feature_configuration` 请求。现在 ESP32 的 443 在 PSRAM 板子上保留 4 个
+   TLS socket（无 PSRAM 回退为 2 个），满足 WS + 配置 + 重试；仍建议先用独立
+   Linux 探针验证车型行为。
 
 ---
 
@@ -165,9 +166,9 @@ mothership 仍指向 ESP32。
 
 当前约束：
 
-- `src/client_config.cpp` 的 443 是 `max_open_sockets=1`；
-- 长连接 WebSocket 会占满唯一 socket，车机再请求 `/feature_configuration` 需要
-  第二个 TLS socket；
+- `src/client_config.cpp` 的 443 现在是 `tlsSlots = PSRAM ? 4 : 2`；
+- 长连接 WebSocket 占一个 socket 时，车机仍需要第二个 TLS socket 请求
+  `/feature_configuration`，4-slot 策略已预留该余量；
 - 没有 WebSocket handler，`esp_https_server` + `httpd_ws_*` 需要先验证；
 - `kHostCapacity=96`，加 Hermes 域名要改容量/NVS 布局；
 - 压测低水位约 12 KB，再加 WS/Protobuf 风险很高。

@@ -8,7 +8,7 @@ This firmware turns an ESP32 or ESP32-S3 into a dedicated **Wi-Fi Bridge + DNS F
 
 1. **Wi-Fi Bridge (AP + STA + NAPT)**: Connects to a phone hotspot or router (STA) and creates a dedicated AP (`fsd-esp32`, `9.9.9.9/24`) for the vehicle.
 2. **DNS Allowlist / Blocklist + LRU Cache**: Advertises `9.9.9.9` via DHCP DNS, enforces allowlist/blocklist policy with a 32-entry LRU cache, and optionally drops blocked IPs at the lwIP forwarding hook.
-3. **On-Demand FSD Delivery (ESP32-S3)**: Disabled by default to maximize heap headroom for Wi-Fi/NAPT; toggle ON from the web UI (`/`) or `/fsd` panel to start the 443 HTTPS (TLS 1.2/1.3) and 4567 HTTP listeners without rebooting.
+3. **On-Demand FSD Delivery (ESP32-S3)**: Disabled by default to maximize heap headroom for Wi-Fi/NAPT; toggle ON from the web UI (`/`) or `/fsd` panel to start the 443 HTTPS (TLS 1.2/1.3, four TLS slots on PSRAM boards) and 4567 HTTP listeners without rebooting. The extra slots prevent parallel api-prd/mothership handshakes from queueing into `mbedtls_ssl_handshake -0x0050` (peer TCP reset).
 
 > Legacy CAN bus injection, TWAI drivers, vehicle telemetry dashboards, and CAN-only build environments have been completely removed from this repository to save Flash/RAM and dedicate Core 1 to lwIP + DNS.
 
@@ -25,6 +25,22 @@ Each environment produces two files in the repository root:
 |---|---|---|---|
 | `esp32-wifi` | Standard ESP32 | `esp32_wifi_v1.4.35.bin` | Pure Wi-Fi bridge + DNS filter, lean web UI (port `80`), no 443 FSD mock |
 | **`esp32s3-waveshare-wifi`** | **Waveshare ESP32-S3** | **`esp32s3_waveshare_wifi_v1.4.35.bin`** | **Primary build: Wi-Fi bridge + DNS filter + on-demand FSD mock (TLS 1.3), management on port `10010`** |
+
+### TLS compatibility tests
+
+Run the external matrix from a phone/PC connected to the device AP after enabling FSD mock:
+
+```sh
+python3 tests/run_tls_matrix.py --host 9.9.9.9 --rounds 10 --concurrency 4
+```
+
+Run the on-device matrix over USB serial:
+
+```sh
+uv run --with pyserial tests/run_device_tls_selftest.py --port /dev/cu.usbmodem21201
+```
+
+The matrix covers TLS 1.2, TLS 1.3, default negotiation, TLS 1.0/1.1 rejection, api-prd/mothership/fsd.local SNI, no SNI, ALPN h2 fallback, keep-alive, repeated handshakes and parallel connections. Full before/after data: [`docs/tls-matrix-2026-11-28.md`](docs/tls-matrix-2026-11-28.md).
 
 ---
 
