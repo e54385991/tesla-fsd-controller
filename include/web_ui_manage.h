@@ -139,7 +139,7 @@ dialog.box{color:#e6edf3}dialog::backdrop{background:rgba(0,0,0,.72)}
 
   <section class="fsd-only"><h2>FSD 虚拟服务器</h2><div class="body">
     <label><input type="checkbox" id="fsdEn"> 启动 FSD 虚拟服务器（/feature_configuration，默认关闭）</label>
-    <label><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认开启，非阻塞）</label>
+    <label><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认关闭，非阻塞）</label>
     <label>模式</label><select id="fsdMode"><option value="reply">reply（本地回包）</option><option value="observe">observe（只记录并转发）</option></select>
     <div class="dim" id="fsdHealth" style="font-size:12px;margin-top:6px">监听状态：--</div>
     <button class="primary" id="fsdSave">保存 FSD 虚拟服务器设置</button>

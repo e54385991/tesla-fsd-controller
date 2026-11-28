@@ -62,7 +62,7 @@ textarea{height:300px;resize:vertical}
   <section><div class="toolbar" style="align-items:center">
     <button class="btn primary" id="fsdToggleBtn" type="button">启动 FSD 虚拟服务器</button>
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdEn"> 启用 FSD 虚拟服务器（默认关闭）</label>
-    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭</label>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="fsdAutoOff"> 下发成功后延迟 2 分钟自动关闭（默认关闭）</label>
     <span class="dim" id="fsdHealth" style="font-size:12px">443/4567：--</span>
   </div></section>
   <div class="grid">

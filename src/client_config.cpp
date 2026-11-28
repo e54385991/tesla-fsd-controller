@@ -291,12 +291,13 @@ static constexpr size_t kFsdMaxReqHdrLen = 8192;
 static constexpr size_t kFsdMaxUriLen = 1024;
 static constexpr size_t kFsdMaxRespHeaders = 28;
 
-// PC TeslaDG runs a second mitmproxy listener on 4567:
-//   reverse:http://<mothership-ip>:4567 + keep_host_header=true
-// The car's plaintext mothership requests land there, /feature_configuration
-// is answered locally, and everything else is reverse-proxied. A plain HTTP
-// server is much cheaper than a second TLS context, so both listeners share
-// the same fsd_mock handlers.
+// PC TeslaDG runs a second mitmproxy listener on 4567 in router mode:
+//   reverse:http://192.0.2.1:4567 + keep_host_header=true (svc/stack.py)
+// 192.0.2.1 is TEST-NET (unreachable), so every non-FSD mothership request
+// ends in mitmproxy's 502 page instead of reaching Tesla. The car's
+// /feature_configuration is answered locally; everything else gets that 502.
+// A plain HTTP server is much cheaper than a second TLS context, so both
+// listeners share the same fsd_mock handlers.
 static bool startMothershipHttp() {
     if (mothershipServer != nullptr) return true;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -1031,7 +1032,7 @@ static void fsdSelfTestTask(void*) {
                            strstr(resp, "Server: mitmproxy 12.3.1\r\n") != nullptr &&
                            strstr(resp, "Content-Type: text/html\r\n") != nullptr &&
                            strstr(resp, "Connection: close\r\n") != nullptr &&
-                           strstr(resp, "Cannot connect to 192.0.2.1:4567: [Errno 113] No route to host") != nullptr;
+                           strstr(resp, "[Errno 113] No route to host") != nullptr;
                 })) {
             ++passed;
         }
@@ -1062,7 +1063,8 @@ void serviceSerial() {
             if (length < sizeof(command)) {
                 command[length] = '\0';
                 if (strcmp(command, "client-config") == 0) {
-                    // Same trust anchors as TeslaDG/app/certs2 --emudhra.
+                    // Same trust anchors as TeslaDG's --emudhra wire chain
+                    // (not certs2's self-signed mitmproxy CA).
                     Serial.print(kFsdTlsCaCertificate);
                     Serial.printf("\nadmin_token=%s\nclient_token=%s\n", identity.adminToken, identity.clientToken);
                 } else if (strcmp(command, "wifi-ap-only") == 0) {

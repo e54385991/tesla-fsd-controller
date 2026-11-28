@@ -67,6 +67,9 @@ constexpr char kDefaultHosts[] =
 // page instead of reaching Tesla. Match that contract so this listener can
 // never let the cloud rewrite the vehicle's FSD config.
 constexpr char kApiPrdHost[] = "api-prd.vn.cloud.tesla.cn";
+// Blackhole target from TeslaDG svc/stack.py. The 502 body contains only the
+// socket error string, so this constant is kept as the contract marker used by
+// the port-policy test and the selftest comments.
 constexpr char kMothershipBlockedUpstream[] = "192.0.2.1:4567";
 // Before mothership support the persisted default was this single host. Only
 // that exact value is auto-migrated; user-edited host lists are left alone.
@@ -77,7 +80,7 @@ struct Settings {
     uint8_t enabled = 0;  // Default OFF to preserve RAM/network headroom; user toggles ON in UI
     uint8_t mode = static_cast<uint8_t>(Mode::Reply);
     uint8_t flags = kSettingFlagAutoOffSet;
-    uint8_t autoOffOnHit = 1;  // Default ON: auto-disable FSD mock once delivery succeeds
+    uint8_t autoOffOnHit = 0;  // Default OFF like TeslaDG: keep serving until the user disables it
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
 };
@@ -85,7 +88,7 @@ static_assert(sizeof(Settings) == 4 + 4 + kHostCapacity, "Settings NVS layout mu
 
 struct State {
     bool enabled = false;
-    bool autoOffOnHit = true;
+    bool autoOffOnHit = false;
     Mode mode = Mode::Reply;
     char host[kHostCapacity] =
         "api-prd.vn.cloud.tesla.cn mothership.vn.teslamotors.com mothership.vn.cloud.tesla.cn";
@@ -967,7 +970,7 @@ const char* formatStatusLine(int code, char buffer[32]) {
         case 500: return "500 Internal Server Error";
         case 502: return "502 Bad Gateway";
         case 503: return "503 Service Unavailable";
-        case 504: return "504 Gateway Timeout";
+        case 504: return "504 Gateway Time-out";
         default:
             snprintf(buffer, 32, "%d", code);
             return buffer;
@@ -999,7 +1002,6 @@ void appendHtmlEscaped(char* out, size_t capacity, size_t& used, const char* tex
     if (!out || capacity == 0 || !text) return;
     for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p; ++p) {
         const char* replacement = nullptr;
-        char entity[8] = {};
         switch (*p) {
             case '&': replacement = "&amp;"; break;
             case '<': replacement = "&lt;"; break;
@@ -1013,13 +1015,9 @@ void appendHtmlEscaped(char* out, size_t capacity, size_t& used, const char* tex
             if (used + length + 1 > capacity) return;
             memcpy(out + used, replacement, length);
             used += length;
-        } else if (*p < 0x20) {
-            snprintf(entity, sizeof(entity), "&#x%x;", static_cast<unsigned>(*p));
-            const size_t length = strlen(entity);
-            if (used + length + 1 > capacity) return;
-            memcpy(out + used, entity, length);
-            used += length;
         } else {
+            // Python html.escape() leaves control/UTF-8 bytes untouched; keep
+            // the error page byte-identical to mitmproxy's format_error().
             if (used + 2 > capacity) return;
             out[used++] = static_cast<char>(*p);
         }
@@ -1035,7 +1033,7 @@ size_t formatProxyErrorBody(char* out, size_t capacity, int status, const char* 
     else if (status == 413) reason = "Payload Too Large";
     else if (status == 500) reason = "Internal Server Error";
     else if (status == 503) reason = "Service Unavailable";
-    else if (status == 504) reason = "Gateway Timeout";
+    else if (status == 504) reason = "Gateway Time-out";
 
     size_t used = 0;
     const int head = snprintf(out, capacity,
@@ -1218,11 +1216,8 @@ bool fastRejectForward(httpd_req_t* request, Capture& capture,
     if (localPort(request) == kMothershipHttpPort) {
         closeConnection = true;
         discardRequestBody(request, 8192);
-        char message[96];
-        snprintf(message, sizeof(message),
-                 "Cannot connect to %s: [Errno 113] No route to host",
-                 kMothershipBlockedUpstream);
-        sendProxyError(request, hit, responseBody, 502, message);
+        sendProxyError(request, hit, responseBody, 502,
+                       "[Errno 113] No route to host");
         return true;
     }
 
@@ -1244,7 +1239,7 @@ bool fastRejectForward(httpd_req_t* request, Capture& capture,
         closeConnection = true;
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 502,
-                       "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unavailable");
+                       "[Errno 101] Network is unreachable");
         return true;
     }
 
@@ -1277,7 +1272,7 @@ bool fastRejectForward(httpd_req_t* request, Capture& capture,
         closeConnection = true;
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 502,
-                       "Cannot connect to api-prd.vn.cloud.tesla.cn: upstream_unreachable");
+                       "[Errno 113] No route to host");
         return true;
     }
 
@@ -1333,7 +1328,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
         free(url);
         discardRequestBody(request, 8192);
         sendProxyError(request, hit, responseBody, 502,
-                       "Cannot connect to api-prd.vn.cloud.tesla.cn: init failed");
+                       "esp_http_client_init failed");
         return 502;
     }
     // Remove ESP-IDF's default "ESP32 HTTP Client/1.0" User-Agent so upstream
@@ -1449,10 +1444,7 @@ int forwardRequest(httpd_req_t* request, Capture& capture,
             return 400;
         }
         if (!gProxyShuttingDown) upstreamRecordFailure(millis());
-        char message[128];
-        snprintf(message, sizeof(message), "Cannot connect to %s: %s",
-                 upstreamHost, esp_err_to_name(error));
-        sendProxyError(request, hit, responseBody, 502, message);
+        sendProxyError(request, hit, responseBody, 502, esp_err_to_name(error));
         return 502;
     }
     upstreamRecordSuccess();
@@ -1998,7 +1990,7 @@ void begin() {
             gState.enabled = settings.enabled != 0;
             gState.autoOffOnHit = (settings.flags & kSettingFlagAutoOffSet) != 0
                 ? (settings.autoOffOnHit != 0)
-                : true;
+                : false;
             gState.mode = settings.mode == static_cast<uint8_t>(Mode::Observe) ? Mode::Observe : Mode::Reply;
             if (validHostList(settings.host)) {
                 if (strcasecmp(settings.host, kLegacyDefaultHosts) == 0) {
@@ -2643,7 +2635,10 @@ void appendHandshakesJsonl(Print& out) {
         out.print(",\"alpn\":\""); jsonEscape(out, h.alpn); out.print("\"");
         out.print(",\"tls\":\""); jsonEscape(out, h.tls); out.print("\"");
         out.print(",\"cipher\":\""); jsonEscape(out, h.cipher); out.print("\"");
-        out.print(",\"confdir\":\"emudhra\"");
+        // TeslaDG fsd_mock.py hard-codes "confdir": "certs2" in handshake.log
+        // even when --emudhra supplies the wire CA. Keep the JSON schema/value
+        // identical so PC and ESP32 logs can be diffed directly.
+        out.print(",\"confdir\":\"certs2\"");
         out.print(",\"error\":\""); jsonEscape(out, h.error); out.print("\"");
         out.print(",\"first_request\":\""); jsonEscape(out, h.firstRequest); out.print("\"");
         out.print("}\n");

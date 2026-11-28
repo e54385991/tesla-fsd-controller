@@ -225,7 +225,7 @@ amazonaws.com.cn
 **`mothership.vn.teslamotors.com` / `mothership.vn.cloud.tesla.cn`（默认外网黑名单 / 本地劫持）**
 
 - 默认加入外网黑名单；FSD 下发关闭时，车机不能直连母舰，避免云端改写配置。
-- FSD 下发开启时按 Windows TeslaDG 的逻辑劫持：`mothership.*` 与 `api-prd` 都解析到 `9.9.9.9`，443（TLS）和 4567（明文 HTTP）上的 `/feature_configuration` 由本地回包，其余路径按原始 Host 反代。
+- FSD 下发开启时按 Windows TeslaDG 的逻辑劫持：`mothership.*` 与 `api-prd` 都解析到 `9.9.9.9`。443（TLS）和 4567（明文 HTTP）上的 `/feature_configuration` 由本地回包；443 的其余路径反代到 `api-prd`，4567 的其余路径与 `svc/stack.py` 的 `reverse:http://192.0.2.1:4567` 一致返回 mitmproxy 风格 502，避免母舰改写配置。
 - 与 `api-prd` 一样，黑名单只影响劫持关闭后的直连，不影响 FSD 开启时的本地回包。
 
 ### 规则语义
@@ -260,6 +260,8 @@ amazonaws.com.cn
 
 `esp32s3-waveshare-wifi` 内置与 Windows TeslaDG 对齐的下发链路，默认关闭（不启动 443/4567 监听以释放约 28 KB 内部 RAM 供 Wi-Fi/NAPT 使用）；在管理面板一键开启后自动拉起监听，关闭后自动释放资源，无需重启。
 
+> TeslaDG 启动守护后默认开启回包；ESP32 因 RAM 限制默认不启动监听。首次在面板启用后会写入 NVS，后续重启保持。
+
 ### 工作流程
 
 1. **DNS 劫持**：AP 的 DNS 把 `api-prd.vn.cloud.tesla.cn` 和任意 `mothership.*`（含 `mothership.vn.teslamotors.com`、`mothership.vn.cloud.tesla.cn`）解析为 `9.9.9.9`。A 查询返回 AP 地址，AAAA 和其他类型返回空答案。
@@ -269,11 +271,11 @@ amazonaws.com.cn
    - `X-Checksum: md5(compact body)`
    - `Cache-Control: no-store`
    - body 为当前 compact JSON 载荷
-3. **其他路径**：443 反代到 `https://api-prd.vn.cloud.tesla.cn`（Host 重写为 api-prd）；4567 反代到 `http://mothership.vn.teslamotors.com:4567`（保留车机原始 Host），与 PC 版两个 reverse 监听一致。
+3. **其他路径**：443 反代到 `https://api-prd.vn.cloud.tesla.cn`（Host 重写为 api-prd）。4567 与 TeslaDG `svc/stack.py` 的主链路一致：上游固定为不可达的 `192.0.2.1:4567`，非 FSD 请求返回 mitmproxy 风格 `502 Bad Gateway` HTML，避免云端通过母舰改写 FSD 配置。
 
 ### 回复 / 观察模式
 
-- `reply`：直接返回 ESP32 载荷。
+- `reply`：直接返回 ESP32 载荷，并持续保持到手动关闭（与 TeslaDG 一致）。面板可选「下发成功后延迟 2 分钟自动关闭」；该选项默认关闭。
 - `observe` 模式记录请求，并在 AP 上游访问条件满足时转发。
 
 可在面板「DNS → FSD 下发」卡片切换。
@@ -291,6 +293,8 @@ amazonaws.com.cn
 
 默认载荷保存到 SPIFFS，重启保持。**下发时间线（配置变更 → 车机取配置）与下发记录各保留最近 5 条并写入 NVS，重启保持**；完整命中 / 握手 / 请求明细日志只保存在 RAM，重启清空，不占闪存。
 
+> TeslaDG 的 `payload.json` 默认是 602 B；ESP32 默认 654 B（额外启用 `autoshift_dr` 并关闭 `enable_eu_fsd_behavior`）。需要与 PC 完全一致时，点「PC 602B」预设即可。
+
 字段含义以 `docs/FeatureConfig.docx`（Tesla 2026.26.6.1，反汇编 Observed）为准；
 CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说明见
 [`docs/featureconfig-vs-cn.md`](docs/featureconfig-vs-cn.md)。
@@ -299,17 +303,17 @@ CN 全量配置与该表的逐项差异、缺失项与取反/字符串字段说�
 
 - `10010`：管理面板、client-config、OTA、日志。
 - `443`：只跑 FSD 下发（TLS catch-all，命中 `/feature_configuration` 回包，其余路径反代）。证书 SAN 覆盖 `api-prd.vn.cloud.tesla.cn`、`mothership.vn.teslamotors.com`、`mothership.vn.cloud.tesla.cn`。
-- `4567`：PC 版母舰明文 HTTP 反代（TeslaDG `svc/stack.py` 的 `reverse:http://<ip>:4567`）。命中 `/feature_configuration` 回包，其余路径转发到 `http://mothership.vn.teslamotors.com:4567`，并保留车机原始 Host（PC 的 `keep_host_header=true`）。
+- `4567`：PC 版母舰明文 HTTP 监听（TeslaDG `svc/stack.py` 的 `reverse:http://192.0.2.1:4567`）。命中 `/feature_configuration` 回包；其余路径返回与 mitmproxy 相同的 `502 Bad Gateway` HTML（`Server: mitmproxy 12.3.1`、`Connection: close`），不会转发到真实母舰。
 - 443 使用与 Windows `--emudhra` 相同的 eMudhra 证书材料，而不是 mitmproxy 自签 CA。CA 链（EM OV TLS CA - G3C → emSign Root TLS CA - G3 → emSign ECC Root CA - G3，加 AAA 交叉签名）和私钥与 mitmproxy 12.3.1 `EMUDHRA_CHAIN_PEM` 逐字节一致；车机通常已信任 emSign 根，无需安装证书。
-- Windows 版由 mitmproxy 按 SNI 动态生成短有效期叶子证书；ESP32 使用一张静态叶子证书（同样的 CA 私钥/公钥、issuer、EKU、AKI），有效期沿用 `certs2/mitmproxy-ca-cert.pem` 的 2026-11-07 → 2036-11-04，并一次覆盖 `api-prd` 和两个 `mothership` 域名。因此叶子证书不可能与 PC 每次动态生成的叶子逐字节相同，但链、密钥和校验结果一致。
-- 如果车机不信任，可通过串口 `client-config` 命令导出 `EM OV TLS CA - G3C` 中间 CA，装进车机信任库。
-- 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回 `502 {"error":"upstream_unavailable"}`。
+- Windows 版由 mitmproxy 按 SNI + 上游证书动态生成约 199 天有效期的叶子证书；ESP32 使用一张静态叶子证书（同样的 CA 私钥/公钥、issuer、EKU、AKI，CN=`api-prd.vn.cloud.tesla.cn`，SAN 为 api-prd 上游域名集合 + 两个 `mothership` + `fsd.local`/`9.9.9.9`/`127.0.0.1`）。静态叶子沿用 `certs2/mitmproxy-ca-cert.pem` 的 CA 日期窗口 2026-11-07 → 2036-11-04，仅用于避免设备过期；签发者仍是 `EM OV TLS CA - G3C`，不是 `certs2` 的自签 mitmproxy CA。因此叶子证书不可能与 PC 每次动态生成的叶子逐字节相同，但链、密钥和校验结果一致。
+- 如果车机不信任，可通过串口发送 `client-config` 导出信任包（`emSign ECC Root CA - G3` + `EM OV TLS CA - G3C` + `emSign Root TLS CA - G3`，共 3 张），装进车机信任库。不要安装 TeslaDG `certs2/mitmproxy-ca-cert.*`：那是 mitmproxy 自签 CA，`--emudhra` 模式下不在证书链里。
+- 443 同时只保留 1 个车机 TLS socket；上游未连接时，非 FSD 路径返回 mitmproxy 风格的 `502 Bad Gateway` HTML（`Server: mitmproxy 12.3.1`、`Content-Type: text/html`、`Connection: close`），不是 JSON。ESP32 专有的 413/400/500 快速失败仍返回 JSON。
 
 ### TLS 版本
 
-- **ESP32-S3 Wi-Fi 版**：Arduino 3.3.12 / ESP-IDF 5.5.5 / mbedTLS 3.6，支持 **TLS 1.2 + TLS 1.3**，车机支持时优先协商 1.3。
-- **标准 ESP32 / esp32-wifi**：ESP-IDF 4.4 / mbedTLS 2.28，仅 TLS 1.2。
-- TLS 1.1 与 TLS 1.3 无法在同一套 mbedTLS 上同时支持；本项目按 TLS 1.2 + 1.3 对齐。
+- **ESP32-S3 Wi-Fi 版**：Arduino 4.0.0 / ESP-IDF 6.1.1 / mbedTLS 4.0，支持 **TLS 1.2 + TLS 1.3**，车机支持时优先协商 1.3。
+- **标准 ESP32 / esp32-wifi**：同样是 Arduino 4.0.0 / ESP-IDF 6.1.1 / mbedTLS 4.0，TLS 1.2 + 1.3；该环境不启用 FSD 443 下发。
+- TLS 1.0 / 1.1 已禁用；本项目按 TLS 1.2 + 1.3 对齐。
 
 ### 常用接口
 
@@ -425,10 +429,10 @@ pio run -e esp32s3-waveshare-wifi -t erase
 
 ### TLS 1.3 构建注意
 
-`esp32s3-waveshare-wifi` 首次构建会下载 Arduino 3.3.12 / ESP-IDF 5.5.5。如果 PlatformIO 的 ESP-IDF Python 环境创建失败（Python 3.15 + 旧版 pydantic-core），执行：
+`esp32s3-waveshare-wifi` 首次构建会下载 Arduino 4.0.0 / ESP-IDF 6.1.1。如果 PlatformIO 的 ESP-IDF Python 环境创建失败（Python 3.15 + 旧版 pydantic-core），执行：
 
 ```sh
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-5.5.5/bin/pip install \
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 ~/.platformio/penv/.espidf-6.1.1/bin/pip install \
   idf-component-manager -r ~/.platformio/packages/framework-espidf/tools/requirements/requirements.core.txt
 ```
 
@@ -500,7 +504,7 @@ include/
   web_ui_gz.h             构建时自动生成的 gzip 页面
 
 platformio.ini            构建环境（esp32-wifi / esp32s3-waveshare-wifi）
-idf_o2_compat.cmake       ESP-IDF 5.5 -O2 上游 esp-modbus 兼容钩子
+idf_o2_compat.cmake       ESP-IDF 6.1 -O2 上游 esp-modbus 兼容钩子
 min_spiffs.csv            分区表
 compress_html.py          构建前压缩 HTML
 merge_firmware.py         构建后生成合并 / OTA 固件

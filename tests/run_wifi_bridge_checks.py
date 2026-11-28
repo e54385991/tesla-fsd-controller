@@ -49,7 +49,7 @@ def check_static_contracts() -> None:
     assert "client_config::serviceListeners();" in MAIN_SRC
     assert "uint8_t enabled = 0;" in FSD_SRC, "FSD mock Settings::enabled must default to 0"
     assert "bool enabled = false;" in FSD_SRC, "FSD mock State::enabled must default to false"
-    assert "uint8_t autoOffOnHit = 1;" in FSD_SRC, "FSD mock autoOffOnHit must default to 1"
+    assert "uint8_t autoOffOnHit = 0;" in FSD_SRC, "FSD mock autoOffOnHit must default to 0 (TeslaDG stays enabled)"
     assert "setListenersReady(true)" in CLIENT_CFG_SRC
     assert "setListenersReady(false)" in CLIENT_CFG_SRC
     dns_src = (ROOT / "include/mod_dns.h").read_text()

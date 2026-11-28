@@ -275,8 +275,8 @@ class Probe:
         try:
             status, headers, body = self.tls_exchange("POST", "/stability-probe-nonexistent", b"{}")
             ms = round((time.monotonic() - t0) * 1000, 1)
-            # 502 upstream_unavailable is the expected AP-only result; 400 is
-            # Tesla's real mTLS answer when upstream is reachable.
+            # 502 [Errno 101] Network is unreachable is the expected AP-only
+            # result; 400 is Tesla's real mTLS answer when upstream is reachable.
             ok = status in (200, 400, 404, 502)
             if ok:
                 self.stats["proxy_ok"] += 1

@@ -84,8 +84,8 @@ def check_tls_identity() -> None:
             [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-subject"],
             capture_output=True, text=True, check=True,
         ).stdout
-        assert "CN=api-prd.vn.cloud.tesla.cn" in subject
-        assert "O=Tesla Inc." in subject
+        assert "CN=api-prd.vn.cloud.tesla.cn" in subject.replace(" ", "")
+        assert "O=Tesla Inc." in subject.replace(" ", "") or "O=TeslaInc." in subject.replace(" ", "")
         # mitmproxy dummy_cert() uses the CA public key for the leaf, and the
         # CA private key to sign it. The ESP32 leaf must do the same.
         leaf_pub = subprocess.run(
@@ -97,6 +97,77 @@ def check_tls_identity() -> None:
             capture_output=True, text=True, check=True,
         ).stdout
         assert leaf_pub.strip() == key_pub.strip(), "leaf public key must equal the eMudhra CA key"
+
+        # Static-leaf contract: same dates as TeslaDG/app/certs2 CA, issuer
+        # EM OV TLS CA - G3C, and exactly mitmproxy's dummy_cert extensions
+        # (EKU + AKI + SAN; no BasicConstraints/SKI).
+        dates = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-dates"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "notBefore=Nov  7 22:54:45 2026 GMT" in dates, dates
+        assert "notAfter=Nov  4 22:54:45 2036 GMT" in dates, dates
+        issuer = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-issuer"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "EM OV TLS CA - G3C" in issuer, issuer
+        eku = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-ext", "extendedKeyUsage"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "TLS Web Server Authentication" in eku, eku
+        aki = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-ext", "authorityKeyIdentifier"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "34:EA:EA:0C:EB:C9:0A:DA:F9:D0:C5:E2:ED:9B:78:C9:87:9E:1B:6C" in aki.upper(), aki
+        text = subprocess.run(
+            [openssl, "x509", "-in", str(base / "leaf.pem"), "-noout", "-text"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "X509v3 Basic Constraints" not in text, "leaf must not declare BasicConstraints"
+        assert "X509v3 Subject Key Identifier" not in text, "leaf must not declare SKI"
+        assert "X509v3 Subject Alternative Name: critical" not in text, (
+            "leaf SAN must be non-critical because CN is present (dummy_cert parity)"
+        )
+        for name in (
+            "DNS:api-prd.vn.cloud.tesla.cn",
+            "DNS:api-cn-north-prd.vn.cloud.tesla.cn",
+            "DNS:device-api.prd.cn.vn.cloud.tesla.cn",
+            "DNS:device-api.prd.eu.vn.cloud.tesla.com",
+            "DNS:device-api.prd.na.vn.cloud.tesla.com",
+            "DNS:mothership.vn.teslamotors.com",
+            "DNS:mothership.vn.cloud.tesla.cn",
+            "DNS:fsd.local",
+            "IP Address:9.9.9.9",
+            "IP Address:127.0.0.1",
+        ):
+            assert name in san, f"leaf SAN missing {name}"
+        leaf_der_sha256 = hashlib.sha256(
+            base64.b64decode("".join(certs[0].split()))
+        ).hexdigest()
+        assert leaf_der_sha256 == "9519436b5bf62c562037d4b57cbbcd1ccbec43409a829609bb92f71adf7a1437", (
+            "static leaf drifted; regenerate/test it deliberately"
+        )
+
+        # kFsdTlsCaCertificate is the 3-cert verification/export bundle, not
+        # the 4-cert wire chain: emSign ECC Root -> EM OV -> emSign Root TLS.
+        ca_pems = re.findall(
+            r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", ca, re.S
+        )
+        assert len(ca_pems) == 3, f"trust bundle must have 3 certs, found {len(ca_pems)}"
+        ca_subjects = []
+        for index, pem in enumerate(ca_pems):
+            path = base / f"trust{index}.pem"
+            path.write_text(pem)
+            ca_subjects.append(subprocess.run(
+                [openssl, "x509", "-in", str(path), "-noout", "-subject"],
+                capture_output=True, text=True, check=True,
+            ).stdout)
+        assert "emSign ECC Root CA - G3" in ca_subjects[0], ca_subjects[0]
+        assert "EM OV TLS CA - G3C" in ca_subjects[1], ca_subjects[1]
+        assert "emSign Root TLS CA - G3" in ca_subjects[2], ca_subjects[2]
 
 
 def check_response_contract() -> None:
@@ -114,7 +185,8 @@ def check_response_contract() -> None:
         'Handshake& handshake = gHandshakes[gHandshakeWrite]',
         'esp_http_client_open(client, static_cast<int>(bodyLength))',
         'esp_http_client_delete_header(client, "User-Agent")',
-        'upstream_unavailable',
+        '"[Errno 101] Network is unreachable"',
+        '"[Errno 113] No route to host"',
         '503, "ap_upstream_blocked"',
         'constexpr size_t kMaxForwardBodyBytes = 65536;',
         'constexpr size_t kUpstreamBufferTxBytes = 4096;',
@@ -149,10 +221,20 @@ def _extract_block(source: str, signature: str) -> str:
     end = brace + 1
     in_string = False
     in_char = False
+    in_line_comment = False
+    in_block_comment = False
     escape = False
     while depth:
         ch = source[end]
-        if escape:
+        nxt = source[end + 1] if end + 1 < len(source) else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+        elif in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                end += 1
+        elif escape:
             escape = False
         elif in_string:
             if ch == "\\":
@@ -165,7 +247,13 @@ def _extract_block(source: str, signature: str) -> str:
             elif ch == "'":
                 in_char = False
         else:
-            if ch == '"':
+            if ch == "/" and nxt == "/":
+                in_line_comment = True
+                end += 1
+            elif ch == "/" and nxt == "*":
+                in_block_comment = True
+                end += 1
+            elif ch == '"':
                 in_string = True
             elif ch == "'":
                 in_char = True
@@ -212,6 +300,7 @@ int main() {
     char buf[32];
     assert(std::strcmp(formatStatusLine(200, buf), "200 OK") == 0);
     assert(std::strcmp(formatStatusLine(204, buf), "204 No Content") == 0);
+    assert(std::strcmp(formatStatusLine(504, buf), "504 Gateway Time-out") == 0);
     assert(std::strcmp(formatStatusLine(431, buf), "431") == 0);
 
     UpstreamResponseHeaders h;
@@ -257,6 +346,89 @@ int main() {
             check=True,
         )
         subprocess.run([str(exe)], check=True)
+
+
+def check_proxy_error_page_parity() -> None:
+    """formatProxyErrorBody must be byte-identical to mitmproxy 12.3.1
+    proxy/layers/http/_base.py::format_error + status_codes.RESPONSES."""
+    cxx = shutil.which("c++")
+    if not cxx:
+        return
+    source = (ROOT / "src/fsd_mock.cpp").read_text()
+    extracted = "\n".join((
+        _extract_block(source, "void appendHtmlEscaped("),
+        _extract_block(source, "size_t formatProxyErrorBody("),
+    ))
+    harness = r'''
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+''' + extracted + r'''
+int main(int argc, char** argv) {
+    if (argc != 3) return 2;
+    char body[640];
+    size_t used = formatProxyErrorBody(body, sizeof(body), std::atoi(argv[1]), argv[2]);
+    std::fwrite(body, 1, used, stdout);
+    return 0;
+}
+'''
+    import html
+    import textwrap
+
+    def pc_error(status: int, message: str) -> bytes:
+        reason = {
+            400: "Bad Request",
+            403: "Forbidden",
+            413: "Payload Too Large",
+            500: "Internal Server Error",
+            502: "Bad Gateway",
+            503: "Service Unavailable",
+            504: "Gateway Time-out",
+        }.get(status, "Unknown")
+        return textwrap.dedent(
+            f"""
+    <html>
+    <head>
+        <title>{status} {reason}</title>
+    </head>
+    <body>
+        <h1>{status} {reason}</h1>
+        <p>{html.escape(message)}</p>
+    </body>
+    </html>
+    """
+        ).strip().encode("utf8", "replace")
+
+    cases = [
+        (502, "[Errno 113] No route to host"),
+        (502, "[Errno 101] Network is unreachable"),
+        (503, "low_heap"),
+        (504, "Gateway timeout"),
+        (500, "a<b&c>\"d'e"),
+        (500, "tab\there"),
+        (400, "request read failed"),
+        (403, ""),
+        (413, "载荷过大 / 测试"),
+    ]
+    san = _sanitizer_flags(cxx)
+    with tempfile.TemporaryDirectory(prefix="fsd-err-") as tmp:
+        cpp = Path(tmp) / "err.cpp"
+        exe = Path(tmp) / "err"
+        cpp.write_text(harness)
+        subprocess.run(
+            [cxx, "-std=gnu++26", "-Wall", "-Wextra", "-Werror",
+             *san,
+             str(cpp), "-o", str(exe)],
+            check=True,
+        )
+        for status, message in cases:
+            actual = subprocess.run(
+                [str(exe), str(status), message], capture_output=True, check=True
+            ).stdout
+            expected = pc_error(status, message)
+            assert actual == expected, (
+                f"{status} error page mismatch:\n  esp={actual!r}\n  pc ={expected!r}"
+            )
 
 
 def check_payload_compact_and_sum_parity() -> None:
@@ -440,7 +612,7 @@ def check_port_policy() -> None:
     assert "config.httpd.keep_alive_interval = 5;" in server
     assert "config.httpd.keep_alive_count = 3;" in server
     assert "config.max_open_sockets = 3;" in server
-    # PC parity: plaintext mothership listener + keep-host upstream routing.
+    # PC parity: plaintext mothership listener + stack.py 4567 blackhole.
     assert "config.server_port = fsd_mock::kMothershipHttpPort;" in server
     assert "startMothershipHttp()" in server
     assert "mothershipHttpStarted()" in server
@@ -659,7 +831,7 @@ def check_tls_policy() -> None:
     assert "kMaxForwardResponseBytes = 262144" in mock
     assert "kMaxFsdRequestBodyBytes = 65536" in mock
     assert "uint8_t enabled = 0;" in mock
-    assert "uint8_t autoOffOnHit = 1;" in mock
+    assert "uint8_t autoOffOnHit = 0;" in mock
     assert "client_config::scheduleAutoOff();" in mock
     assert "mbedtls_ssl_get_version" in mock
 
@@ -686,9 +858,11 @@ def check_tls_policy() -> None:
         r'400, "{\"error\":\"request_read_failed\"}"',
         r'500, "{\"error\":\"no_memory\"}"',
         'httpd_resp_set_hdr(request, "Server", "mitmproxy 12.3.1");',
+        'out.print(",\\"confdir\\":\\"certs2\\"");',
         'sendProxyError(request, hit, responseBody, 503, "low_heap");',
         'sendProxyError(request, hit, responseBody, 502,',
-        'Cannot connect to %s: [Errno 113] No route to host',
+        '"[Errno 113] No route to host"',
+        '"[Errno 101] Network is unreachable"',
         'const bool sameAlertBurst = !newFailure &&',
         'if (detail[0] && strstr(entry.error, "-0x7780") != nullptr',
     ):
@@ -1036,6 +1210,7 @@ def main() -> None:
     check_tls_policy()
     check_response_contract()
     check_upstream_header_capture()
+    check_proxy_error_page_parity()
     check_payload_compact_and_sum_parity()
     check_port_policy()
     check_timeline_persistence()
